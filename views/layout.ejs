@@ -449,8 +449,21 @@
             --neon-purple: <%= settings?.theme?.primaryColor || '#dc2626' %>;
             --neon-violet: <%= settings?.theme?.secondaryColor || '#7b2cbf' %>;
             --accent-color:<%= settings?.theme?.accentColor || '#a3123a' %>;
-            --bg-dark:     <%= settings?.theme?.backgroundColor || '#0a0a0a' %>;
-            --bg-card:     <%= settings?.theme?.cardBackground || '#141414' %>;
+            <%
+            /* CATATAN (fix bug 14 Sep 2026): DULU ada baris --bg-dark dan
+               --bg-card di sini yang di-set dari settings.theme.backgroundColor
+               / cardBackground. --bg-card adalah nama variable yang SAMA
+               dipakai di HAMPIR SEMUA halaman (admin-login, login, register,
+               buy, reseller, leaderboard, invoice, dashboard, dll) untuk card
+               putih/terang berpasangan dengan --text-1 (teks gelap). Begitu
+               settings.theme.cardBackground diisi warna gelap (buat tema toko
+               AGHA NL), --bg-card ikut jadi gelap di SEMUA halaman itu juga --
+               padahal teksnya (--text-1) tetap gelap juga, jadi kebaca nyaris
+               tak kelihatan (bug kontras yang dilaporkan client di admin-login).
+               Warna gelap khusus tema AGHA NL sekarang HANYA dipakai di
+               home.ejs lewat variable terpisah (--fz-bg/--fz-bg-soft), jadi
+               tidak nabrak variable global ini lagi. */
+            %>
             --glow-color:  <%= hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.1) %>;
             /* Varian transparan dari warna tema utama, dipakai untuk
                background/border tipis (badge, tombol akun navbar, dll) yang
