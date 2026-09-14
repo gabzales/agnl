@@ -1,0 +1,2846 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<!-- DARK MODE (23 Agu 2026): admin.ejs adalah halaman standalone (layout:
+     false), tidak mewarisi apapun dari layout.ejs. Karena mengaudit 81+
+     warna hardcode manual di file 2668-baris ini akan makan waktu sangat
+     lama, dark mode di sini dan file admin lain (admin-login, admin-theme,
+     admin-product-edit) dikerjakan pakai teknik CSS filter invert (mirip
+     cara kerja ekstensi Dark Reader) -- satu blok CSS yang membalik semua
+     warna sekaligus, bukan audit manual per elemen seperti halaman
+     frontend. Trade-off yang disepakati: cepat & otomatis mencakup
+     seluruh halaman admin, tapi sejumlah elemen (gradient, foto produk,
+     badge warna-warni) bisa terlihat kurang presisi karena inversi warna
+     itu tidak sadar konteks -- gambar/video/iframe dikecualikan (di-invert
+     balik lagi) supaya tidak ikut jadi warna negatif aneh, tapi elemen
+     lain yang sengaja pakai warna solid non-teks (misalnya badge status)
+     mungkin masih perlu penyesuaian manual belakangan kalau ada yang
+     terlihat aneh. -->
+<script>
+  try {
+    if (localStorage.getItem('fz-theme') === 'dark') {
+      document.documentElement.classList.add('dark');
+    }
+  } catch (e) {}
+</script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Admin — <%= settings.siteName %></title>
+<meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="/css/tailwind.css">
+<script src="https://code.iconify.design/iconify-icon/1.0.7/iconify-icon.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#ffffff;--card:#ffffff;--card2:#f8f8f9;--border:#ececee;--accent:#71717a;
+/* ══ DARK MODE (23 Agu 2026, DIGANTI 24 Agu 2026) ══
+   Sebelumnya pakai CSS invert filter (lihat riwayat di bawah untuk
+   penjelasan tekniknya) -- tapi client merevisi target warna "Mode
+   Gelap" dari hitam pekat jadi PUTIH REDUP (#f4f4f5), yang notabene
+   sudah SANGAT DEKAT dengan warna asli halaman ini (--bg: #ffffff).
+   Invert filter untuk selisih warna sekecil itu jadi berlebihan/berisiko
+   hasil aneh (invert dari putih ke arah warna redup itu bukan operasi
+   yang presisi, filter invert didesain untuk kontras terbalik total).
+   Diganti jadi override variable langsung seperti halaman lain --lebih
+   presisi untuk revisi kali ini. Halaman admin ini besar (2668 baris)
+   dan variable :root sudah dipakai konsisten di seluruh file untuk
+   background/border (--bg/--card/--card2/--border), jadi override di
+   sini otomatis menjangkau sebagian besar elemen tanpa audit satu-satu;
+   elemen yang masih hardcode terpisah (kalau ada) menyusul diperbaiki
+   kalau ditemukan. */
+html.dark {
+  --bg:#f4f4f5;--card:#f4f4f5;--card2:#e4e4e7;--border:#d4d4d8;--accent:#52525b;
+}
+html.dark body { background: var(--bg); color: #18181b; }
+.admin-dark-toggle { position:relative; display:inline-block; width:34px; height:20px; flex-shrink:0; }
+.admin-dark-toggle input { opacity:0; width:0; height:0; }
+.admin-dark-toggle-slider {
+  position:absolute; cursor:pointer; inset:0;
+  background:#3a3a40; border-radius:999px; transition:.2s;
+}
+.admin-dark-toggle-slider::before {
+  content:""; position:absolute; height:14px; width:14px;
+  left:3px; bottom:3px; background:#fff; border-radius:50%;
+  transition:.2s; box-shadow:0 1px 2px rgba(0,0,0,.2);
+}
+.admin-dark-toggle input:checked + .admin-dark-toggle-slider { background:#dc2626; }
+.admin-dark-toggle input:checked + .admin-dark-toggle-slider::before { transform:translateX(14px); }
+</style>
+<style>
+:root{--bg:#ffffff;--card:#ffffff;--card2:#f8f8f9;--border:#ececee;--accent:#71717a;
+/* Variable tema custom dari admin panel (settings.theme.*) -- file ini
+   standalone (layout:false) jadi TIDAK otomatis dapat variable dari
+   layout.ejs, harus di-define ulang di sini. Nilai sama persis dengan
+   yang di layout.ejs supaya konsisten. */
+--neon-purple:<%= settings?.theme?.primaryColor || '#dc2626' %>;
+--accent-color:<%= settings?.theme?.accentColor || '#dc2626' %>;
+--neon-purple-10:<%= hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.08) %>;
+--neon-purple-12:<%= hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.1) %>;
+--neon-purple-18:<%= hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.15) %>;
+--neon-purple-20:<%= hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.18) %>;
+--neon-purple-25:<%= hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.22) %>;
+--neon-purple-35:<%= hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.3) %>;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{font-family:'Inter',sans-serif;background:var(--bg);color:#18181b;overflow-x:hidden;}
+body{padding-bottom:80px;}
+::-webkit-scrollbar{width:4px;height:4px;}
+
+/* FIX (redesign 22 Agu 2026): file admin ini didesain untuk background
+   GELAP, dengan class Tailwind text-zinc-300/400/500 (abu terang, kebaca
+   di background gelap) dan bg-white/5, border-white/10 dst (putih
+   transparan tipis, kebaca sebagai aksen di background gelap) tersebar di
+   RATUSAN tempat. Sekarang background sudah PUTIH -- override di sini
+   secara global, supaya tidak perlu ganti setiap class satu-satu (sangat
+   rawan miss di file sebesar ini). */
+.text-zinc-300 { color: #3f3f46 !important; }
+.text-zinc-400 { color: #52525b !important; }
+.text-zinc-500 { color: #71717a !important; }
+.text-zinc-600 { color: #a1a1aa !important; }
+.text-zinc-700 { color: #d4d4d8 !important; }
+.text-white { color: #18181b !important; }
+.hover\:text-white:hover { color: #18181b !important; }
+.bg-white\/3 { background: #fafafa !important; }
+.bg-white\/5 { background: #f4f4f5 !important; }
+.bg-white\/8 { background: #ececee !important; }
+.bg-white\/10 { background: #ececee !important; }
+.hover\:bg-white\/5:hover { background: #f4f4f5 !important; }
+.hover\:bg-white\/8:hover { background: #ececee !important; }
+.hover\:bg-white\/10:hover { background: #ececee !important; }
+.border-white\/10 { border-color: #ececee !important; }
+    .border-white\/5 { border-color: #f4f4f5 !important; }
+.border-white\/15 { border-color: #e4e4e7 !important; }
+.border-white\/20 { border-color: #d4d4d8 !important; }
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:#2a2a2e;border-radius:3px;}
+
+
+body>*{position:relative;z-index:1;}
+
+@keyframes fadeInUp{from{opacity:0;transform:translateY(12px);}to{opacity:1;transform:translateY(0);}}
+@keyframes slideUp{from{transform:translateY(100%);opacity:0;}to{transform:translateY(0);opacity:1;}}
+@keyframes spin{to{transform:rotate(360deg);}}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:.4;}}
+
+.fade-in{animation:fadeInUp .3s ease-out both;}
+.animate-spin{animation:spin 1s linear infinite;}
+.shimmer-text{color:var(--accent-color);}
+
+.neon-card{background:var(--card);border:1px solid var(--border);border-radius:14px;transition:border-color .2s;}
+.neon-card:hover{border-color:var(--neon-purple-25);}
+
+.stat-card{background:var(--neon-purple-10);border:1px solid var(--neon-purple-20);border-radius:14px;padding:16px;transition:all .2s;}
+.stat-card:hover{border-color:var(--neon-purple-35);transform:translateY(-2px);}
+
+.hm-input,.form-input{width:100%;padding:10px 14px;border-radius:10px;background:#f8f8f9;border:1.5px solid #e4e4e7;color:#18181b;font-size:13px;transition:all .2s;font-family:'Inter',sans-serif;}
+.hm-input:focus,.form-input:focus{outline:none;border-color:var(--neon-purple-35);background:var(--neon-purple-10);box-shadow:0 0 0 3px var(--neon-purple-10);}
+.hm-input::placeholder,.form-input::placeholder{color:#52525b;}
+select.hm-input{appearance:none;cursor:pointer;}
+textarea.hm-input{resize:vertical;min-height:80px;}
+
+.btn-primary{background:var(--neon-purple);color:#fff;padding:10px 18px;border-radius:10px;font-weight:700;font-size:12px;border:none;cursor:pointer;transition:all .2s;display:inline-flex;align-items:center;gap:6px;}
+.btn-primary:hover{filter:brightness(1.15);transform:translateY(-1px);}
+.btn-danger{background:var(--accent-color);color:#fff;padding:7px 14px;border-radius:8px;font-weight:600;font-size:11px;border:none;cursor:pointer;transition:filter .2s;display:inline-flex;align-items:center;gap:4px;}
+.btn-danger:hover{filter:brightness(1.15);}
+.btn-success{background:#10b981;color:#fff;padding:7px 14px;border-radius:8px;font-weight:600;font-size:11px;border:none;cursor:pointer;transition:filter .2s;display:inline-flex;align-items:center;gap:4px;}
+.btn-success:hover{filter:brightness(1.15);}
+.btn-warning{background:#f59e0b;color:#fff;padding:7px 14px;border-radius:8px;font-weight:600;font-size:11px;border:none;cursor:pointer;transition:filter .2s;display:inline-flex;align-items:center;gap:4px;}
+
+.data-table{width:100%;border-collapse:collapse;}
+.data-table th{background:var(--neon-purple-10);padding:10px 12px;text-align:left;font-size:10px;font-weight:800;color:var(--accent-color);text-transform:uppercase;letter-spacing:.6px;white-space:nowrap;}
+.data-table td{padding:10px 12px;border-bottom:1px solid #ececee;font-size:12px;vertical-align:middle;}
+.data-table tr:hover td{background:var(--neon-purple-10);}
+
+.badge{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border-radius:6px;font-size:10px;font-weight:700;text-transform:uppercase;white-space:nowrap;}
+.badge-done{background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.25);}
+.badge-pending{background:rgba(234,179,8,.15);color:#facc15;border:1px solid rgba(234,179,8,.25);}
+.badge-inactive{background:var(--neon-purple-18);color:var(--accent-color);border:1px solid var(--neon-purple-25);}
+.badge-featured{background:var(--neon-purple-18);color:#fca5a5;border:1px solid var(--neon-purple-25);}
+
+.tab-pane{display:none;}
+.tab-pane.active{display:block;animation:fadeInUp .3s ease-out both;}
+
+.modal-wrap{display:none;position:fixed;inset:0;z-index:80;}
+.modal-wrap.open{display:flex;align-items:flex-end;justify-content:center;}
+@media(min-width:640px){.modal-wrap.open{align-items:center;}}
+.modal-bg{position:absolute;inset:0;background:rgba(0,0,0,.75);}
+.modal-box{position:relative;background:var(--card);border:1px solid var(--neon-purple-20);width:100%;max-height:90vh;overflow-y:auto;border-radius:20px 20px 0 0;animation:slideUp .25s ease-out both;}
+@media(min-width:640px){.modal-box{border-radius:16px;max-width:580px;}}
+.modal-box::-webkit-scrollbar{width:3px;}
+.modal-box::-webkit-scrollbar-thumb{background:#2a2a2e;border-radius:2px;}
+.modal-handle{width:40px;height:4px;background:rgba(255,255,255,.12);border-radius:2px;margin:12px auto 0;}
+
+#toast-container{position:fixed;top:12px;right:12px;z-index:9999;display:flex;flex-direction:column;gap:8px;}
+.toast{display:flex;align-items:center;gap:8px;padding:10px 14px;border-radius:12px;background:var(--card);box-shadow:0 8px 32px rgba(0,0,0,.5);font-size:12px;max-width:280px;border:1px solid;animation:fadeInUp .3s ease-out both;}
+
+#admin-nav{position:fixed;bottom:0;left:0;right:0;z-index:70;background:rgba(255,255,255,.98);border-top:1px solid var(--neon-purple-18);height:68px;display:flex;align-items:center;justify-content:space-around;padding:0 4px 6px;box-shadow:0 -4px 20px rgba(0,0,0,.5);}
+.nav-btn{display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 8px;border-radius:12px;cursor:pointer;transition:all .2s;flex:1;max-width:64px;border:1.5px solid transparent;-webkit-tap-highlight-color:transparent;position:relative;}
+.nav-btn .n-icon{font-size:20px;color:#52525b;transition:color .2s;line-height:1;}
+.nav-btn .n-label{font-size:9px;font-weight:700;color:#52525b;transition:color .2s;white-space:nowrap;}
+.nav-btn.active .n-icon{color:var(--accent-color);}
+.nav-btn.active .n-label{color:var(--accent-color);}
+.nav-btn.active{background:var(--neon-purple-12);border-color:var(--neon-purple-25);}
+/* Filter tipe user (diminta client 22 Agu 2026: pisah reseller vs user biasa) */
+.user-type-btn{background:#f4f4f5;border-color:var(--border);color:#71717a;}
+.user-type-btn.active{background:var(--neon-purple-12);border-color:var(--neon-purple-25);color:var(--accent-color);}
+.nav-btn:active{transform:scale(.88);}
+.nav-dot{position:absolute;top:4px;right:6px;width:7px;height:7px;background:var(--accent-color);border-radius:50%;border:1.5px solid var(--bg);animation:blink 2s infinite;}
+
+.page-top{padding:12px 16px;background:rgba(255,255,255,.95);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:30;}
+.prod-card{background:var(--card2);border:1px solid var(--border);border-radius:12px;padding:14px;transition:border-color .2s;display:flex;align-items:center;gap:12px;}
+.prod-card:hover{border-color:var(--neon-purple-25);}
+.section-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.8px;color:#52525b;margin-bottom:10px;display:flex;align-items:center;gap:6px;}
+.section-label::before{content:'';width:16px;height:2px;background:var(--accent);border-radius:2px;display:block;}
+.setting-row-label{font-size:11px;font-weight:700;color:#a1a1aa;margin-bottom:8px;}
+</style>
+</head>
+<body class="font-inter">
+
+<div id="toast-container"></div>
+
+<!-- HEADER -->
+<div id="binid-alert" class="hidden px-4 py-2 text-[11px] font-bold text-center" style="background:rgba(234,179,8,.15);border-bottom:1px solid rgba(234,179,8,.3);color:#fbbf24;">
+    <iconify-icon icon="mdi:alert" class="align-middle mr-1"></iconify-icon>
+    <span id="binid-msg"></span>
+</div>
+
+<div class="page-top flex items-center justify-between">
+    <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style="background:#dc2626;">
+            <iconify-icon icon="mdi:shield-crown" class="text-white text-base"></iconify-icon>
+        </div>
+        <div>
+            <div class="font-bold text-sm font-black shimmer-text">ADMIN PANEL</div>
+            <div class="text-[9px] text-zinc-600"><%= settings.siteName %></div>
+        </div>
+    </div>
+    <div class="flex items-center gap-2">
+        <span class="text-[10px] text-zinc-500 hidden sm:block">
+            <span class="text-emerald-400 font-bold"><%= stats.doneTransactions %></span> done ·
+            <span class="text-yellow-400 font-bold"><%= stats.pendingTransactions %></span> pending
+        </span>
+        <a href="/" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-zinc-400 hover:text-white hover:bg-white/5 transition-all text-xs">
+            <iconify-icon icon="mdi:home" class="text-sm"></iconify-icon>
+            <span class="hidden sm:inline">Beranda</span>
+        </a>
+        <!-- Toggle Dark Mode admin (23 Agu 2026) -- pakai switch polos yang
+             sama gayanya dengan menu hamburger frontend, tapi admin.ejs
+             standalone jadi togglenya didefinisikan sendiri di sini
+             (lihat script adminToggleDarkMode di bawah). -->
+        <label class="admin-dark-toggle" data-no-invert title="Mode Gelap">
+            <input type="checkbox" id="adminDarkModeToggle" onchange="adminToggleDarkMode(this)">
+            <span class="admin-dark-toggle-slider"></span>
+        </label>
+        <a href="/logout" onclick="clearAndLogout(event)" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-red-500/20 text-red-400 hover:bg-red-500/10 transition-all text-xs">
+            <iconify-icon icon="mdi:logout" class="text-sm"></iconify-icon>
+        </a>
+    </div>
+</div>
+
+<!-- MAIN -->
+<div class="max-w-4xl mx-auto px-4 py-5">
+
+<!-- ── DASHBOARD ── -->
+<div id="pane-dashboard" class="tab-pane active">
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-3">
+        <div class="stat-card fade-in" style="background:var(--neon-purple-10);border-color:var(--neon-purple-25);">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Produk</span>
+                <iconify-icon icon="mdi:package-variant" class="text-red-400 text-lg"></iconify-icon>
+            </div>
+            <div class="text-2xl font-black text-white font-bold"><%= stats.totalProducts %></div>
+            <div class="text-[10px] text-zinc-600 mt-1"><%= stats.activeProducts %> aktif</div>
+        </div>
+        <div class="stat-card fade-in" style="background:rgba(16,185,129,.08);border-color:rgba(16,185,129,.25);">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Selesai</span>
+                <iconify-icon icon="mdi:check-circle" class="text-emerald-400 text-lg"></iconify-icon>
+            </div>
+            <div class="text-2xl font-black text-white font-bold"><%= stats.doneTransactions %></div>
+            <div class="text-[10px] text-emerald-600 mt-1">transaksi done</div>
+        </div>
+        <div class="stat-card fade-in" style="background:rgba(234,179,8,.08);border-color:rgba(234,179,8,.25);">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Pending</span>
+                <iconify-icon icon="mdi:clock-outline" class="text-yellow-400 text-lg"></iconify-icon>
+            </div>
+            <div class="text-2xl font-black text-white font-bold"><%= stats.pendingTransactions %></div>
+            <div class="text-[10px] text-yellow-600 mt-1">menunggu</div>
+        </div>
+        <div class="stat-card fade-in" style="background:rgba(22,163,74,.08);border-color:rgba(22,163,74,.25);">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Revenue</span>
+                <iconify-icon icon="mdi:cash-multiple" class="text-green-400 text-lg"></iconify-icon>
+            </div>
+            <div class="text-lg font-black text-white font-bold">Rp <%= (stats.totalRevenue/1000).toFixed(0) %>K</div>
+            <div class="text-[10px] text-green-600 mt-1">total pendapatan</div>
+        </div>
+        <div class="stat-card fade-in" style="background:var(--neon-purple-10);border-color:var(--neon-purple-25);">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Users</span>
+                <iconify-icon icon="mdi:account-group" class="text-red-400 text-lg"></iconify-icon>
+            </div>
+            <div class="text-2xl font-black text-white font-bold"><%= stats.totalUsers %></div>
+            <div class="text-[10px] text-red-600 mt-1">member terdaftar</div>
+        </div>
+        <div class="stat-card fade-in" style="background:rgba(234,88,12,.08);border-color:rgba(234,88,12,.25);">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-[10px] text-zinc-500 font-semibold uppercase tracking-wide">Reseller</span>
+                <iconify-icon icon="mdi:crown" class="text-orange-400 text-lg"></iconify-icon>
+            </div>
+            <div class="text-2xl font-black text-white font-bold"><%= stats.totalResellers || 0 %></div>
+            <div class="text-[10px] text-orange-600 mt-1">reseller VIP aktif</div>
+        </div>
+    </div>
+
+    <!-- GRAFIK PENJUALAN 7 HARI -->
+    <div class="neon-card p-4 mb-5">
+        <div class="section-label mb-3">Grafik Penjualan 7 Hari Terakhir</div>
+        <div style="position:relative;height:180px;">
+            <canvas id="salesChart"></canvas>
+        </div>
+    </div>
+
+    <div class="section-label">Quick Actions</div>
+    <div class="grid grid-cols-3 sm:grid-cols-6 gap-2 mb-5">
+        <button onclick="switchTab('products')" class="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-all">
+            <iconify-icon icon="mdi:package-variant" class="text-xl text-red-400"></iconify-icon>
+            <span class="text-[10px] font-semibold text-red-300">Produk</span>
+        </button>
+        <button onclick="switchTab('transactions')" class="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 transition-all">
+            <iconify-icon icon="mdi:receipt-text" class="text-xl text-emerald-400"></iconify-icon>
+            <span class="text-[10px] font-semibold text-emerald-300">Transaksi</span>
+        </button>
+        <button onclick="switchTab('users')" class="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-all">
+            <iconify-icon icon="mdi:account-group" class="text-xl text-red-400"></iconify-icon>
+            <span class="text-[10px] font-semibold text-red-300">Users</span>
+        </button>
+        <button onclick="switchTab('testimonials')" class="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-red-500/10 border border-red-500/20 hover:bg-red-500/20 transition-all">
+            <iconify-icon icon="mdi:comment-quote" class="text-xl text-red-400"></iconify-icon>
+            <span class="text-[10px] font-semibold text-red-300">Testimoni</span>
+        </button>
+        <button onclick="switchTab('leaderboard')" class="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20 hover:bg-yellow-500/20 transition-all">
+            <iconify-icon icon="mdi:trophy-award" class="text-xl text-yellow-400"></iconify-icon>
+            <span class="text-[10px] font-semibold text-yellow-300">Leaderboard</span>
+        </button>
+        <button onclick="switchTab('settings')" class="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 transition-all">
+            <iconify-icon icon="mdi:cog" class="text-xl text-amber-400"></iconify-icon>
+            <span class="text-[10px] font-semibold text-amber-300">Setting</span>
+        </button>
+        <button onclick="openAddProductModal()" class="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-pink-500/10 border border-pink-500/20 hover:bg-pink-500/20 transition-all">
+            <iconify-icon icon="mdi:plus-circle" class="text-xl text-pink-400"></iconify-icon>
+            <span class="text-[10px] font-semibold text-pink-300">+Produk</span>
+        </button>
+    </div>
+
+    <div class="section-label">Transaksi Terbaru</div>
+    <div class="neon-card overflow-hidden">
+        <div class="overflow-x-auto">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Kode</th>
+                        <th>Produk</th>
+                        <th>Harga</th>
+                        <th>Status</th>
+                        <th>Waktu</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% transactions.slice(0,8).forEach(t => { %>
+                    <tr>
+                        <td class="font-mono text-red-400 text-[11px]"><%= t.code %></td>
+                        <td class="text-white max-w-[120px] truncate text-xs"><%= t.productName %></td>
+                        <td class="text-emerald-400 font-bold whitespace-nowrap text-xs">Rp <%= (t.price/1000).toFixed(0) %>K</td>
+                        <td>
+                            <% if(t.status==='done'){ %><span class="badge badge-done">Done</span>
+                            <% }else{ %><span class="badge badge-pending">Pending</span><% } %>
+                        </td>
+                        <td class="text-zinc-500 text-[11px] whitespace-nowrap"><%= t.time %></td>
+                    </tr>
+                    <% }) %>
+                    <% if(!transactions.length){ %>
+                    <tr><td colspan="5" class="text-center py-6 text-zinc-600 text-xs">Belum ada transaksi</td></tr>
+                    <% } %>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- ── PRODUK ── -->
+<div id="pane-products" class="tab-pane">
+    <div class="flex items-center justify-between mb-4">
+        <div class="section-label mb-0" id="products-counter">Manajemen Produk (<%= products.length %>)</div>
+        <div class="flex gap-2">
+            <!-- FIX (24 Agu 2026): shortcut ke pengaturan kategori --
+                 sebelumnya kategori (dulu hardcode 3 tombol Android/iOS/PC,
+                 sekarang jadi sistem dinamis di Settings) sulit ditemukan
+                 karena letaknya jauh di tengah halaman Settings yang
+                 panjang. Tombol ini langsung lompat ke situ dari tempat
+                 yang paling logis dicari -- saat admin sedang mengurus
+                 produk dan butuh atur kategori. -->
+            <button onclick="switchTab('settings');setTimeout(()=>document.getElementById('categoryManagerSection')?.scrollIntoView({behavior:'smooth',block:'start'}),50)" class="text-xs font-bold py-2.5 px-3.5 rounded-lg flex items-center gap-1.5" style="background:rgba(255,255,255,.05);color:#a1a1aa;border:1px solid rgba(255,255,255,.1);cursor:pointer;">
+                <iconify-icon icon="mdi:tag-multiple"></iconify-icon> Kelola Kategori
+            </button>
+            <button onclick="openAddProductModal()" class="btn-primary text-xs">
+                <iconify-icon icon="mdi:plus"></iconify-icon> Tambah
+            </button>
+        </div>
+    </div>
+    <div class="space-y-2.5" id="products-list">
+        <% products.forEach(p => {
+            // Fallback untuk produk lama yang cuma punya 'items' tanpa 'pricingOptions'.
+            // Regex sekarang tangkap unit juga (HARI/JAM), bukan cuma angka durasi.
+            const pricing = p.pricingOptions || p.items?.map(i=>{
+                const m = (i.l||'').match(/(\d+)\s*(HARI|JAM|DAYS?)?/i);
+                const unit = m && /JAM/i.test(m[2]||'') ? 'h' : 'd';
+                return {days:parseInt(m?.[1]||0), unit, price:i.p};
+            }) || [];
+            const minPrice = pricing.length ? Math.min(...pricing.map(o=>o.price)) : 0;
+            const pricingJson = JSON.stringify(pricing).replace(/"/g,'&quot;');
+        %>
+        <div class="prod-card fade-in" data-product-id="<%= p.id %>">
+            <div class="w-12 h-12 rounded-xl overflow-hidden flex-shrink-0 border border-white/10 bg-red-500/10" id="prod-img-<%= p.id %>">
+                <% if(p.image){ %>
+                    <img src="<%= p.image %>" alt="<%= p.name %>" class="w-full h-full object-cover" loading="lazy"
+                         onerror="this.style.display='none';this.parentNode.innerHTML='<div style=display:flex;align-items:center;justify-content:center;width:100%;height:100%><iconify-icon icon=\'mdi:gamepad-variant\' style=font-size:20px;color:var(--accent-color)></iconify-icon></div>'">
+                <% }else{ %>
+                    <div class="w-full h-full flex items-center justify-center">
+                        <iconify-icon icon="mdi:gamepad-variant" class="text-xl text-red-400"></iconify-icon>
+                    </div>
+                <% } %>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 mb-0.5 flex-wrap">
+                    <span class="text-sm font-semibold text-white truncate"><%= p.name %></span>
+                    <span class="badge <%= p.status==='active'?'badge-done':'badge-inactive' %>"><%= p.status==='active'?'Aktif':'Off' %></span>
+                </div>
+                <div class="flex items-center gap-2 text-[10px] text-zinc-500 flex-wrap">
+                    <span class="px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 font-bold uppercase"><%= p.category %></span>
+                    <span class="prod-key-count <%= (p.keys?.length||0)>0?'text-emerald-400':'text-red-400' %>">
+                        <iconify-icon icon="mdi:key" class="align-middle"></iconify-icon> <%= p.keys?.length||0 %> key
+                    </span>
+                    <span><%= p.sold||0 %> terjual</span>
+                    <span class="text-zinc-500 flex items-center gap-1 flex-wrap">
+                        <% pricing.forEach(po => { %>
+                        <% const poUnit = po.unit || 'd'; %>
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold <%= (p.keys||[]).filter(k => k.endsWith('='+po.days+poUnit)).length > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-zinc-600 bg-zinc-800/50' %>">
+                            <%= po.days %><%= poUnit %>: <%= (p.keys||[]).filter(k => k.endsWith('='+po.days+poUnit)).length %>
+                        </span>
+                        <% }) %>
+                        <% const genericCnt = (p.keys||[]).filter(k => !k.includes('=')).length; if (genericCnt > 0) { %>
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold text-yellow-400 bg-yellow-500/10">G: <%= genericCnt %></span>
+                        <% } %>
+                    </span>
+                </div>
+                <% if(minPrice>0){ %>
+                    <div class="text-[10px] text-red-400 font-bold mt-0.5">Mulai Rp <%= minPrice.toLocaleString('id-ID') %></div>
+                <% } %>
+            </div>
+            <div class="flex flex-col gap-1.5 flex-shrink-0">
+                <a href="/admin/product-edit?id=<%= p.id %>" class="btn-warning py-1 px-2 text-[10px] text-center">
+                    <iconify-icon icon="mdi:pencil"></iconify-icon> Edit
+                </a>
+                <button
+                    data-pid="<%= p.id %>"
+                    data-name="<%= (p.name||'').replace(/\"/g,'&quot;') %>"
+                    data-count="<%= p.keys?.length||0 %>"
+                    onclick="openAddKeysModal(this.dataset.pid, this.dataset.name, parseInt(this.dataset.count))"
+                    class="btn-success py-1 px-2 text-[10px]">
+                    <iconify-icon icon="mdi:key-plus"></iconify-icon> Key
+                </button>
+                <button onclick="deleteProduct('<%= p.id %>')" class="btn-danger py-1 px-2 text-[10px]">
+                    <iconify-icon icon="mdi:trash-can"></iconify-icon>
+                </button>
+            </div>
+        </div>
+        <% }) %>
+        <% if(!products.length){ %>
+        <div class="text-center py-10 text-zinc-600 text-xs">Belum ada produk. <button onclick="openAddProductModal()" class="text-red-400 underline">Tambah sekarang</button></div>
+        <% } %>
+    </div>
+</div>
+
+<!-- ── TRANSAKSI ── -->
+<div id="pane-transactions" class="tab-pane">
+    <div class="flex items-center justify-between mb-3">
+        <div class="section-label mb-0">Semua Transaksi (<%= transactions.length %>)</div>
+        <div class="flex gap-2">
+            <button onclick="filterTrx('all')" id="trxf-all" class="trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-red-500/20 border border-zinc-500/40 text-red-300">Semua</button>
+            <button onclick="filterTrx('pending')" id="trxf-pending" class="trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white/3 border border-white/10 text-zinc-500">Pending</button>
+            <button onclick="filterTrx('done')" id="trxf-done" class="trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white/3 border border-white/10 text-zinc-500">Done</button>
+        </div>
+    </div>
+    <div class="space-y-2" id="trx-list">
+        <% transactions.forEach(t => { %>
+        <div class="neon-card p-3.5 fade-in trx-item" data-trx-id="<%= t.id %>" data-status="<%= t.status %>">
+            <div class="flex items-start justify-between gap-2 mb-2">
+                <div>
+                    <div class="flex items-center gap-2">
+                        <div class="text-[11px] font-mono font-bold text-red-400"><%= t.code %></div>
+                        <% if(t.type==='reseller'){ %><span class="badge" style="background:rgba(234,179,8,.15);color:#fbbf24;border:1px solid rgba(234,179,8,.3)"><iconify-icon icon="mdi:crown" class="text-[9px]"></iconify-icon> Reseller</span><% } %>
+                    </div>
+                    <div class="text-sm font-semibold text-white mt-0.5"><%= t.productName %></div>
+                </div>
+                <% if(t.status==='done'){ %><span class="badge badge-done">Done</span>
+                <% }else{ %><span class="badge badge-pending" id="trx-status-badge-<%= t.id %>">Pending</span><% } %>
+                <% if(t.outOfStock && !t.key){ %><span class="badge" style="background:rgba(245,158,11,.15);color:#fbbf24;border:1px solid rgba(245,158,11,.3);"><iconify-icon icon="mdi:alert" style="vertical-align:-2px;"></iconify-icon> Stok Habis</span><% } %>
+            </div>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-1 mb-3">
+                <div class="text-[10px] text-zinc-500">Customer: <span class="text-zinc-300"><%= t.customerName %></span></div>
+                <div class="text-[10px] text-zinc-500">WA: <span class="text-zinc-300"><%= t.wa %></span></div>
+                <div class="text-[10px] text-zinc-500">Harga: <span class="text-emerald-400 font-bold">Rp <%= t.price.toLocaleString('id-ID') %></span></div>
+                <div class="text-[10px] text-zinc-500">Waktu: <span class="text-zinc-300"><%= t.time %></span></div>
+                <% if(t.key){ %>
+                <div class="text-[10px] text-zinc-500 col-span-2">Key: <span class="text-emerald-400 font-mono font-bold"><%= t.key %></span></div>
+                <% } %>
+                <% if(t.selectedDays){ %>
+                <div class="text-[10px] text-zinc-500 col-span-2">Durasi: <span class="text-sky-400 font-bold"><%= t.selectedDays %> <%= t.selectedUnit === 'h' ? 'Jam' : 'Hari' %></span></div>
+                <% } %>
+            </div>
+            <div class="flex gap-2">
+                <% if(t.status !== 'done'){ %>
+                <button onclick="confirmTransaction('<%= t.id %>')" class="btn-success py-1 px-3 text-[10px]" id="trx-confirm-<%= t.id %>">
+                    <iconify-icon icon="mdi:check-circle"></iconify-icon> Konfirmasi Bayar
+                </button>
+                <% } %>
+                <button onclick="deleteTransaction('<%= t.id %>')" class="btn-danger py-1 px-3 text-[10px]">
+                    <iconify-icon icon="mdi:trash-can"></iconify-icon>
+                </button>
+            </div>
+        </div>
+        <% }) %>
+        <% if(!transactions.length){ %>
+        <div class="text-center py-10 text-zinc-600 text-xs">Belum ada transaksi</div>
+        <% } %>
+    </div>
+</div>
+
+<!-- ── USERS ── -->
+<div id="pane-users" class="tab-pane">
+    <div class="flex items-center justify-between mb-3">
+        <div class="section-label mb-0">Manajemen Users (<%= users.length %>)</div>
+        <div class="text-[10px] text-zinc-600"><%= users.filter(u=>u.is_reseller).length %> reseller aktif</div>
+    </div>
+    <!-- Filter Reseller/User Biasa (diminta client 22 Agu 2026: "susah
+         cari reseller buat di-add saldo kalau user-nya banyak") -->
+    <div class="flex gap-2 mb-3">
+        <button onclick="filterUserType('all')" id="userTypeBtnAll" class="user-type-btn active flex-1 py-2 rounded-lg text-[11px] font-bold border transition-all">
+            Semua (<%= users.length %>)
+        </button>
+        <button onclick="filterUserType('reseller')" id="userTypeBtnReseller" class="user-type-btn flex-1 py-2 rounded-lg text-[11px] font-bold border transition-all">
+            <iconify-icon icon="mdi:crown" class="text-[10px]"></iconify-icon> Reseller (<%= users.filter(u=>u.is_reseller).length %>)
+        </button>
+        <button onclick="filterUserType('regular')" id="userTypeBtnRegular" class="user-type-btn flex-1 py-2 rounded-lg text-[11px] font-bold border transition-all">
+            User Biasa (<%= users.filter(u=>!u.is_reseller).length %>)
+        </button>
+    </div>
+    <!-- Search user -->
+    <div class="relative mb-3">
+        <iconify-icon icon="mdi:magnify" class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none"></iconify-icon>
+        <input type="text" id="userSearchInput" oninput="filterUsers(this.value)"
+            placeholder="Cari username, nomor HP, atau Gmail..."
+            class="hm-input pl-8 w-full text-xs">
+    </div>
+    <div class="space-y-2" id="usersListContainer">
+        <% users.forEach((u, idx) => { %>
+        <div class="neon-card p-3.5 flex items-center gap-3 fade-in user-card"
+             data-user-id="<%= u.id %>"
+             data-idx="<%= idx %>"
+             data-is-reseller="<%= u.is_reseller ? '1' : '0' %>"
+             data-search="<%= (u.username||'').toLowerCase() %> <%= (u.wa||'').toLowerCase() %> <%= (u.email||'').toLowerCase() %>">
+            <div class="relative flex-shrink-0">
+                <% if(u.photo){ %>
+                    <img src="<%= u.photo %>" class="w-10 h-10 rounded-full object-cover border border-white/10">
+                <% } else { %>
+                    <div class="w-10 h-10 rounded-full flex items-center justify-center text-white font-black text-sm"
+                         style="background:#a1a1aa">
+                        <%= u.username.charAt(0).toUpperCase() %>
+                    </div>
+                <% } %>
+                <% if(u.is_reseller){ %>
+                    <div class="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center" style="background:#fbbf24">
+                        <iconify-icon icon="mdi:crown" class="text-[8px] text-black"></iconify-icon>
+                    </div>
+                <% } %>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                    <div class="text-sm font-semibold text-white truncate"><%= u.username %></div>
+                    <% if(u.is_reseller){ %>
+                        <span class="badge" style="background:rgba(234,179,8,.15);color:#fbbf24;border:1px solid rgba(234,179,8,.3);font-size:9px">VIP</span>
+                    <% } %>
+                </div>
+                <div class="text-[10px] text-zinc-500">WA: <%= u.wa %></div>
+                <% if(u.email){ %><div class="text-[10px] text-zinc-500">Email: <%= u.email %></div><% } %>
+                <% if(u.is_reseller && u.reseller_code){ %>
+                    <div class="text-[10px] font-mono text-yellow-500"><%= u.reseller_code %></div>
+                <% } else { %>
+                    <div class="text-[10px] text-zinc-600">Bergabung: <%= new Date(u.createdAt).toLocaleDateString('id-ID') %></div>
+                <% } %>
+                <% if(u.is_reseller){ %>
+                    <div class="text-[10px] font-bold text-emerald-400 mt-0.5">Saldo: Rp <%= (u.balance||0).toLocaleString('id-ID') %></div>
+                <% } %>
+            </div>
+            <div class="flex flex-col gap-1.5 flex-shrink-0">
+                <button onclick="toggleReseller('<%= u.id %>','<%= u.username %>')"
+                    class="py-1 px-2 text-[10px] rounded-lg border transition-all font-semibold <%= u.is_reseller ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/25' : 'bg-white/5 border-white/15 text-zinc-400 hover:bg-red-500/15 hover:text-red-400 hover:border-red-500/30' %>"
+                    id="reseller-btn-<%= u.id %>">
+                    <iconify-icon icon="<%= u.is_reseller ? 'mdi:crown-off' : 'mdi:crown' %>"></iconify-icon>
+                    <%= u.is_reseller ? 'Cabut' : 'Jadikan' %>
+                </button>
+                <% if(u.is_reseller){ %>
+                <button onclick="adjustBalance('<%= u.id %>','<%= u.username %>')"
+                    class="py-1 px-2 text-[10px] rounded-lg border transition-all font-semibold bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20">
+                    <iconify-icon icon="mdi:wallet-plus"></iconify-icon> Saldo
+                </button>
+                <% } %>
+                <button onclick="deleteUser('<%= u.id %>','<%= u.username %>')" class="btn-danger py-1 px-2 text-[10px]">
+                    <iconify-icon icon="mdi:trash-can"></iconify-icon>
+                </button>
+            </div>
+        </div>
+        <% }) %>
+        <% if(!users.length){ %>
+        <div class="text-center py-10 text-zinc-600 text-xs">Belum ada user</div>
+        <% } %>
+    </div>
+    <div id="userSearchEmpty" class="hidden text-center py-6 text-zinc-600 text-xs">Tidak ada user yang cocok</div>
+    <!-- Pagination (diminta client 22 Agu 2026: "belakang user dan reseller
+         susah kalo banyak") -- semua card tetap di-render server-side (biar
+         search tetap scan semua data tanpa perlu endpoint tambahan), tapi
+         yang ditampilkan cuma satu halaman (20 user) sekaligus supaya DOM
+         tidak berat kalau datanya ribuan. -->
+    <div id="userPagination" class="flex items-center justify-center gap-2 mt-4 hidden">
+        <button onclick="changeUserPage(-1)" id="userPrevBtn" class="px-3 py-2 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-zinc-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed">
+            <iconify-icon icon="mdi:chevron-left"></iconify-icon>
+        </button>
+        <span id="userPageInfo" class="text-xs text-zinc-500 font-bold px-2"></span>
+        <button onclick="changeUserPage(1)" id="userNextBtn" class="px-3 py-2 rounded-lg text-xs font-bold bg-white/5 border border-white/10 text-zinc-400 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed">
+            <iconify-icon icon="mdi:chevron-right"></iconify-icon>
+        </button>
+    </div>
+</div>
+</div>
+
+<!-- ── TESTIMONI ── -->
+<div id="pane-testimonials" class="tab-pane">
+    <div class="flex items-center justify-between mb-4">
+        <div class="section-label mb-0">Testimoni</div>
+        <button onclick="openModal('modal-testi')" class="btn-primary text-xs">
+            <iconify-icon icon="mdi:plus"></iconify-icon> Tambah
+        </button>
+    </div>
+    <div id="testi-list" class="space-y-2">
+        <div class="text-center py-8 text-zinc-600">
+            <iconify-icon icon="mdi:loading" class="text-2xl animate-spin block mx-auto mb-2 text-red-400"></iconify-icon>
+            <p class="text-xs">Memuat...</p>
+        </div>
+    </div>
+</div>
+
+<!-- ── LEADERBOARD PALSU ── -->
+<div id="pane-leaderboard" class="tab-pane">
+    <div class="flex items-center justify-between mb-4">
+        <div class="section-label mb-0">Leaderboard Palsu</div>
+        <button onclick="openModal('modal-lb')" class="btn-primary text-xs">
+            <iconify-icon icon="mdi:plus"></iconify-icon> Tambah
+        </button>
+    </div>
+    <p class="text-[11px] text-zinc-500 mb-3">Entri di sini akan digabung dengan leaderboard asli (transaksi real user) di halaman Top Pembeli &amp; homepage, dan namanya juga ikut muncul di notifikasi pembelian berjalan.</p>
+    <div id="lb-list" class="space-y-2">
+        <div class="text-center py-8 text-zinc-600">
+            <iconify-icon icon="mdi:loading" class="text-2xl animate-spin block mx-auto mb-2 text-red-400"></iconify-icon>
+            <p class="text-xs">Memuat...</p>
+        </div>
+    </div>
+</div>
+
+<!-- ── KEY POOL ── -->
+<div id="pane-keys" class="tab-pane">
+    <div class="flex items-center justify-between mb-4">
+        <div class="section-label mb-0">Manajemen Key Lisensi</div>
+        <span class="text-[10px] text-zinc-600" id="keyStatsLabel">—</span>
+    </div>
+
+    <!-- Form tambah / generate key -->
+    <div class="neon-card p-4 mb-4">
+        <div class="text-xs font-bold text-red-400 mb-3 flex items-center gap-2">
+            <iconify-icon icon="mdi:key-plus" class="text-base"></iconify-icon> Tambah Key Manual
+        </div>
+        <div class="grid grid-cols-2 gap-2 mb-2">
+            <div>
+                <div class="setting-row-label">Kode Key</div>
+                <input type="text" id="newKeyCode" class="hm-input font-mono uppercase" placeholder="HERO-001" maxlength="20" oninput="this.value=this.value.toUpperCase()">
+            </div>
+            <div>
+                <div class="setting-row-label">Durasi (Hari)</div>
+                <input type="number" id="newKeyDuration" class="hm-input" placeholder="30" min="1" max="9999">
+            </div>
+        </div>
+        <div class="mb-2">
+            <div class="setting-row-label">Label (opsional)</div>
+            <input type="text" id="newKeyLabel" class="hm-input" placeholder="30 Hari Akses Premium">
+        </div>
+        <div class="mb-3">
+            <div class="setting-row-label">Catatan (opsional)</div>
+            <input type="text" id="newKeyNote" class="hm-input" placeholder="Untuk pelanggan paket...">
+        </div>
+        <button onclick="addKey()" class="btn-primary w-full">
+            <iconify-icon icon="mdi:plus-circle"></iconify-icon> Tambah Key
+        </button>
+    </div>
+
+    <!-- Generate otomatis -->
+    <div class="neon-card p-4 mb-4">
+        <div class="text-xs font-bold text-red-400 mb-3 flex items-center gap-2">
+            <iconify-icon icon="mdi:auto-fix" class="text-base"></iconify-icon> Generate Key Otomatis
+        </div>
+        <div class="grid grid-cols-3 gap-2 mb-2">
+            <div>
+                <div class="setting-row-label">Jumlah</div>
+                <input type="number" id="genCount" class="hm-input" placeholder="5" min="1" max="100" value="5">
+            </div>
+            <div>
+                <div class="setting-row-label">Durasi (Hari)</div>
+                <input type="number" id="genDuration" class="hm-input" placeholder="30" min="1" value="30">
+            </div>
+            <div>
+                <div class="setting-row-label">Prefix</div>
+                <input type="text" id="genPrefix" class="hm-input uppercase" placeholder="KEY" maxlength="8" value="KEY" oninput="this.value=this.value.toUpperCase()">
+            </div>
+        </div>
+        <button onclick="generateKeys()" class="btn-primary w-full" style="background:var(--neon-purple)">
+            <iconify-icon icon="mdi:lightning-bolt"></iconify-icon> Generate Keys
+        </button>
+        <div id="genResult" class="mt-2 hidden"></div>
+    </div>
+
+    <!-- Daftar key -->
+    <div class="section-label">Daftar Key (<span id="keyTotal">0</span>)</div>
+    <div class="space-y-2" id="keysList">
+        <div class="text-center py-6 text-zinc-600 text-xs">
+            <iconify-icon icon="mdi:loading" class="text-xl text-red-400 animate-spin block mx-auto mb-2"></iconify-icon>
+            Memuat...
+        </div>
+    </div>
+</div>
+
+<!-- ── VOUCHERS ── -->
+<div id="pane-vouchers" class="tab-pane">
+    <div class="flex items-center justify-between mb-4">
+        <div class="section-label mb-0">Manajemen Voucher Diskon</div>
+        <span class="text-[10px] text-zinc-600" id="voucherStatsLabel">—</span>
+    </div>
+
+    <!-- Form tambah voucher -->
+    <div class="neon-card p-4 mb-4">
+        <div class="text-xs font-bold text-green-400 mb-3 flex items-center gap-2">
+            <iconify-icon icon="mdi:ticket-percent" class="text-base"></iconify-icon> Tambah Voucher
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
+            <div>
+                <div class="setting-row-label">Kode Voucher</div>
+                <input type="text" id="newVoucherCode" class="hm-input font-mono uppercase" placeholder="DISC30" maxlength="20" oninput="this.value=this.value.toUpperCase()">
+            </div>
+            <div>
+                <div class="setting-row-label">Tipe</div>
+                <select id="newVoucherType" class="hm-input">
+                    <option value="percent">Persen (%)</option>
+                    <option value="nominal">Nominal (Rp)</option>
+                </select>
+            </div>
+            <div>
+                <div class="setting-row-label">Nilai</div>
+                <input type="number" id="newVoucherValue" class="hm-input" placeholder="10 / 5000" min="1">
+            </div>
+            <div>
+                <div class="setting-row-label">Min. Belanja</div>
+                <input type="number" id="newVoucherMin" class="hm-input" placeholder="0 (tanpa min)" min="0" value="0">
+            </div>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-2">
+            <div>
+                <div class="setting-row-label">Maks. Pemakaian</div>
+                <input type="number" id="newVoucherMax" class="hm-input" placeholder="0 = tak terbatas" min="0" value="0">
+            </div>
+            <div>
+                <div class="setting-row-label">Per User</div>
+                <input type="number" id="newVoucherPerUser" class="hm-input" placeholder="1" min="1" value="1">
+            </div>
+            <div>
+                <div class="setting-row-label">Kadaluarsa</div>
+                <input type="date" id="newVoucherExpiry" class="hm-input">
+            </div>
+        </div>
+        <div class="mb-3">
+            <div class="setting-row-label">Deskripsi (opsional)</div>
+            <input type="text" id="newVoucherDesc" class="hm-input" placeholder="Diskon 30% untuk semua produk">
+        </div>
+        <div class="mb-3 flex items-center gap-3 p-3 rounded-xl" style="background:rgba(234,179,8,.06);border:1px solid rgba(234,179,8,.18);">
+            <input type="checkbox" id="newVoucherExcludeReseller" class="w-4 h-4 rounded accent-yellow-400">
+            <div>
+                <div class="text-[11px] font-semibold text-yellow-300">Tidak berlaku untuk Reseller</div>
+                <div class="text-[10px] text-zinc-500">Cegah double-discount: reseller tidak bisa pakai voucher ini karena sudah dapat harga reseller</div>
+            </div>
+        </div>
+        <button onclick="addVoucher()" class="btn-primary w-full" style="background:#059669">
+            <iconify-icon icon="mdi:plus-circle"></iconify-icon> Buat Voucher
+        </button>
+    </div>
+
+    <!-- Daftar voucher -->
+    <div class="space-y-2" id="vouchersList">
+        <div class="text-center py-6 text-zinc-600 text-xs">
+            <iconify-icon icon="mdi:loading" class="text-xl text-red-400 animate-spin block mx-auto mb-2"></iconify-icon>
+            Memuat...
+        </div>
+    </div>
+</div>
+
+<!-- ── SETTINGS ── -->
+<div id="pane-settings" class="tab-pane">
+    <div class="section-label mb-3">Pengaturan Situs</div>
+
+    <!-- Status Database Supabase -->
+    <div id="dbStatusCard" class="neon-card p-4 mb-3">
+        <div class="text-xs font-bold text-emerald-400 mb-3 flex items-center gap-2">
+            <iconify-icon icon="mdi:database"></iconify-icon> Status Database (Supabase)
+        </div>
+        <div id="dbStatusContent" class="text-xs text-zinc-400">Memeriksa koneksi...</div>
+    </div>
+
+    <!-- Info Situs -->
+    <div class="neon-card p-5 mb-3">
+        <div class="text-xs font-bold text-red-400 mb-4 flex items-center gap-2">
+            <iconify-icon icon="mdi:information-outline"></iconify-icon> Informasi Situs
+        </div>
+        <form id="settingsForm" class="space-y-3">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <div class="setting-row-label">Nama Situs</div>
+                    <input type="text" name="siteName" value="<%= settings.siteName %>" class="hm-input">
+                </div>
+                <div>
+                    <div class="setting-row-label">Nama Game Panel</div>
+                    <input type="text" name="gamePanelName" value="<%= settings.gamePanelName %>" class="hm-input">
+                </div>
+            </div>
+            <div>
+                <div class="setting-row-label">Deskripsi / About</div>
+                <textarea name="about" rows="3" class="hm-input"><%= settings.about %></textarea>
+            </div>
+            <div>
+                <div class="setting-row-label">Domain Situs (untuk SEO) <span class="text-zinc-600 font-normal">(opsional, kosongkan = deteksi otomatis)</span></div>
+                <input type="text" name="siteUrl" value="<%= settings.siteUrl||'' %>" class="hm-input" placeholder="https://agha.nlstoreshop.my.id">
+                <div class="text-[10px] mt-1" style="color:var(--text-3);">Dipakai untuk canonical URL, Open Graph, dan sitemap.xml. Isi kalau sudah pakai domain custom.</div>
+            </div>
+            <div>
+                <div class="setting-row-label">Kata Kunci SEO <span class="text-zinc-600 font-normal">(pisahkan dengan koma)</span></div>
+                <input type="text" name="seoKeywords" value="<%= settings.seoKeywords||'' %>" class="hm-input" placeholder="topup mod ff, key mod ff, cheat free fire">
+                <div class="text-[10px] mt-1" style="color:var(--text-3);">Kata kunci yang ingin ditarget di Google (mis. "topup mod ff", "key mod ff").</div>
+            </div>
+            <div>
+                <div class="setting-row-label">Marquee Text (teks berjalan)</div>
+                <input type="text" name="marqueeText" value="<%= settings.marqueeText %>" class="hm-input">
+            </div>
+            <div>
+                <div class="setting-row-label">URL Logo (gambar navbar)</div>
+                <input type="text" name="logoUrl" value="<%= settings.logoUrl||'' %>" class="hm-input" placeholder="https://... atau /uploads/logo.png">
+                <% if (settings.logoUrl) { %>
+                <div class="mt-1.5 flex items-center gap-2">
+                    <img src="<%= settings.logoUrl %>" alt="Logo preview" style="height:32px;max-width:120px;object-fit:contain;border-radius:4px;background:#f4f4f5;padding:2px 6px;">
+                    <span class="text-[10px]" style="color:var(--text-3);">Preview logo</span>
+                </div>
+                <% } %>
+            </div>
+            <div>
+                <div class="setting-row-label">URL Logo Text / Wordmark (gambar tulisan nama toko)</div>
+                <input type="text" name="logoTextUrl" value="<%= settings.logoTextUrl||'' %>" class="hm-input" placeholder="https://... atau /uploads/logo-text.png">
+                <div class="text-[10px] mt-1" style="color:var(--text-3);">Kalau diisi, navbar pakai GAMBAR ini sebagai tulisan nama toko (bukan teks font biasa). Kosongkan untuk kembali ke teks otomatis dari Nama Toko.</div>
+                <% if (settings.logoTextUrl) { %>
+                <div class="mt-1.5 flex items-center gap-2">
+                    <img src="<%= settings.logoTextUrl %>" alt="Logo text preview" style="height:32px;max-width:200px;object-fit:contain;border-radius:4px;background:#f4f4f5;padding:2px 6px;">
+                    <span class="text-[10px]" style="color:var(--text-3);">Preview logo text</span>
+                </div>
+                <% } %>
+            </div>
+            <!-- FIX (diminta client 22 Agu 2026): kelola logo metode pembayaran
+                 (DANA, GoPay, dll) -- kotak rectangle rounded berisi logo asli,
+                 bukan cuma teks badge. Admin isi URL logo resmi masing-masing
+                 (didapat dari kanal resmi e-wallet/bank, BUKAN logo yang
+                 di-hardcode di kode karena itu aset berhak cipta pihak
+                 ketiga). Disimpan sebagai JSON array di textarea sederhana. -->
+            <div class="pt-2 border-t border-white/5">
+                <div class="text-xs font-bold text-red-400 mb-3 flex items-center gap-2">
+                    <iconify-icon icon="mdi:credit-card-outline"></iconify-icon> Metode Pembayaran (Logo Footer)
+                </div>
+                <div id="paymentMethodsRows" class="space-y-2 mb-2"></div>
+                <button type="button" onclick="addPaymentMethodRow()" class="text-[11px] text-red-400 hover:text-red-300 flex items-center gap-1">
+                    <iconify-icon icon="mdi:plus"></iconify-icon> Tambah Metode Pembayaran
+                </button>
+                <input type="hidden" name="paymentMethods" id="paymentMethodsInput">
+                <div class="text-[10px] mt-1.5" style="color:var(--text-3);">Kosongkan semua untuk tampilkan badge teks default (QRIS/Transfer Bank/E-Wallet).</div>
+            </div>
+            <div class="pt-2 border-t border-white/5">
+                <div class="text-xs font-bold text-red-400 mb-3 flex items-center gap-2">
+                    <iconify-icon icon="mdi:phone"></iconify-icon> Kontak
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                        <div class="setting-row-label">WhatsApp</div>
+                        <input type="text" name="whatsapp" value="<%= settings.contact?.whatsapp||'' %>" class="hm-input" placeholder="628xxxxxxxxx">
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Telegram</div>
+                        <input type="text" name="telegram" value="<%= settings.contact?.telegram||'' %>" class="hm-input" placeholder="username">
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Email</div>
+                        <input type="email" name="email" value="<%= settings.contact?.email||'' %>" class="hm-input">
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <div class="setting-row-label">Link Download APK / Channel</div>
+                    <input type="url" name="downloadUrl" value="<%= settings.contact?.downloadUrl||'' %>" class="hm-input" placeholder="https://whatsapp.com/channel/... atau link Google Drive APK">
+                    <div class="text-[10px] mt-1" style="color:var(--text-3);">Ditampilkan sebagai tombol "Download APK" di halaman produk. Kosongkan untuk menyembunyikan tombol.</div>
+                </div>
+                <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                        <div class="setting-row-label">Link Saluran WA (Channel)</div>
+                        <input type="url" name="waChannel" value="<%= settings.contact?.waChannel||'' %>" class="hm-input" placeholder="https://whatsapp.com/channel/...">
+                        <div class="text-[10px] mt-1" style="color:var(--text-3);">Icon "Saluran WA" di homepage. Kosongkan untuk menyembunyikan icon.</div>
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Link Grup WA</div>
+                        <input type="url" name="waGroup" value="<%= settings.contact?.waGroup||'' %>" class="hm-input" placeholder="https://chat.whatsapp.com/...">
+                        <div class="text-[10px] mt-1" style="color:var(--text-3);">Icon "GB WA Group" di homepage. Kosongkan untuk menyembunyikan icon.</div>
+                    </div>
+                </div>
+                <div class="mt-3 pt-3 border-t border-white/5">
+                    <div class="text-xs font-bold text-emerald-400 mb-3 flex items-center gap-2">
+                        <iconify-icon icon="mdi:whatsapp"></iconify-icon> Grup Buyer VIP
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <div class="setting-row-label">Nama Grup</div>
+                            <input type="text" name="buyerGroupName" value="<%= settings.buyerGroupName||'' %>" class="hm-input" placeholder="BUYER VIP BY AGHA NL">
+                        </div>
+                        <div>
+                            <div class="setting-row-label">Link Grup WhatsApp</div>
+                            <input type="url" name="buyerGroupUrl" value="<%= settings.buyerGroupUrl||'' %>" class="hm-input" placeholder="https://chat.whatsapp.com/...">
+                        </div>
+                    </div>
+                    <div class="text-[10px] mt-1" style="color:var(--text-3);">Tombol "Gabung Grup" muncul otomatis di halaman invoice setelah buyer berhasil dapat key (semua produk). Kosongkan untuk menyembunyikan tombol.</div>
+                </div>
+                <div class="mt-3 pt-3 border-t border-white/5">
+                    <div class="text-xs font-bold text-yellow-400 mb-3 flex items-center gap-2">
+                        <iconify-icon icon="mdi:crown"></iconify-icon> Grup Reseller VIP
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <div class="setting-row-label">Nama Grup</div>
+                            <input type="text" name="resellerGroupName" value="<%= settings.resellerGroupName||'' %>" class="hm-input" placeholder="RESELLER VIP BY AGHA NL">
+                        </div>
+                        <div>
+                            <div class="setting-row-label">Link Grup WhatsApp</div>
+                            <input type="url" name="resellerGroupUrl" value="<%= settings.resellerGroupUrl||'' %>" class="hm-input" placeholder="https://chat.whatsapp.com/...">
+                        </div>
+                    </div>
+                    <div class="text-[10px] mt-1" style="color:var(--text-3);">Tombol "Gabung Grup Reseller" muncul otomatis di halaman /reseller begitu status reseller user diaktifkan admin. Kosongkan untuk menyembunyikan tombol.</div>
+                </div>
+                <div class="mt-3">
+                    <div class="setting-row-label">Fonnte API Token (notif WA otomatis ke admin saat stok habis)</div>
+                    <input type="text" name="fonnteToken" value="<%= settings.fonnteToken||'' %>" class="hm-input" placeholder="Isi token dari fonnte.com (opsional)">
+                    <div class="text-[10px] mt-1" style="color:var(--text-3);">Kosongkan jika tidak digunakan. Daftar gratis di <a href="https://fonnte.com" target="_blank" class="text-red-400 underline">fonnte.com</a>, hubungkan WA, lalu copy token-nya ke sini.</div>
+                </div>
+            </div>
+            <button type="submit" class="btn-primary w-full justify-center py-3 text-sm">
+                <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Pengaturan
+            </button>
+        </form>
+    </div>
+
+    <!-- Kategori -->
+    <div class="neon-card p-5 mb-3" id="categoryManagerSection">
+        <div class="text-xs font-bold text-red-400 mb-4 flex items-center gap-2">
+            <iconify-icon icon="mdi:tag-multiple"></iconify-icon> Kategori Produk
+        </div>
+        <!-- FIX (24 Agu 2026, diminta client): section ini yang dulu berupa
+             3 tombol tetap "Platform" (Android/iOS/PC) sebelum digabung
+             jadi sistem kategori dinamis (22 Agu 2026). Client tidak
+             menemukan section ini karena posisinya jauh di tengah halaman
+             Settings dan tidak ada penanda jelas kalau ini tempat atur
+             Android/iOS/PC. Ditambahkan: (1) penjelasan eksplisit di sini,
+             (2) tombol "Tambah Cepat" yang langsung mengisi 3 kategori
+             platform standar sekali klik, tanpa perlu paham syntax
+             id:Label manual. Textarea di bawah tetap ada untuk kategori
+             custom lain (nama game, dst). -->
+        <p class="text-[11px] text-zinc-500 mb-3 leading-relaxed">
+            Kategori di sini dipakai untuk DUA hal: platform (Android/iOS/PC) dan nama game
+            (Free Fire, Mobile Legends, dst) -- keduanya sekarang jadi satu sistem yang sama,
+            supaya 1 produk bisa dicentang lebih dari satu kategori (misal "Android" + "Free Fire").
+        </p>
+        <button type="button" onclick="quickAddPlatformCategories()" class="w-full mb-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5" style="background:rgba(34,197,94,.1);color:#4ade80;border:1px solid rgba(34,197,94,.25);cursor:pointer;">
+            <iconify-icon icon="mdi:cellphone-link"></iconify-icon> Tambah Cepat: Android, iOS, PC
+        </button>
+        <form id="categoryForm" class="space-y-3">
+            <div>
+                <div class="setting-row-label">Daftar kategori (satu per baris, format: id:Label)</div>
+                <textarea name="categories" id="categoryTextarea" rows="6" class="hm-input font-mono text-xs"><% (settings.categories||[]).forEach(cat => { %><%= cat %>:<%= (settings.categoryLabels||{})[cat]||cat %>
+<% }) %></textarea>
+                <p class="text-[10px] text-zinc-600 mt-1">Contoh: freefire:FREE FIRE</p>
+            </div>
+            <button type="submit" class="btn-primary w-full justify-center py-2.5 text-sm">
+                <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Kategori
+            </button>
+        </form>
+    </div>
+
+    <!-- BANNER CAROUSEL -->
+    <div class="neon-card p-5 mb-3">
+        <div class="text-xs font-bold text-red-400 mb-4 flex items-center gap-2">
+            <iconify-icon icon="mdi:image-multiple"></iconify-icon> Banner Carousel
+        </div>
+
+        <!-- Form tambah banner -->
+        <form id="bannerAddForm" enctype="multipart/form-data" class="space-y-3 mb-5" onsubmit="addBanner(event)">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <div class="setting-row-label">Judul Banner (opsional)</div>
+                    <input type="text" name="title" class="hm-input" placeholder="Contoh: PROMO SPESIAL">
+                </div>
+                <div>
+                    <div class="setting-row-label">Subjudul (opsional)</div>
+                    <input type="text" name="subtitle" class="hm-input" placeholder="Contoh: Diskon 20% hari ini">
+                </div>
+            </div>
+            <div>
+                <div class="setting-row-label">Link klik banner (opsional)</div>
+                <input type="text" name="link" class="hm-input" placeholder="Contoh: /buy/xxx atau https://...">
+            </div>
+            <div>
+                <div class="setting-row-label">Gambar Banner</div>
+                <input type="file" name="bannerImg" accept="image/jpeg,image/png,image/webp" class="hm-input text-xs py-2" onchange="previewBannerFile(event)">
+                <div id="bannerFilePreview" class="mt-2 hidden">
+                    <img id="bannerFileImg" src="" class="w-full h-28 object-cover rounded-xl border border-zinc-500/25">
+                </div>
+            </div>
+            <div>
+                <div class="setting-row-label">Atau URL gambar</div>
+                <input type="text" name="imageUrl" class="hm-input" placeholder="https://..." oninput="previewBannerUrl(this.value)" id="bannerUrlInput">
+            </div>
+            <div id="bannerUrlPreview" class="hidden">
+                <img id="bannerUrlImg" src="" class="w-full h-28 object-cover rounded-xl border border-zinc-500/25">
+            </div>
+            <button type="submit" id="bannerAddBtn" class="btn-primary w-full justify-center py-2.5 text-sm">
+                <iconify-icon icon="mdi:plus-circle"></iconify-icon> Tambah Banner
+            </button>
+        </form>
+
+        <!-- Daftar banner -->
+        <div class="setting-row-label mb-3">Banner Aktif</div>
+        <div id="bannerList" class="space-y-2">
+            <div class="text-xs text-zinc-600 text-center py-3">Memuat...</div>
+        </div>
+    </div>
+
+    <!-- QRIS Payment -->
+    <div class="neon-card p-5 mb-3">
+        <div class="text-xs font-bold text-red-400 mb-4 flex items-center gap-2">
+            <iconify-icon icon="mdi:qrcode-scan"></iconify-icon> Pengaturan QRIS
+        </div>
+
+        <!-- Mode Selector -->
+        <div class="flex gap-2 mb-4">
+            <button type="button" id="modeStaticBtn" onclick="setQrisMode('static')"
+                class="flex-1 py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5
+                <%= (settings.qrisMode||'static')==='static' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500' %>">
+                <iconify-icon icon="mdi:image"></iconify-icon> Statis (Gambar)
+            </button>
+            <button type="button" id="modeApiBtn" onclick="setQrisMode('api')"
+                class="flex-1 py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5
+                <%= (settings.qrisMode||'static')==='api' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500' %>">
+                <iconify-icon icon="mdi:api"></iconify-icon> API (PakKasir)
+            </button>
+        </div>
+
+        <!-- QRIS Statis -->
+        <div id="sectionStatic" class="<%= (settings.qrisMode||'static')==='static' ? '' : 'hidden' %>">
+            <p class="text-[11px] text-zinc-500 mb-3">Upload foto QRIS dari rekening kamu (GoPay, DANA, OVO, atau QRIS Merchant). Pembayaran dikonfirmasi manual oleh admin.</p>
+            <% if (settings.qrisStaticImage) { %>
+            <div class="mb-3 flex flex-col items-center gap-2">
+                <img src="<%= settings.qrisStaticImage %>?t=<%= Date.now() %>" class="rounded-xl border border-emerald-500/30" style="max-width:180px" id="qrisPreviewImg">
+                <span class="text-[10px] text-emerald-400 flex items-center gap-1"><iconify-icon icon="mdi:check-circle"></iconify-icon> QRIS aktif</span>
+            </div>
+            <% } else { %>
+            <div class="mb-3 p-4 rounded-xl bg-yellow-500/8 border border-yellow-500/20 text-center">
+                <iconify-icon icon="mdi:alert-circle-outline" class="text-yellow-400 text-2xl mb-1 block"></iconify-icon>
+                <p class="text-[11px] text-yellow-400">Belum ada gambar QRIS. Upload sekarang.</p>
+            </div>
+            <% } %>
+            <form id="qrisStaticForm" enctype="multipart/form-data" class="space-y-2">
+                <input type="file" name="qrisImage" accept="image/jpeg,image/png,image/webp" class="hm-input text-xs py-2">
+                <button type="submit" class="btn-primary w-full justify-center py-2.5 text-sm">
+                    <iconify-icon icon="mdi:upload"></iconify-icon> Upload Gambar QRIS
+                </button>
+            </form>
+        </div>
+
+        <!-- QRIS API (PakKasir / GensPay) -->
+        <div id="sectionApi" class="<%= (settings.qrisMode||'static')==='api' ? '' : 'hidden' %> space-y-3">
+            <div class="p-3 rounded-xl bg-red-500/8 border border-red-500/20 text-[11px] text-red-400 mb-2">
+                <iconify-icon icon="mdi:alert"></iconify-icon> Pastikan API key dan URL yang dimasukkan sudah benar. Test koneksi sebelum menyimpan.
+            </div>
+
+            <!-- Gateway Selector -->
+            <div class="flex gap-2 mb-1">
+                <button type="button" id="gwPakasirBtn" onclick="setApiGateway('pakasir')"
+                    class="flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5
+                    <%= (settings.apiGateway||'pakasir')==='pakasir' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500' %>">
+                    <iconify-icon icon="mdi:api"></iconify-icon> PakKasir
+                </button>
+                <button type="button" id="gwGenspayBtn" onclick="setApiGateway('genspay')"
+                    class="flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5
+                    <%= (settings.apiGateway||'pakasir')==='genspay' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500' %>">
+                    <iconify-icon icon="mdi:api"></iconify-icon> GensPay
+                </button>
+            </div>
+
+            <!-- PakKasir Form -->
+            <form id="pakasirForm" class="space-y-3 <%= (settings.apiGateway||'pakasir')==='pakasir' ? '' : 'hidden' %>" data-gateway-form="pakasir">
+                <div>
+                    <div class="setting-row-label">API Key</div>
+                    <input type="text" name="apiKey" value="<%= settings.pakasir?.apiKey||'' %>" class="hm-input font-mono text-xs" placeholder="masukkan API key PakKasir">
+                </div>
+                <div>
+                    <div class="setting-row-label">Project Name</div>
+                    <input type="text" name="project" value="<%= settings.pakasir?.project||'' %>" class="hm-input" placeholder="nama project kamu">
+                </div>
+                <div>
+                    <div class="setting-row-label">API Base URL <span class="text-zinc-600 font-normal">(hostname, tanpa https://)</span></div>
+                    <input type="text" name="apiBaseUrl" value="<%= settings.pakasir?.apiBaseUrl||'api.pakasir.com' %>" class="hm-input font-mono text-xs" placeholder="api.pakasir.com">
+                </div>
+                <button type="button" onclick="testPakasir()" class="w-full py-2 rounded-xl text-xs font-bold text-zinc-400 border border-white/10 bg-white/3 hover:bg-white/8 transition-all flex items-center justify-center gap-1.5">
+                    <iconify-icon icon="mdi:wifi-check"></iconify-icon> Test Koneksi API
+                </button>
+                <div id="testResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
+                <button type="submit" class="btn-primary w-full justify-center py-2.5 text-sm">
+                    <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Pengaturan PakKasir
+                </button>
+            </form>
+
+            <!-- GensPay Form -->
+            <form id="genspayForm" class="space-y-3 <%= (settings.apiGateway||'pakasir')==='genspay' ? '' : 'hidden' %>" data-gateway-form="genspay">
+                <div>
+                    <div class="setting-row-label">API Key</div>
+                    <input type="text" name="apiKey" value="<%= settings.genspay?.apiKey||'' %>" class="hm-input font-mono text-xs" placeholder="masukkan API key GensPay">
+                </div>
+                <div>
+                    <div class="setting-row-label">Base URL <span class="text-zinc-600 font-normal">(default: genspay.my.id/api/v1)</span></div>
+                    <input type="text" name="baseUrl" value="<%= settings.genspay?.baseUrl||'https://genspay.my.id/api/v1' %>" class="hm-input font-mono text-xs" placeholder="https://genspay.my.id/api/v1">
+                </div>
+                <p class="text-[10px] text-zinc-600"><iconify-icon icon="mdi:book-open-outline" style="vertical-align:-2px;"></iconify-icon> Dokumentasi: <a href="https://genspay.my.id/docs" target="_blank" class="text-red-400 underline">genspay.my.id/docs</a></p>
+                <div class="p-2.5 rounded-lg bg-white/3 border border-white/10 text-[10px] text-zinc-500 space-y-1">
+                    <div class="text-zinc-400 font-semibold flex items-center gap-1">
+                        <iconify-icon icon="mdi:link-variant"></iconify-icon> Webhook URL — WAJIB diisi di dashboard GensPay
+                    </div>
+                    <div class="text-zinc-400">Tanpa ini, key produk tidak auto-kirim kalau pembeli menutup halaman sebelum status "paid" sempat kecek. Copy URL ini ke kolom Webhook URL project GensPay kamu (Settings → Edit project).</div>
+                    <div class="flex gap-1.5 mt-1">
+                        <input type="text" id="genspayWebhookUrl" readonly class="hm-input font-mono text-[11px] flex-1" value="">
+                        <button type="button" onclick="copyWebhookUrl('genspayWebhookUrl')" class="px-3 py-2 rounded-lg text-xs font-bold text-red-300 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-all whitespace-nowrap">
+                            <iconify-icon icon="mdi:content-copy"></iconify-icon>
+                        </button>
+                    </div>
+                </div>
+                <button type="button" onclick="testGenspay()" class="w-full py-2 rounded-xl text-xs font-bold text-zinc-400 border border-white/10 bg-white/3 hover:bg-white/8 transition-all flex items-center justify-center gap-1.5">
+                    <iconify-icon icon="mdi:wifi-check"></iconify-icon> Test Koneksi API
+                </button>
+                <div id="testResultGenspay" class="hidden text-[11px] p-2.5 rounded-lg"></div>
+                <button type="submit" class="btn-primary w-full justify-center py-2.5 text-sm">
+                    <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Pengaturan GensPay
+                </button>
+            </form>
+        </div>
+
+        <!-- Simpan Mode -->
+        <input type="hidden" id="qrisModeVal" value="<%= settings.qrisMode||'static' %>">
+    </div>
+
+    <!-- Wallet / Saldo (Reseller) -->
+    <div class="neon-card p-5 mb-3">
+        <div class="text-xs font-bold text-red-400 mb-4 flex items-center gap-2">
+            <iconify-icon icon="mdi:wallet"></iconify-icon> Pengaturan Wallet / Saldo
+        </div>
+        <p class="text-[11px] text-zinc-500 mb-3">Nominal minimum top up saldo wallet. Fitur ini khusus untuk Reseller VIP.</p>
+        <form id="walletSettingsForm" class="space-y-3">
+            <div>
+                <div class="setting-row-label">Minimal Top Up Reseller VIP (Rp)</div>
+                <input type="number" name="resellerMinDeposit" value="<%= settings.resellerMinDeposit || 50000 %>" min="1000" class="hm-input" placeholder="50000">
+            </div>
+            <button type="submit" class="btn-primary w-full justify-center py-2.5 text-sm">
+                <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Minimal Top Up
+            </button>
+        </form>
+    </div>
+
+    <!-- Reseller VIP -->
+    <div class="neon-card p-5 mb-3" style="border-color:rgba(234,179,8,.2)">
+        <div class="text-xs font-bold mb-4 flex items-center gap-2" style="color:#fbbf24">
+            <iconify-icon icon="mdi:crown"></iconify-icon> Program Reseller VIP
+        </div>
+        <form id="resellerSettingsForm" class="space-y-3">
+            <div class="flex items-center justify-between p-3 rounded-xl" style="background:rgba(234,179,8,.06);border:1px solid rgba(234,179,8,.15)">
+                <div>
+                    <div class="text-xs font-semibold text-white">Aktifkan Program Reseller</div>
+                    <div class="text-[10px] text-zinc-500 mt-0.5">Tampilkan banner upgrade reseller di halaman utama</div>
+                </div>
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" name="resellerEnabled" id="resellerEnabledToggle" class="sr-only peer" <%= (settings.resellerEnabled !== false) ? 'checked' : '' %>>
+                    <div class="w-9 h-5 bg-zinc-700 peer-focus:ring-2 peer-focus:ring-yellow-500/30 rounded-full peer peer-checked:bg-yellow-500 transition-all after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-4"></div>
+                </label>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <div class="setting-row-label">Biaya Upgrade (Rp)</div>
+                    <input type="number" name="resellerPrice" value="<%= settings.resellerPrice || 50000 %>" min="1000" class="hm-input" placeholder="50000">
+                </div>
+                <div>
+                    <div class="setting-row-label">Diskon Reseller (%)</div>
+                    <input type="number" name="resellerDiscount" value="<%= settings.resellerDiscount || 20 %>" min="1" max="99" class="hm-input" placeholder="20">
+                </div>
+            </div>
+            <div>
+                <div class="setting-row-label">Catatan / Tagline</div>
+                <input type="text" name="resellerNote" value="<%= settings.resellerNote || 'Dapatkan diskon eksklusif untuk semua produk!' %>" class="hm-input">
+            </div>
+            <div class="p-3 rounded-xl text-[11px]" style="background:rgba(234,179,8,.06);border:1px solid rgba(234,179,8,.12);color:#a1a1aa">
+                <iconify-icon icon="mdi:information-outline" class="text-yellow-400 align-middle mr-1"></iconify-icon>
+                Preview: User hemat <strong class="text-yellow-400" id="discPreview"><%= settings.resellerDiscount || 20 %>%</strong> otomatis di semua produk saat login sebagai reseller.
+            </div>
+            <button type="submit" class="w-full py-2.5 rounded-xl text-xs font-black flex items-center justify-center gap-2" style="background:#d97706;color:#000">
+                <iconify-icon icon="mdi:crown"></iconify-icon> Simpan Pengaturan Reseller
+            </button>
+        </form>
+    </div>
+
+    <!-- Kredensial Admin -->
+    <div class="neon-card p-5 mb-3">
+        <div class="text-xs font-bold text-red-400 mb-4 flex items-center gap-2">
+            <iconify-icon icon="mdi:shield-account"></iconify-icon> Kredensial Admin
+        </div>
+        <form id="credForm" class="space-y-3">
+            <div>
+                <div class="setting-row-label">Username Admin Baru</div>
+                <input type="text" name="adminUsername" value="<%= settings.adminUsername %>" class="hm-input">
+            </div>
+            <div>
+                <div class="setting-row-label">Password Baru</div>
+                <input type="password" name="newPassword" class="hm-input" placeholder="Kosongkan jika tidak ingin ubah">
+            </div>
+            <button type="submit" class="btn-danger w-full justify-center py-2.5 text-sm">
+                <iconify-icon icon="mdi:shield-key"></iconify-icon> Update Kredensial
+            </button>
+        </form>
+    </div>
+
+    <!-- Export / Import Data -->
+    <div class="neon-card p-5 mb-3">
+        <div class="text-xs font-bold text-red-400 mb-4 flex items-center gap-2">
+            <iconify-icon icon="mdi:database-sync"></iconify-icon> Backup & Restore Database
+        </div>
+        <p class="text-[11px] text-zinc-500 mb-4">Download semua data (produk, transaksi, user, dll) sebagai file JSON. Berguna untuk backup atau pindah server.</p>
+        <div class="grid grid-cols-2 gap-3">
+            <a href="/admin/export" target="_blank"
+               class="flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-bold transition-all hover:scale-[1.02]"
+               style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-25);color:var(--accent-color);">
+                <iconify-icon icon="mdi:download"></iconify-icon> Export Database
+            </a>
+            <div>
+                <button onclick="document.getElementById('importInput').click()"
+                    class="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-xs font-bold transition-all hover:scale-[1.02]"
+                    style="background:rgba(234,179,8,.1);border:1px solid rgba(234,179,8,.3);color:#b45309;">
+                    <iconify-icon icon="mdi:upload"></iconify-icon> Import Database
+                </button>
+                <input type="file" id="importInput" accept=".json" class="hidden" onchange="importDB(event)">
+            </div>
+        </div>
+        <div id="importStatus" class="mt-3 hidden"></div>
+    </div>
+</div>
+
+</div><!-- /max-w -->
+
+<!-- BOTTOM NAV -->
+<nav id="admin-nav" style="overflow-x:auto;white-space:nowrap;display:flex;align-items:center;justify-content:space-around;padding:0 4px 6px;gap:2px;">
+    <div class="nav-btn active" id="nav-dashboard" onclick="switchTab('dashboard')">
+        <iconify-icon icon="mdi:view-dashboard" class="n-icon"></iconify-icon>
+        <span class="n-label">Dashboard</span>
+    </div>
+    <div class="nav-btn" id="nav-products" onclick="switchTab('products')">
+        <iconify-icon icon="mdi:package-variant" class="n-icon"></iconify-icon>
+        <span class="n-label">Produk</span>
+    </div>
+    <div class="nav-btn" id="nav-transactions" onclick="switchTab('transactions')" style="position:relative">
+        <iconify-icon icon="mdi:receipt-text" class="n-icon"></iconify-icon>
+        <span class="n-label">Transaksi</span>
+        <% if(stats.pendingTransactions>0){ %><div class="nav-dot"></div><% } %>
+    </div>
+    <div class="nav-btn" id="nav-users" onclick="switchTab('users')">
+        <iconify-icon icon="mdi:account-group" class="n-icon"></iconify-icon>
+        <span class="n-label">Users</span>
+    </div>
+    <div class="nav-btn" id="nav-keys" onclick="switchTab('keys')">
+        <iconify-icon icon="mdi:key-chain" class="n-icon"></iconify-icon>
+        <span class="n-label">Keys</span>
+    </div>
+    <div class="nav-btn" id="nav-vouchers" onclick="switchTab('vouchers')">
+        <iconify-icon icon="mdi:ticket-percent" class="n-icon"></iconify-icon>
+        <span class="n-label">Voucher</span>
+    </div>
+    <div class="nav-btn" id="nav-settings" onclick="switchTab('settings')">
+        <iconify-icon icon="mdi:cog" class="n-icon"></iconify-icon>
+        <span class="n-label">Setting</span>
+    </div>
+</nav>
+
+<!-- MODAL: Tambah / Edit Produk -->
+<div id="modal-product" class="modal-wrap">
+    <div class="modal-bg" onclick="closeModal('modal-product')"></div>
+    <div class="modal-box">
+        <div class="modal-handle"></div>
+        <div class="p-5">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-sm font-bold text-white flex items-center gap-2" id="modalProductTitle">
+                    <iconify-icon icon="mdi:package-variant-plus" class="text-red-400"></iconify-icon> Tambah Produk
+                </h3>
+                <button onclick="closeModal('modal-product')" class="w-7 h-7 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-zinc-400">
+                    <iconify-icon icon="mdi:close"></iconify-icon>
+                </button>
+            </div>
+            <form id="addProductForm" class="space-y-3" enctype="multipart/form-data">
+                <input type="hidden" name="_productId" id="editProductId">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <div class="setting-row-label">Nama Produk *</div>
+                        <input type="text" name="name" id="prodName" required class="hm-input" placeholder="Drip Client">
+                    </div>
+                </div>
+                <div>
+                    <!-- FIX (diminta client 22 Agu 2026): kategori sekarang MULTI-SELECT
+                         (produk bisa masuk lebih dari 1 kategori sekaligus, mis. "Free Fire"
+                         DAN "Android" bersamaan), dan daftar kategorinya sepenuhnya diatur
+                         admin lewat menu Kategori -- bukan hardcode Android/iOS/PC lagi. -->
+                    <div class="setting-row-label">Kategori <span class="text-zinc-600 font-normal">(bisa pilih lebih dari satu)</span></div>
+                    <div class="flex flex-wrap gap-2" id="prodCategoryCheckboxes">
+                        <% (settings.categories||[]).forEach(cat => { %>
+                        <label class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/3 cursor-pointer text-xs">
+                            <input type="checkbox" name="categories" value="<%= cat %>" class="accent-red-500">
+                            <%= (settings.categoryLabels||{})[cat]||cat %>
+                        </label>
+                        <% }) %>
+                        <% if (!(settings.categories||[]).length) { %>
+                        <span class="text-[11px] text-zinc-600">Belum ada kategori. Tambah dulu di menu Kategori.</span>
+                        <% } %>
+                    </div>
+                </div>
+                <div>
+                    <div class="setting-row-label">Deskripsi</div>
+                    <textarea name="description" id="prodDesc" rows="5" class="hm-input" placeholder="Deskripsi singkat produk...&#10;&#10;- Fitur cheat pertama&#10;- Fitur cheat kedua&#10;- Fitur cheat ketiga"></textarea>
+                    <div class="text-[10px] mt-1" style="color:var(--text-3);">Baris biasa jadi paragraf. Baris yang diawali <code class="text-red-400">-</code> otomatis jadi daftar fitur bercentang di halaman produk (referensi fixaonly.com).</div>
+                </div>
+                <div>
+                    <div class="setting-row-label">Gambar (URL atau upload)</div>
+                    <input type="text" name="imageUrl" id="prodImageUrl" class="hm-input mb-2" placeholder="https://cdn.../gambar.png">
+                    <input type="file" name="image" accept="image/*" class="hm-input text-xs py-2">
+                </div>
+                <div>
+                    <div class="setting-row-label">Link Channel / Grup Produk</div>
+                    <input type="url" name="channelUrl" id="prodChannelUrl" class="hm-input" placeholder="https://whatsapp.com/channel/...">
+                    <div class="text-[10px] mt-1" style="color:var(--text-3);">Muncul sebagai tombol "Download / Join Channel" di halaman invoice setelah buyer dapat key. Kosongkan jika tidak perlu.</div>
+                </div>
+                <div>
+                    <div class="setting-row-label">Link Download Langsung (opsional)</div>
+                    <input type="url" name="downloadUrl" id="prodDownloadUrl" class="hm-input" placeholder="https://drive.google.com/... atau link APK/file">
+                    <div class="text-[10px] mt-1" style="color:var(--text-3);">Kalau diisi, tombol di KARTU PRODUK (halaman utama) berubah jadi "Download" yang langsung buka link ini, tidak lewat alur beli/checkout. Kosongkan kalau produk ini tetap dijual normal lewat Beli.</div>
+                </div>
+
+                <!-- PRICING TABLE (like deem) -->
+                <div>
+                    <div class="flex items-center justify-between mb-2">
+                        <div class="setting-row-label mb-0">Opsi Harga *</div>
+                        <button type="button" onclick="addPricingRow()" class="flex items-center gap-1 text-[11px] text-red-400 hover:text-red-300 transition-colors">
+                            <iconify-icon icon="mdi:plus-circle"></iconify-icon> Tambah Durasi
+                        </button>
+                    </div>
+                    <div id="pricingRows" class="space-y-2">
+                        <div class="flex items-center gap-2 text-[9px] font-bold uppercase tracking-wider text-zinc-600 px-0.5">
+                            <div style="flex:0 0 56px">Jml</div>
+                            <div style="flex:0 0 64px">Unit</div>
+                            <div style="flex:1 1 100px">Harga Normal</div>
+                            <div style="flex:1 1 100px">Harga Reseller <span class="normal-case font-normal text-zinc-700">(kosong = %)</span></div>
+                            <div style="flex:1 1 100px">Harga Coret <span class="normal-case font-normal text-zinc-700">(opsional)</span></div>
+                            <div style="width:32px"></div>
+                        </div>
+                        <!-- rows injected by JS -->
+                    </div>
+                    <p class="text-[10px] text-zinc-600 mt-1">Key format: <code class="text-red-400">KEY123</code> (generic), <code class="text-red-400">KEY123=7d</code> (7 hari), atau <code class="text-red-400">KEY123=12h</code> (12 jam)</p>
+                </div>
+
+                <!-- ANGKA TERJUAL & HARGA CORET (manual, opsional) -->
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <div class="setting-row-label">Angka "Terjual" Manual <span class="text-zinc-600 font-normal">(opsional)</span></div>
+                        <input type="number" name="fakeSold" id="prodFakeSold" min="0" class="hm-input" placeholder="Kosongkan = otomatis">
+                        <div class="text-[10px] mt-1" style="color:var(--text-3);">Override tampilan "Terjual X" di katalog. Kosongkan untuk pakai angka penjualan asli.</div>
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Harga Coret <span class="text-zinc-600 font-normal">(opsional)</span></div>
+                        <input type="number" name="strikePrice" id="prodStrikePrice" min="0" class="hm-input" placeholder="Kosongkan = tidak ada">
+                        <div class="text-[10px] mt-1" style="color:var(--text-3);">Harga "asli" yang dicoret di sebelah harga jual, kesan diskon. Tidak memengaruhi harga tagihan.</div>
+                    </div>
+                </div>
+
+                <!-- STATUS -->
+                <div>
+                    <div class="setting-row-label">Status</div>
+                    <select name="status" id="prodStatus" class="hm-input">
+                        <option value="active">Aktif</option>
+                        <option value="inactive">Nonaktif</option>
+                    </select>
+                </div>
+
+                <!-- KEYS TEXTAREA -->
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <div class="setting-row-label mb-0">Keys / Lisensi</div>
+                        <span id="prodKeyCount" class="text-[10px] text-zinc-500"></span>
+                    </div>
+                    <textarea name="keys" id="prodKeys" rows="5" class="hm-input font-mono text-xs"
+                        placeholder="KEY-FF-001&#10;KEY-FF-002:7&#10;KEY-FF-003:30&#10;&#10;Kosongkan = tidak ubah keys (mode edit)"></textarea>
+                    <div class="flex gap-2 mt-1" id="keysModeRow">
+                        <label class="flex items-center gap-1 text-[11px] text-zinc-400 cursor-pointer">
+                            <input type="radio" name="keysMode" value="append" checked class="accent-zinc-500"> Tambah ke stok existing
+                        </label>
+                        <label class="flex items-center gap-1 text-[11px] text-zinc-400 cursor-pointer">
+                            <input type="radio" name="keysMode" value="replace" class="accent-red-500"> Ganti semua keys
+                        </label>
+                    </div>
+                </div>
+
+                <div class="flex gap-2 pt-1">
+                    <button type="submit" id="prodSubmitBtn" class="btn-primary flex-1 justify-center py-2.5 text-xs">
+                        <iconify-icon icon="mdi:plus"></iconify-icon> <span id="prodSubmitLabel">Tambah Produk</span>
+                    </button>
+                    <button type="button" onclick="closeModal('modal-product')" class="btn-danger justify-center py-2.5 px-4 text-xs">Batal</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: Kelola Keys Cepat -->
+<div id="modal-keys" class="modal-wrap">
+    <div class="modal-bg" onclick="closeModal('modal-keys')"></div>
+    <div class="modal-box">
+        <div class="modal-handle"></div>
+        <div class="p-5">
+            <div class="flex items-center justify-between mb-2">
+                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                    <iconify-icon icon="mdi:key-plus" class="text-emerald-400"></iconify-icon>
+                    Keys: <span id="keysModalProductName" class="text-red-300"></span>
+                </h3>
+                <button onclick="closeModal('modal-keys')" class="w-7 h-7 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-zinc-400">
+                    <iconify-icon icon="mdi:close"></iconify-icon>
+                </button>
+            </div>
+            <div class="mb-3 flex items-center gap-2 p-2.5 rounded-lg bg-zinc-500/8 border border-zinc-500/15">
+                <iconify-icon icon="mdi:database" class="text-red-400 text-sm"></iconify-icon>
+                <span class="text-xs text-zinc-400">Stok saat ini: <strong class="text-white" id="keysCurrentCount">—</strong> keys</span>
+            </div>
+            <form id="addKeysForm" class="space-y-3">
+                <input type="hidden" id="keysProductId">
+                <div>
+                    <div class="setting-row-label">Keys Baru (satu baris = satu key)</div>
+                    <textarea id="keysTextarea" rows="8" class="hm-input font-mono text-xs"
+                        placeholder="KEY-FF-001&#10;KEY-FF-002:7&#10;KEY-FF-003:30&#10;&#10;Format KEY:HARI untuk duration-specific"></textarea>
+                </div>
+                <div class="flex gap-3">
+                    <label class="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
+                        <input type="radio" name="keysAddMode" value="append" checked class="accent-zinc-500"> Tambahkan
+                    </label>
+                    <label class="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer">
+                        <input type="radio" name="keysAddMode" value="replace" class="accent-red-500"> Ganti semua
+                    </label>
+                </div>
+                <div class="flex gap-2">
+                    <button type="submit" class="btn-success flex-1 justify-center py-2.5 text-xs">
+                        <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Keys
+                    </button>
+                    <button type="button" onclick="closeModal('modal-keys')" class="btn-danger py-2.5 px-4 text-xs">Batal</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: Tambah Testimoni -->
+<div id="modal-testi" class="modal-wrap">
+    <div class="modal-bg" onclick="closeModal('modal-testi')"></div>
+    <div class="modal-box">
+        <div class="modal-handle"></div>
+        <div class="p-5">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                    <iconify-icon icon="mdi:comment-plus" class="text-red-400"></iconify-icon> Tambah Testimoni
+                </h3>
+                <button onclick="closeModal('modal-testi')" class="w-7 h-7 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-zinc-400">
+                    <iconify-icon icon="mdi:close"></iconify-icon>
+                </button>
+            </div>
+            <form id="addTestimonialForm" class="space-y-3">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <div class="setting-row-label">Nama *</div>
+                        <input type="text" name="name" required class="hm-input" placeholder="Nama pembeli">
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Rating *</div>
+                        <select name="rating" required class="hm-input">
+                            <option value="5">★★★★★ (5)</option>
+                            <option value="4">★★★★☆ (4)</option>
+                            <option value="3">★★★☆☆ (3)</option>
+                            <option value="2">★★☆☆☆ (2)</option>
+                            <option value="1">★☆☆☆☆ (1)</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <div class="setting-row-label">Produk (opsional)</div>
+                    <!-- FIX (bug 24 Agu 2026): sebelumnya <input type="text">
+                         bebas -- admin ngetik nama produk manual, tersimpan
+                         sebagai STRING NAMA di field `product`. Tapi halaman
+                         detail produk (buy.ejs) memfilter ulasan pakai
+                         PRODUCT ID (UUID), lewat GET /api/testimonials?product=<UUID>,
+                         yang membandingkan t.product === productId secara
+                         EXACT. Nama teks bebas hampir tidak pernah sama
+                         dengan UUID produk, jadi testimoni palsu yang dibuat
+                         admin TIDAK PERNAH muncul di halaman produk manapun
+                         -- inilah "bug frontend" yang dilaporkan client.
+                         Diganti jadi dropdown pilih dari daftar produk asli
+                         (value = product.id, sama seperti yang dipakai
+                         testimoni ASLI dari pembeli) supaya konsisten &
+                         benar-benar muncul di halaman produk yang dipilih. -->
+                    <select name="product" class="hm-input">
+                        <option value="">— Tidak terikat produk tertentu —</option>
+                        <% (typeof products !== 'undefined' ? products : []).forEach(p => { %>
+                        <option value="<%= p.id %>"><%= p.name %></option>
+                        <% }) %>
+                    </select>
+                </div>
+                <div>
+                    <div class="setting-row-label">Isi Testimoni *</div>
+                    <textarea name="text" rows="3" required class="hm-input" placeholder="Tulis testimoni..."></textarea>
+                </div>
+                <div class="flex gap-4">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" name="verified" checked class="w-3.5 h-3.5 accent-zinc-500">
+                        <span class="text-xs text-zinc-400">Verified</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <input type="checkbox" name="featured" checked class="w-3.5 h-3.5 accent-blue-500">
+                        <span class="text-xs text-zinc-400">Featured (tampil di home)</span>
+                    </label>
+                </div>
+                <div class="flex gap-2 pt-1">
+                    <button type="submit" class="btn-primary flex-1 justify-center py-2.5 text-xs">
+                        <iconify-icon icon="mdi:plus"></iconify-icon> Tambah
+                    </button>
+                    <button type="button" onclick="closeModal('modal-testi')" class="btn-danger py-2.5 px-4 text-xs">Batal</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- MODAL: Tambah Entri Leaderboard Palsu -->
+<div id="modal-lb" class="modal-wrap">
+    <div class="modal-bg" onclick="closeModal('modal-lb')"></div>
+    <div class="modal-box">
+        <div class="modal-handle"></div>
+        <div class="p-5">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                    <iconify-icon icon="mdi:trophy-award" class="text-yellow-400"></iconify-icon> Tambah Entri Leaderboard
+                </h3>
+                <button onclick="closeModal('modal-lb')" class="w-7 h-7 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-zinc-400">
+                    <iconify-icon icon="mdi:close"></iconify-icon>
+                </button>
+            </div>
+            <form id="addFakeLbForm" class="space-y-3">
+                <div>
+                    <div class="setting-row-label">Nama *</div>
+                    <input type="text" name="username" required class="hm-input" placeholder="Nama pembeli">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <div class="setting-row-label">Jumlah Transaksi *</div>
+                        <input type="number" name="totalTransactions" min="0" required class="hm-input" placeholder="12">
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Total Belanja (Rp) *</div>
+                        <input type="number" name="totalSpent" min="0" required class="hm-input" placeholder="500000">
+                    </div>
+                </div>
+                <p class="text-[10px] text-zinc-500">Entri ini akan tampil bercampur dengan leaderboard asli, dan namanya ikut muncul di notifikasi pembelian berjalan di homepage.</p>
+                <div class="flex gap-2 pt-1">
+                    <button type="submit" class="btn-primary flex-1 justify-center py-2.5 text-xs">
+                        <iconify-icon icon="mdi:plus"></iconify-icon> Tambah
+                    </button>
+                    <button type="button" onclick="closeModal('modal-lb')" class="btn-danger py-2.5 px-4 text-xs">Batal</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+// ── TOAST ──
+function toast(msg, type='info') {
+    const styles = {
+        success: 'border-green-500/40 text-green-300',
+        error:   'border-red-500/40 text-red-300',
+        info:    'border-zinc-500/40 text-red-300',
+        warn:    'border-yellow-500/40 text-yellow-300'
+    };
+    const icons = { success:'mdi:check-circle', error:'mdi:alert-circle', info:'mdi:information', warn:'mdi:alert' };
+    const el = document.createElement('div');
+    el.className = `toast ${styles[type]||styles.info}`;
+    el.innerHTML = `<iconify-icon icon="${icons[type]||icons.info}" class="text-base flex-shrink-0"></iconify-icon><span>${msg}</span>`;
+    document.getElementById('toast-container').appendChild(el);
+    setTimeout(() => { el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),300); }, 3000);
+}
+
+// ── LOGOUT ──
+function clearAndLogout(e) {
+    e.preventDefault();
+    localStorage.removeItem('hm_cart');
+    localStorage.removeItem('shownNotifs');
+    window.location.href = '/logout';
+}
+
+// ── DARK MODE TOGGLE (23 Agu 2026) ──
+// admin.ejs standalone, tidak mewarisi toggleDarkMode() dari layout.ejs,
+// jadi didefinisikan ulang di sini. Key localStorage ('fz-theme') SAMA
+// dengan yang dipakai layout.ejs supaya preferensi tetap konsisten kalau
+// admin balik ke halaman frontend, atau sebaliknya.
+function adminToggleDarkMode(checkboxEl) {
+    const isDark = checkboxEl.checked;
+    document.documentElement.classList.toggle('dark', isDark);
+    try { localStorage.setItem('fz-theme', isDark ? 'dark' : 'light'); } catch (e) {}
+}
+document.addEventListener('DOMContentLoaded', () => {
+    const toggle = document.getElementById('adminDarkModeToggle');
+    if (toggle) toggle.checked = document.documentElement.classList.contains('dark');
+});
+
+// ── SINGLE-DEVICE ADMIN LOCK ──
+// Server membalas { sessionRevoked: true } kalau sesi admin ini sudah
+// digantikan login dari perangkat lain. Kita pasang sekali di window.fetch
+// supaya SEMUA pemanggilan fetch() di halaman ini otomatis kebagian deteksi,
+// tanpa perlu ubah satu-satu di tiap tombol/aksi.
+let _sessionKicked = false;
+const _origFetch = window.fetch.bind(window);
+window.fetch = async function(...args) {
+    const res = await _origFetch(...args);
+    if (!_sessionKicked && res.status === 401) {
+        try {
+            const clone = res.clone();
+            const ct = clone.headers.get('content-type') || '';
+            if (ct.includes('application/json')) {
+                const data = await clone.json();
+                if (data && data.sessionRevoked) {
+                    _sessionKicked = true;
+                    toast(data.message || 'Sesi admin diakhiri karena login dari perangkat lain', 'error');
+                    setTimeout(() => { window.location.href = '/vpr-secure-panel-8x?kicked=1'; }, 1800);
+                }
+            }
+        } catch {}
+    }
+    return res;
+};
+
+// Heartbeat: kabari server tab ini masih aktif, supaya lock tidak expired
+// selama admin masih membuka panel (tapi tetap auto-expired kalau tab
+// ditutup/koneksi putus, lihat ADMIN_LOCK_TIMEOUT_MS di server).
+setInterval(() => {
+    if (_sessionKicked || document.hidden) return;
+    fetch('/admin/session/heartbeat', { method: 'POST' }).catch(() => {});
+}, 90000);
+
+
+// ── CEK STATUS DATABASE (SUPABASE) ──
+(async function checkDbStatus() {
+    try {
+        const r = await fetch('/admin/db-status');
+        const d = await r.json();
+        const alertEl = document.getElementById('binid-alert');
+        const msgEl   = document.getElementById('binid-msg');
+        const content = document.getElementById('dbStatusContent');
+
+        if (!d.hasUrl || !d.hasKey) {
+            if (d.hasAnonKeyOnly) {
+                if (alertEl) { alertEl.classList.remove('hidden'); msgEl.innerHTML = `Yang ke-set itu SUPABASE_ANON_KEY — tapi app ini butuh SUPABASE_SERVICE_ROLE_KEY (beda key!). Lihat Settings → API di dashboard Supabase, copy yang "service_role" (secret), bukan "anon" (public).`; }
+                if (content) content.innerHTML = `<div class="flex items-start gap-2 text-red-400"><iconify-icon icon="mdi:alert-circle" class="text-base flex-shrink-0 mt-0.5"></iconify-icon><div><strong>Salah key: app butuh service_role, bukan anon.</strong><br>Env var <code class="bg-black/30 px-1 rounded">SUPABASE_ANON_KEY</code> tidak dibaca sama sekali oleh server ini. Buat env var baru bernama persis <code class="bg-black/30 px-1 rounded">SUPABASE_SERVICE_ROLE_KEY</code> isi dengan secret "service_role" dari Supabase (Project Settings → API), lalu Redeploy.</div></div>`;
+            } else {
+                const missing = [!d.hasUrl && 'SUPABASE_URL', !d.hasKey && 'SUPABASE_SERVICE_ROLE_KEY'].filter(Boolean).join(' & ');
+                if (alertEl) { alertEl.classList.remove('hidden'); msgEl.innerHTML = `Env var ${missing} tidak terbaca server ini. Set lalu Redeploy di Vercel (perubahan env var TIDAK otomatis kepakai tanpa redeploy).`; }
+                if (content) content.innerHTML = `<div class="flex items-start gap-2 text-red-400"><iconify-icon icon="mdi:alert-circle" class="text-base flex-shrink-0 mt-0.5"></iconify-icon><div><strong>${missing} tidak terbaca di server ini.</strong><br>Env var sudah benar di dashboard Vercel? Coba <b>Redeploy</b> — Vercel tidak otomatis menerapkan env var baru/yang diubah ke deployment yang sudah berjalan.</div></div>`;
+            }
+        } else if (!d.connected && d.projectPaused) {
+            const restoreLink = d.restoreUrl ? `<a href="${d.restoreUrl}" target="_blank" class="underline font-bold">Restore Project di Supabase</a>` : 'dashboard Supabase';
+            if (alertEl) { alertEl.classList.remove('hidden'); msgEl.innerHTML = `Project Supabase kemungkinan PAUSED atau tabel belum dibuat. Buka dashboard Supabase → restore project → lalu jalankan supabase-schema.sql.`; }
+            if (content) content.innerHTML = `<div class="flex items-start gap-2 text-amber-400"><iconify-icon icon="mdi:pause-circle" class="text-base flex-shrink-0 mt-0.5"></iconify-icon><div><strong>Project Supabase kemungkinan besar sedang PAUSED.</strong><br><span class="text-zinc-400 text-[11px]">Supabase free tier auto-pause project setelah 7 hari tidak ada aktivitas. Error kosong <code class="bg-black/30 px-1 rounded">{"message":""}</code> adalah tanda khasnya.</span><br>→ ${restoreLink} dulu, tunggu sampai statusnya "Active", baru coba reload halaman ini.<br><span class="text-zinc-500 text-[11px]">Kalau project sudah Active tapi masih error, berarti tabel belum dibuat — jalankan <code class="bg-black/30 px-1 rounded">supabase-schema.sql</code> di ${d.sqlEditorUrl ? `<a href="${d.sqlEditorUrl}" target="_blank" class="underline">SQL Editor</a>` : 'SQL Editor'}.</span></div></div>`;
+        } else if (d.connected && !d.tableExists) {
+            if (alertEl) { alertEl.classList.remove('hidden'); msgEl.innerHTML = `Gagal konek ke Supabase: ${d.errorMsg || 'unknown error'}`; }
+            if (content) content.innerHTML = `<div class="text-red-400">Gagal terkoneksi ke Supabase.<br><span class="text-zinc-500 text-[11px]">${d.errorMsg || 'Tidak ada detail error dari server.'}</span></div>`;
+        } else if (!d.tableExists) {
+            if (alertEl) { alertEl.classList.remove('hidden'); msgEl.innerHTML = `Tabel keyvalue_store belum ada di Supabase. Jalankan supabase-schema.sql di SQL Editor.`; }
+            if (content) content.innerHTML = `<div class="flex items-start gap-2 text-red-400"><iconify-icon icon="mdi:alert-circle" class="text-base flex-shrink-0 mt-0.5"></iconify-icon><div><strong>Terkoneksi, tapi tabel keyvalue_store belum ada.</strong><br>Jalankan isi file <code class="bg-black/30 px-1 rounded">supabase-schema.sql</code> di ${d.sqlEditorUrl ? `<a href="${d.sqlEditorUrl}" target="_blank" class="underline">SQL Editor Supabase</a>` : 'SQL Editor Supabase'}.</div></div>`;
+        } else {
+            if (content) content.innerHTML = `<div class="flex items-center gap-2 text-emerald-400"><iconify-icon icon="mdi:check-circle" class="text-base"></iconify-icon><div>Database terhubung ke Supabase PostgreSQL.<br><span class="text-zinc-500">Project: <code class="text-zinc-400">${d.projectUrl || '—'}</code></span></div></div>`;
+        }
+    } catch(e) {
+        const content = document.getElementById('dbStatusContent');
+        if (content) content.innerHTML = `<div class="text-red-400">Gagal cek status database: ${e.message}</div>`;
+    }
+})();
+
+
+// ── TAB SWITCH ──
+function switchTab(name) {
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('pane-'+name).classList.add('active');
+    const nb = document.getElementById('nav-'+name);
+    if (nb) nb.classList.add('active');
+    window.scrollTo({top:0,behavior:'smooth'});
+    if (name === 'testimonials') loadTestimonials();
+    if (name === 'leaderboard') loadFakeLeaderboard();
+    if (name === 'keys') loadKeys();
+    if (name === 'vouchers') loadVouchers();
+    history.replaceState(null, '', '/admin#' + name);
+}
+
+// ── HASH ROUTING: auto switch tab dari URL hash ──
+document.addEventListener('DOMContentLoaded', () => {
+    const validTabs = ['dashboard','products','transactions','users','testimonials','leaderboard','settings','keys','vouchers'];
+    const hash = window.location.hash.replace('#', '');
+    if (validTabs.includes(hash)) switchTab(hash);
+});
+
+// ── MODAL ──
+function openModal(id) { document.getElementById(id).classList.add('open'); document.body.style.overflow='hidden'; }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); document.body.style.overflow=''; }
+// (openAddProductModal, openEditProductModal, openAddKeysModal defined above)
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') document.querySelectorAll('.modal-wrap.open').forEach(m => m.classList.remove('open'));
+});
+
+// ── API helper ──
+async function api(url, data) {
+    const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    });
+    return r.json();
+}
+
+// ── PRODUK: Pricing rows ──
+let pricingRowCount = 0;
+function addPricingRow(days='', price='', resellerPrice='', unit='d', strikePrice='') {
+    const i = pricingRowCount++;
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2';
+    row.innerHTML = `
+        <div class="flex-1 flex gap-2 flex-wrap">
+            <div style="flex:0 0 56px">
+                <input type="number" name="pricingDays" value="${days}" min="1" required
+                    class="hm-input text-xs" placeholder="Jml">
+            </div>
+            <div style="flex:0 0 64px">
+                <select name="pricingUnits" class="hm-input text-xs">
+                    <option value="d" ${unit==='d'?'selected':''}>Hari</option>
+                    <option value="h" ${unit==='h'?'selected':''}>Jam</option>
+                </select>
+            </div>
+            <div style="flex:1 1 100px">
+                <input type="number" name="pricingPrices" value="${price}" min="0" required
+                    class="hm-input text-xs" placeholder="Harga Normal (Rp)">
+            </div>
+            <div style="flex:1 1 100px">
+                <input type="number" name="pricingResellerPrices" value="${resellerPrice}" min="0"
+                    class="hm-input text-xs" placeholder="Harga Reseller (Rp)" title="Kosongkan = ikut diskon % global">
+            </div>
+            <div style="flex:1 1 100px">
+                <input type="number" name="pricingStrikePrices" value="${strikePrice}" min="0"
+                    class="hm-input text-xs" style="text-decoration-line:line-through;text-decoration-color:rgba(148,163,184,.4);"
+                    placeholder="Harga Coret (opsional)" title="Harga 'asli' yang dicoret di sebelah harga jual paket ini. Harus lebih besar dari harga normal. Kosongkan = tidak ada.">
+            </div>
+        </div>
+        <button type="button" onclick="this.closest('.flex').remove()" class="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 flex-shrink-0">
+            <iconify-icon icon="mdi:minus" class="text-sm"></iconify-icon>
+        </button>`;
+    document.getElementById('pricingRows').appendChild(row);
+}
+
+function openAddProductModal() {
+    document.getElementById('editProductId').value = '';
+    document.getElementById('modalProductTitle').innerHTML = '<iconify-icon icon="mdi:package-variant-plus" class="text-red-400"></iconify-icon> Tambah Produk';
+    document.getElementById('prodSubmitLabel').textContent = 'Tambah Produk';
+    document.getElementById('addProductForm').reset();
+    document.getElementById('pricingRows').innerHTML = '';
+    document.getElementById('prodKeyCount').textContent = '';
+    document.getElementById('keysModeRow').style.display = 'none';
+    pricingRowCount = 0;
+    addPricingRow('7','60000'); addPricingRow('30','150000');
+    openModal('modal-product');
+}
+
+function openEditProductModal(id, name, category, description, imageUrl, pricing, keyCount, status) {
+    document.getElementById('editProductId').value = id;
+    document.getElementById('modalProductTitle').innerHTML = '<iconify-icon icon="mdi:pencil" class="text-yellow-400"></iconify-icon> Edit Produk';
+    document.getElementById('prodSubmitLabel').textContent = 'Simpan Perubahan';
+    document.getElementById('prodName').value = name||'';
+    document.getElementById('prodDesc').value = description||'';
+    document.getElementById('prodImageUrl').value = imageUrl||'';
+    document.getElementById('prodKeys').value = '';
+    document.getElementById('prodKeyCount').textContent = `${keyCount} key aktif`;
+    document.getElementById('keysModeRow').style.display = 'flex';
+    // Set category
+    const catSel = document.getElementById('prodCategory');
+    if (catSel) { for(let o of catSel.options) { o.selected = (o.value===category); } }
+    // Set status
+    const stSel = document.getElementById('prodStatus');
+    if (stSel) { for(let o of stSel.options) { o.selected = (o.value===status); } }
+    // Pricing
+    document.getElementById('pricingRows').innerHTML = '';
+    pricingRowCount = 0;
+    if (pricing && pricing.length) { pricing.forEach(o => addPricingRow(o.days, o.price, o.reseller_price || '', o.unit || 'd', o.strike_price || '')); }
+    else addPricingRow('7','60000');
+    openModal('modal-product');
+}
+
+document.getElementById('addProductForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const btn = document.getElementById('prodSubmitBtn');
+    const editId = document.getElementById('editProductId').value;
+    btn.disabled = true;
+    btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Menyimpan...';
+    const fd = new FormData(this);
+    const url = editId ? `/admin/product/edit/${editId}` : '/admin/product/add';
+    try {
+        const r = await fetch(url, { method:'POST', body:fd });
+        const d = await r.json();
+        if (d.success) {
+            toast(editId ? 'Produk diupdate!' : 'Produk ditambahkan!', 'success');
+            closeModal('modal-product');
+            setTimeout(()=>{ window.location.href = '/admin#products'; },500);
+        } else {
+            toast(d.message||'Gagal menyimpan produk','error');
+            console.error('[add/edit product] server error:', d);
+        }
+    } catch(err) {
+        toast('Error koneksi: '+err.message,'error');
+        console.error('[add/edit product] fetch error:', err);
+    }
+    btn.disabled = false;
+    btn.innerHTML = editId ? '<iconify-icon icon="mdi:pencil"></iconify-icon> Simpan Perubahan' : '<iconify-icon icon="mdi:plus"></iconify-icon> Tambah Produk';
+});
+
+// ── KEYS MODAL ──
+function openAddKeysModal(pid, productName, currentCount) {
+    document.getElementById('keysProductId').value = pid;
+    document.getElementById('keysModalProductName').textContent = productName||pid;
+    document.getElementById('keysCurrentCount').textContent = currentCount||'?';
+    document.getElementById('keysTextarea').value = '';
+    openModal('modal-keys');
+}
+
+document.getElementById('addKeysForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const pid   = document.getElementById('keysProductId').value;
+    const keys  = document.getElementById('keysTextarea').value.trim();
+    const mode  = document.querySelector('input[name=keysAddMode]:checked')?.value || 'append';
+    if (!keys) { toast('Masukkan minimal 1 key','error'); return; }
+    const d = await api(`/admin/product/keys/${pid}`, { keys, mode });
+    if (d.success) {
+        toast(`Keys disimpan! Total: ${d.keyCount} key`, 'success');
+        closeModal('modal-keys');
+        const card = document.querySelector(`[data-product-id="${pid}"]`);
+        if (card) { const span = card.querySelector('.prod-key-count'); if(span) span.textContent = `${d.keyCount} key`; }
+    } else toast(d.message, 'error');
+});
+
+async function toggleProduct(id) {
+    const d = await api(`/admin/product/toggle/${id}`, {});
+    if (d.success) {
+        toast('Status diubah', 'success');
+        const card = document.querySelector(`[data-product-id="${id}"]`);
+        if (card) {
+            const badge = card.querySelector('.badge');
+            if (badge) {
+                badge.className = d.status === 'active' ? 'badge badge-done' : 'badge badge-inactive';
+                badge.textContent = d.status === 'active' ? 'Aktif' : 'Off';
+            }
+        }
+    } else toast(d.message, 'error');
+}
+
+async function deleteProduct(id) {
+    if (!confirm('Hapus produk ini?')) return;
+    const d = await api(`/admin/product/delete/${id}`, {});
+    if (d.success) {
+        toast('Produk dihapus', 'warn');
+        const card = document.querySelector(`[data-product-id="${id}"]`);
+        if (card) { card.style.transition='opacity .3s,transform .3s'; card.style.opacity='0'; card.style.transform='translateX(20px)'; setTimeout(()=>card.remove(),300); }
+    } else toast(d.message, 'error');
+}
+
+// ── TRANSAKSI ──
+async function deleteTransaction(id) {
+    if (!confirm('Hapus transaksi ini?')) return;
+    const d = await api(`/admin/transaction/delete/${id}`, {});
+    if (d.success) {
+        toast('Transaksi dihapus', 'warn');
+        const card = document.querySelector(`[data-trx-id="${id}"]`);
+        if (card) { card.style.transition='opacity .3s'; card.style.opacity='0'; setTimeout(()=>card.remove(),300); }
+    } else toast(d.message, 'error');
+}
+
+// ── USERS ──
+async function deleteUser(id, name) {
+    if (!confirm(`Hapus user "${name}"?`)) return;
+    const d = await api(`/admin/user/delete/${id}`, {});
+    if (d.success) {
+        toast('User dihapus', 'warn');
+        const card = document.querySelector(`[data-user-id="${id}"]`);
+        if (card) { card.style.transition='opacity .3s'; card.style.opacity='0'; setTimeout(()=>card.remove(),300); }
+    } else toast(d.message, 'error');
+}
+
+// ── TESTIMONI ──
+async function loadTestimonials() {
+    const el = document.getElementById('testi-list');
+    el.innerHTML = '<div class="text-center py-8 text-zinc-600"><iconify-icon icon="mdi:loading" class="text-2xl animate-spin block mx-auto mb-2 text-red-400"></iconify-icon><p class="text-xs">Memuat...</p></div>';
+    try {
+        const list = await (await fetch('/api/testimonials')).json();
+        if (!list.length) { el.innerHTML = '<div class="text-center py-10 text-zinc-600 text-xs">Belum ada testimoni</div>'; return; }
+        el.innerHTML = list.map(t => {
+            const stars = '★'.repeat(t.rating) + '☆'.repeat(5-t.rating);
+            const date  = new Date(t.date).toLocaleDateString('id-ID');
+            const short = t.text.length > 80 ? t.text.slice(0,80)+'...' : t.text;
+            // FIX (24 Agu 2026): testimoni ASLI dari pembeli punya field
+            // `username` (bukan `name`), testimoni PALSU dari admin punya
+            // `name`. Kalau cuma pakai t.name doang, testimoni asli bakal
+            // undefined.charAt(0) -> error/crash di sini. displayName
+            // menyatukan keduanya dengan fallback aman.
+            const displayName = t.name || t.username || 'Pengguna';
+            return `
+            <div class="neon-card p-3.5 fade-in">
+                <div class="flex items-start justify-between gap-2 mb-2">
+                    <div class="flex items-center gap-2">
+                        <div class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0" style="background:#dc2626;">
+                            ${displayName.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                            <div class="text-xs font-semibold text-white">${displayName}</div>
+                            <div class="text-yellow-400 text-xs">${stars}</div>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-1.5 flex-shrink-0">
+                        ${t.verified ? '<span class="badge badge-done"><iconify-icon icon="mdi:check-circle" style="vertical-align:-2px;"></iconify-icon> Verified</span>' : '<span class="text-[9px] font-black px-1.5 py-0.5 rounded" style="background:rgba(234,179,8,.15);color:#fbbf24;border:1px solid rgba(234,179,8,.3)">PENDING</span>'}
+                        ${t.featured ? '<span class="badge badge-featured">★ Home</span>' : ''}
+                    </div>
+                </div>
+                <p class="text-[11px] text-zinc-400 leading-relaxed mb-2">"${short}"</p>
+                <div class="flex items-center justify-between gap-2 flex-wrap">
+                    <div class="text-[10px] text-zinc-600">${(t.product && (productNameMap[t.product] || t.productName)) || 'Umum'} · ${date}</div>
+                    <div class="flex gap-1.5 flex-wrap">
+                        <button onclick="toggleVerified('${t.id}')" class="py-1 px-2 text-[10px] rounded-lg font-bold transition-all" style="${t.verified ? 'background:rgba(16,185,129,.15);color:#34d399;border:1px solid rgba(16,185,129,.3);' : 'background:rgba(234,179,8,.1);color:#fbbf24;border:1px solid rgba(234,179,8,.25);'}">${t.verified ? '<iconify-icon icon="mdi:check-circle"></iconify-icon> Verified' : '<iconify-icon icon="mdi:circle-outline"></iconify-icon> Verifikasi'}</button>
+                        <button onclick="toggleFeatured('${t.id}')" class="btn-warning py-1 px-2 text-[10px]">${t.featured ? 'Unfeature' : '★ Feature'}</button>
+                        <button onclick="deleteTestimonial('${t.id}')" class="btn-danger py-1 px-2 text-[10px]"><iconify-icon icon="mdi:trash-can"></iconify-icon></button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch(err) {
+        el.innerHTML = '<div class="text-center py-6 text-xs text-red-400">Gagal memuat testimoni</div>';
+    }
+}
+
+document.getElementById('addTestimonialForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const data = {
+        name: fd.get('name'), rating: fd.get('rating'), text: fd.get('text'),
+        product: fd.get('product'), verified: fd.get('verified')==='on', featured: fd.get('featured')==='on'
+    };
+    const d = await api('/admin/testimonial/add', data);
+    if (d.success) { toast('Testimoni ditambahkan!','success'); closeModal('modal-testi'); this.reset(); loadTestimonials(); }
+    else toast(d.message, 'error');
+});
+
+async function deleteTestimonial(id) {
+    if (!confirm('Hapus testimoni ini?')) return;
+    const d = await api(`/admin/testimonial/delete/${id}`, {});
+    if (d.success) { toast('Testimoni dihapus','warn'); loadTestimonials(); }
+    else toast(d.message, 'error');
+}
+
+async function toggleFeatured(id) {
+    const d = await api(`/admin/testimonial/toggle-featured/${id}`, {});
+    if (d.success) loadTestimonials();
+    else toast(d.message, 'error');
+}
+
+async function toggleVerified(id) {
+    const d = await api(`/admin/testimonial/toggle-verified/${id}`, {});
+    if (d.success) { toast(d.message || 'Status updated','success'); loadTestimonials(); }
+    else toast(d.message, 'error');
+}
+
+// ── LEADERBOARD PALSU ──
+async function loadFakeLeaderboard() {
+    const el = document.getElementById('lb-list');
+    el.innerHTML = '<div class="text-center py-8 text-zinc-600"><iconify-icon icon="mdi:loading" class="text-2xl animate-spin block mx-auto mb-2 text-red-400"></iconify-icon><p class="text-xs">Memuat...</p></div>';
+    try {
+        const res = await (await fetch('/admin/leaderboard/list')).json();
+        const list = res.entries || [];
+        if (!list.length) { el.innerHTML = '<div class="text-center py-10 text-zinc-600 text-xs">Belum ada entri palsu</div>'; return; }
+        el.innerHTML = list.map(f => `
+            <div class="neon-card p-3.5 fade-in flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2.5 min-w-0">
+                    <div class="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0" style="background:#f59e0b;">
+                        ${f.username.charAt(0).toUpperCase()}
+                    </div>
+                    <div class="min-w-0">
+                        <div class="text-xs font-semibold text-white truncate">${f.username}</div>
+                        <div class="text-[10px] text-zinc-500">${f.totalTransactions} trx · Rp ${Number(f.totalSpent).toLocaleString('id-ID')}</div>
+                    </div>
+                </div>
+                <button onclick="deleteFakeLb('${f.id}')" class="btn-danger py-1 px-2 text-[10px] flex-shrink-0"><iconify-icon icon="mdi:trash-can"></iconify-icon></button>
+            </div>`).join('');
+    } catch(err) {
+        el.innerHTML = '<div class="text-center py-6 text-xs text-red-400">Gagal memuat leaderboard</div>';
+    }
+}
+
+document.getElementById('addFakeLbForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const data = {
+        username: fd.get('username'),
+        totalTransactions: fd.get('totalTransactions'),
+        totalSpent: fd.get('totalSpent')
+    };
+    const d = await api('/admin/leaderboard/add', data);
+    if (d.success) { toast('Entri leaderboard ditambahkan!','success'); closeModal('modal-lb'); this.reset(); loadFakeLeaderboard(); }
+    else toast(d.message, 'error');
+});
+
+async function deleteFakeLb(id) {
+    if (!confirm('Hapus entri leaderboard ini?')) return;
+    const d = await api(`/admin/leaderboard/delete/${id}`, {});
+    if (d.success) { toast('Entri dihapus','warn'); loadFakeLeaderboard(); }
+    else toast(d.message, 'error');
+}
+
+// ── SETTINGS ──
+document.getElementById('settingsForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    syncPaymentMethodsToInput();
+    const fd = new FormData(this);
+    const d = await api('/admin/settings/update', Object.fromEntries(fd));
+    if (d.success) toast('Pengaturan disimpan!','success');
+    else toast(d.message, 'error');
+});
+// ── Peta ID produk -> nama produk (24 Agu 2026) --
+// Dipakai loadTestimonials() untuk menampilkan NAMA produk yang enak
+// dibaca, karena field t.product sekarang berisi UUID (lihat catatan
+// bug fix di dropdown form Tambah Testimoni). ──
+const productNameMap = Object.fromEntries(
+  (<%- safeJson(products || []) %>).map(p => [p.id, p.name])
+);
+
+// ── Metode Pembayaran (logo footer) — diminta client 22 Agu 2026 ──
+let paymentMethodsList = <%- safeJson(settings.paymentMethods || []) %>;
+
+function renderPaymentMethodsRows() {
+    const container = document.getElementById('paymentMethodsRows');
+    if (paymentMethodsList.length === 0) {
+        container.innerHTML = '<p class="text-[11px] text-zinc-600">Belum ada logo ditambahkan.</p>';
+        return;
+    }
+    container.innerHTML = paymentMethodsList.map((pm, i) => `
+        <div class="flex items-center gap-2">
+            <input type="text" value="${pm.name || ''}" placeholder="Nama (mis. DANA)" class="hm-input text-xs" style="flex:0 0 110px;" oninput="paymentMethodsList[${i}].name=this.value">
+            <input type="text" value="${pm.logoUrl || ''}" placeholder="URL logo (https://...)" class="hm-input text-xs flex-1" oninput="paymentMethodsList[${i}].logoUrl=this.value">
+            <button type="button" onclick="removePaymentMethodRow(${i})" class="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 flex-shrink-0">
+                <iconify-icon icon="mdi:minus" class="text-sm"></iconify-icon>
+            </button>
+        </div>
+    `).join('');
+}
+function addPaymentMethodRow() {
+    paymentMethodsList.push({ name: '', logoUrl: '' });
+    renderPaymentMethodsRows();
+}
+function removePaymentMethodRow(i) {
+    paymentMethodsList.splice(i, 1);
+    renderPaymentMethodsRows();
+}
+function syncPaymentMethodsToInput() {
+    // Cuma simpan baris yang beneran diisi logoUrl-nya (baris kosong diabaikan)
+    const valid = paymentMethodsList.filter(pm => pm.logoUrl && pm.logoUrl.trim());
+    document.getElementById('paymentMethodsInput').value = JSON.stringify(valid);
+}
+renderPaymentMethodsRows();
+
+// ── QRIS MODE ──
+let CURRENT_API_GATEWAY = '<%= settings.apiGateway||"pakasir" %>';
+
+function setQrisMode(mode) {
+    document.getElementById('qrisModeVal').value = mode;
+    const isStatic = mode === 'static';
+    document.getElementById('sectionStatic').classList.toggle('hidden', !isStatic);
+    document.getElementById('sectionApi').classList.toggle('hidden', isStatic);
+    document.getElementById('modeStaticBtn').className = `flex-1 py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${isStatic ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
+    document.getElementById('modeApiBtn').className = `flex-1 py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${!isStatic ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
+    // Auto-save mode — pakai gateway settings yang SEDANG AKTIF (PakKasir atau GensPay),
+    // supaya toggle static<->api tidak menimpa/reset konfigurasi gateway yang lagi dipakai.
+    const endpoint = CURRENT_API_GATEWAY === 'genspay' ? '/admin/settings/genspay' : '/admin/settings/pakasir';
+    const payload = CURRENT_API_GATEWAY === 'genspay'
+        ? { qrisMode: mode, apiKey: '<%= settings.genspay?.apiKey||"" %>', baseUrl: '<%= settings.genspay?.baseUrl||"https://genspay.my.id/api/v1" %>' }
+        : { qrisMode: mode, apiKey: '<%= settings.pakasir?.apiKey||"" %>', project: '<%= settings.pakasir?.project||"" %>', apiBaseUrl: '<%= settings.pakasir?.apiBaseUrl||"api.pakasir.com" %>' };
+    api(endpoint, payload)
+        .then(d => { if(d.success) toast(`Mode QRIS: ${isStatic ? 'Statis' : 'API (' + (CURRENT_API_GATEWAY === 'genspay' ? 'GensPay' : 'PakKasir') + ')'}`, 'success'); });
+}
+
+document.getElementById('pakasirForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const data = Object.fromEntries(fd);
+    data.qrisMode = 'api';
+    const d = await api('/admin/settings/pakasir', data);
+    if (d.success) toast('Pengaturan PakKasir disimpan & diaktifkan sebagai gateway!','success');
+    else toast(d.message, 'error');
+});
+
+document.getElementById('genspayForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const data = Object.fromEntries(fd);
+    data.qrisMode = 'api';
+    const d = await api('/admin/settings/genspay', data);
+    if (d.success) toast('Pengaturan GensPay disimpan & diaktifkan sebagai gateway!','success');
+    else toast(d.message, 'error');
+});
+
+// ── GATEWAY SELECTOR (PakKasir vs GensPay) ──
+function setApiGateway(gateway) {
+    CURRENT_API_GATEWAY = gateway;
+    document.querySelector('[data-gateway-form="pakasir"]').classList.toggle('hidden', gateway !== 'pakasir');
+    document.querySelector('[data-gateway-form="genspay"]').classList.toggle('hidden', gateway !== 'genspay');
+    document.getElementById('gwPakasirBtn').className = `flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5 ${gateway === 'pakasir' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
+    document.getElementById('gwGenspayBtn').className = `flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5 ${gateway === 'genspay' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
+}
+
+function copyWebhookUrl(elId) {
+    const el = document.getElementById(elId);
+    el.select(); el.setSelectionRange(0, 99999);
+    navigator.clipboard.writeText(el.value).then(() => toast('Webhook URL disalin!', 'success')).catch(() => {});
+}
+
+// Isi otomatis kolom Webhook URL GensPay pakai origin domain yang lagi dibuka
+(function fillWebhookUrls() {
+    const origin = window.location.origin;
+    const g = document.getElementById('genspayWebhookUrl');
+    if (g) g.value = origin + '/webhook/genspay';
+})();
+
+document.getElementById('qrisStaticForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    if (!fd.get('qrisImage') || !fd.get('qrisImage').size) {
+        toast('Pilih file gambar QRIS terlebih dahulu', 'error'); return;
+    }
+    const btn = this.querySelector('button[type=submit]');
+    btn.disabled = true; btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Mengupload...';
+    const res = await fetch('/admin/qris/upload', { method: 'POST', body: fd });
+    const d = await res.json();
+    btn.disabled = false; btn.innerHTML = '<iconify-icon icon="mdi:upload"></iconify-icon> Upload Gambar QRIS';
+    if (d.success) {
+        toast('QRIS berhasil diupload!', 'success');
+        // Juga set mode ke statis dan save — supaya apiGateway (PakKasir/GensPay)
+        // yang sudah dipilih admin tidak ikut ketiban.
+        if (CURRENT_API_GATEWAY === 'genspay') {
+            await api('/admin/settings/genspay', { qrisMode: 'static', apiKey: '<%= settings.genspay?.apiKey||"" %>', baseUrl: '<%= settings.genspay?.baseUrl||"https://genspay.my.id/api/v1" %>' });
+        } else {
+            await api('/admin/settings/pakasir', { qrisMode: 'static', apiKey: '<%= settings.pakasir?.apiKey||"" %>', project: '<%= settings.pakasir?.project||"" %>', apiBaseUrl: '<%= settings.pakasir?.apiBaseUrl||"api.pakasir.com" %>' });
+        }
+        setTimeout(() => location.reload(), 900);
+    } else toast(d.message || 'Gagal upload', 'error');
+});
+
+async function testPakasir() {
+    const apiKey = document.querySelector('#pakasirForm [name=apiKey]').value;
+    const project = document.querySelector('#pakasirForm [name=project]').value;
+    const apiBaseUrl = document.querySelector('#pakasirForm [name=apiBaseUrl]').value;
+    const el = document.getElementById('testResult');
+    el.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300';
+    el.textContent = 'Menguji koneksi...';
+    el.classList.remove('hidden');
+    const d = await api('/admin/qris/test', { gateway: 'pakasir', apiKey, project, apiBaseUrl });
+    if (d.success) {
+        el.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300';
+        el.textContent = 'Koneksi berhasil! API siap digunakan.';
+    } else {
+        el.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400';
+        el.textContent = d.message || 'Koneksi gagal';
+    }
+}
+
+async function testGenspay() {
+    const form = document.getElementById('genspayForm');
+    const apiKey = form.querySelector('[name=apiKey]').value;
+    const baseUrl = form.querySelector('[name=baseUrl]').value;
+    const el = document.getElementById('testResultGenspay');
+    el.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300';
+    el.textContent = 'Menguji koneksi...';
+    el.classList.remove('hidden');
+    const d = await api('/admin/qris/test', { gateway: 'genspay', apiKey, baseUrl });
+    if (d.success) {
+        el.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300';
+        el.textContent = 'Koneksi berhasil! API siap digunakan.';
+    } else {
+        el.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400';
+        el.textContent = d.message || 'Koneksi gagal';
+    }
+}
+
+document.getElementById('credForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const adminUsername = fd.get('adminUsername');
+    const newPassword   = fd.get('newPassword');
+
+    const s = await api('/admin/settings/update', { adminUsername });
+    if (!s.success) { toast(s.message,'error'); return; }
+
+    if (newPassword && newPassword.trim()) {
+        const p = await api('/admin/settings/password', { newPassword });
+        if (!p.success) { toast(p.message,'error'); return; }
+    }
+
+    toast('Kredensial diperbarui! Silakan login ulang.','success');
+    setTimeout(() => { localStorage.removeItem('hm_cart'); window.location.href='/logout'; }, 1500);
+});
+
+// ── KONFIRMASI TRANSAKSI ──
+async function confirmTransaction(id) {
+    if (!confirm('Konfirmasi pembayaran transaksi ini?')) return;
+    const btn = document.getElementById(`trx-confirm-${id}`);
+    if (btn) { btn.disabled = true; btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Proses...'; }
+    const d = await api(`/admin/transaction/confirm/${id}`, {});
+    if (d.success) {
+        toast(d.type === 'reseller' ? 'User berhasil diupgrade jadi Reseller VIP!' : d.type === 'deposit' ? `Top up saldo dikonfirmasi! Saldo user: Rp ${(d.balance||0).toLocaleString('id-ID')}` : `Konfirmasi berhasil! Key: ${d.key||'-'}`, 'success');
+        const badge = document.getElementById(`trx-status-badge-${id}`);
+        if (badge) { badge.className = 'badge badge-done'; badge.textContent = 'Done'; }
+        if (btn) btn.remove();
+        const card = document.querySelector(`[data-trx-id="${id}"]`);
+        if (card) card.setAttribute('data-status','done');
+    } else {
+        toast(d.message || 'Gagal konfirmasi', 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<iconify-icon icon="mdi:check-circle"></iconify-icon> Konfirmasi Bayar'; }
+    }
+}
+
+// ── FILTER TRANSAKSI ──
+function filterTrx(status) {
+    document.querySelectorAll('.trx-filter').forEach(b => {
+        b.className = 'trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white/3 border border-white/10 text-zinc-500';
+    });
+    const activeBtn = document.getElementById(`trxf-${status}`);
+    if (activeBtn) activeBtn.className = 'trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-red-500/20 border border-zinc-500/40 text-red-300';
+    document.querySelectorAll('.trx-item').forEach(card => {
+        const s = card.getAttribute('data-status');
+        card.style.display = (status === 'all' || s === status) ? '' : 'none';
+    });
+}
+
+// ── TOGGLE RESELLER USER ──
+async function toggleReseller(id, username) {
+    const action = document.getElementById(`reseller-btn-${id}`)?.textContent?.trim().includes('Cabut') ? 'cabut' : 'jadikan';
+    if (!confirm(`${action === 'cabut' ? 'Cabut' : 'Jadikan'} "${username}" sebagai reseller?`)) return;
+    const d = await api(`/admin/user/toggle-reseller/${id}`, {});
+    if (d.success) {
+        toast(d.is_reseller ? `${username} sekarang Reseller VIP!` : `Status reseller ${username} dicabut`, d.is_reseller ? 'success' : 'warn');
+        setTimeout(() => location.reload(), 800);
+    } else toast(d.message, 'error');
+}
+
+// ── ADJUST SALDO WALLET USER ──
+// ── FILTER TIPE USER: Semua / Reseller / User Biasa (diminta client 22
+// Agu 2026: "susah cari reseller buat di-add saldo kalau user-nya
+// banyak") ──
+let currentUserTypeFilter = 'all';
+
+function filterUserType(type) {
+    currentUserTypeFilter = type;
+    document.querySelectorAll('.user-type-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(`userTypeBtn${type === 'all' ? 'All' : type === 'reseller' ? 'Reseller' : 'Regular'}`)?.classList.add('active');
+    currentUserPage = 1; // reset ke halaman 1 setiap ganti filter
+    applyUserFilters();
+}
+
+// Fungsi terpadu: gabungkan filter tipe (Semua/Reseller/User Biasa) +
+// search term + pagination, supaya ketiganya konsisten dan tidak saling
+// menimpa satu sama lain.
+function applyUserFilters() {
+    const term = (document.getElementById('userSearchInput')?.value || '').trim().toLowerCase();
+    const allCards = Array.from(document.querySelectorAll('.user-card'));
+
+    // Tahap 1: filter berdasar tipe (reseller/regular/all) + search term.
+    // Hasilnya adalah daftar kartu yang LOLOS kedua kriteria ini.
+    const matchingCards = allCards.filter(card => {
+        const isReseller = card.getAttribute('data-is-reseller') === '1';
+        const typeMatch = currentUserTypeFilter === 'all' || (currentUserTypeFilter === 'reseller' && isReseller) || (currentUserTypeFilter === 'regular' && !isReseller);
+        if (!typeMatch) return false;
+        if (!term) return true;
+        const hay = card.getAttribute('data-search') || '';
+        return hay.includes(term);
+    });
+
+    // Sembunyikan dulu semua kartu, baru tampilkan yang cocok
+    allCards.forEach(card => { card.style.display = 'none'; });
+
+    const pagination = document.getElementById('userPagination');
+    const empty = document.getElementById('userSearchEmpty');
+
+    if (term) {
+        // Mode pencarian: tampilkan SEMUA hasil yang cocok, pagination
+        // disembunyikan sementara (supaya hasil tidak tersebar di banyak halaman).
+        matchingCards.forEach(card => { card.style.display = ''; });
+        pagination?.classList.add('hidden');
+        empty?.classList.toggle('hidden', matchingCards.length > 0);
+    } else {
+        // Tanpa search: terapkan pagination pada hasil filter tipe.
+        empty?.classList.add('hidden');
+        const totalPages = Math.max(1, Math.ceil(matchingCards.length / USERS_PER_PAGE));
+        currentUserPage = Math.min(Math.max(1, currentUserPage), totalPages);
+        const start = (currentUserPage - 1) * USERS_PER_PAGE;
+        const end = start + USERS_PER_PAGE;
+        matchingCards.forEach((card, i) => { card.style.display = (i >= start && i < end) ? '' : 'none'; });
+
+        if (matchingCards.length > USERS_PER_PAGE) {
+            pagination?.classList.remove('hidden');
+            const pageInfo = document.getElementById('userPageInfo');
+            const prevBtn = document.getElementById('userPrevBtn');
+            const nextBtn = document.getElementById('userNextBtn');
+            if (pageInfo) pageInfo.textContent = `Halaman ${currentUserPage} / ${totalPages}`;
+            if (prevBtn) prevBtn.disabled = currentUserPage <= 1;
+            if (nextBtn) nextBtn.disabled = currentUserPage >= totalPages;
+        } else {
+            pagination?.classList.add('hidden');
+        }
+    }
+}
+
+// ── Pagination user (diminta client 22 Agu 2026) ──
+// Semua card user tetap ada di DOM (server-rendered), pagination cuma
+// mengatur display:none/'' berdasar halaman aktif. Saat search aktif,
+// pagination dinonaktifkan sementara (tampilkan SEMUA hasil yang cocok,
+// tanpa dibatasi per-halaman) supaya pencarian tidak membingungkan kalau
+// hasilnya tersebar di banyak halaman.
+const USERS_PER_PAGE = 20;
+let currentUserPage = 1;
+
+function renderUserPage() {
+    applyUserFilters();
+}
+
+function changeUserPage(delta) {
+    currentUserPage += delta;
+    applyUserFilters();
+    document.getElementById('pane-users')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function filterUsers(q) {
+    currentUserPage = 1; // reset ke halaman 1 tiap kali search berubah
+    applyUserFilters();
+}
+
+document.addEventListener('DOMContentLoaded', renderUserPage);
+if (document.readyState !== 'loading') renderUserPage();
+
+async function adjustBalance(id, username) {
+    const input = prompt(`Tambah/kurangi saldo "${username}"\nIsi angka positif untuk menambah, negatif untuk mengurangi.\nContoh: 50000 atau -20000`);
+    if (input === null || input.trim() === '') return;
+    const amount = parseInt(input);
+    if (isNaN(amount) || amount === 0) { toast('Nominal tidak valid', 'error'); return; }
+    const d = await api(`/admin/user/adjust-balance/${id}`, { amount });
+    if (d.success) {
+        toast(`Saldo ${username} sekarang Rp ${d.balance.toLocaleString('id-ID')}`, 'success');
+        setTimeout(() => location.reload(), 800);
+    } else toast(d.message, 'error');
+}
+
+// ── RESELLER SETTINGS ──
+document.getElementById('resellerSettingsForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const data = {
+        resellerEnabled: document.getElementById('resellerEnabledToggle').checked ? 'true' : 'false',
+        resellerPrice: fd.get('resellerPrice'),
+        resellerDiscount: fd.get('resellerDiscount'),
+        resellerNote: fd.get('resellerNote')
+    };
+    const d = await api('/admin/settings/reseller', data);
+    if (d.success) toast('Pengaturan reseller disimpan!', 'success');
+    else toast(d.message, 'error');
+});
+
+document.getElementById('walletSettingsForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const data = {
+        resellerMinDeposit: fd.get('resellerMinDeposit')
+    };
+    const d = await api('/admin/settings/wallet', data);
+    if (d.success) toast('Minimal top up disimpan!', 'success');
+    else toast(d.message, 'error');
+});
+
+document.querySelector('[name=resellerDiscount]')?.addEventListener('input', function() {
+    const el = document.getElementById('discPreview');
+    if (el) el.textContent = (this.value || 20) + '%';
+});
+
+// ─── Banner Carousel ───
+function previewBannerFile(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const url = URL.createObjectURL(file);
+    document.getElementById('bannerFileImg').src = url;
+    document.getElementById('bannerFilePreview').classList.remove('hidden');
+}
+function previewBannerUrl(url) {
+    const wrap = document.getElementById('bannerUrlPreview');
+    const img  = document.getElementById('bannerUrlImg');
+    if (url.trim()) { img.src = url.trim(); wrap.classList.remove('hidden'); }
+    else wrap.classList.add('hidden');
+}
+
+async function loadBanners() {
+    const res = await fetch('/api/banners');
+    // load all (including inactive) via settings
+    const sRes = await fetch('/admin/product/xxx').catch(()=>null); // dummy
+    // get settings banners directly from rendered data
+    renderBanners(window._allBanners || []);
+}
+
+function renderBanners(banners) {
+    const el = document.getElementById('bannerList');
+    if (!banners.length) { el.innerHTML = '<div class="text-xs text-zinc-600 text-center py-4">Belum ada banner. Tambah banner di atas.</div>'; return; }
+    el.innerHTML = banners.map((b,i) => `
+        <div class="flex items-center gap-3 p-3 rounded-xl border ${b.active!==false?'border-red-500/20':'border-zinc-200 opacity-50'}" style="background:#f8f8f9;">
+            <div class="w-20 h-12 rounded-lg overflow-hidden flex-shrink-0 border border-white/10">
+                <img src="${b.imageUrl}" class="w-full h-full object-cover" onerror="this.style.display='none'">
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="text-xs font-bold text-white truncate">${b.title||'(tanpa judul)'}</div>
+                <div class="text-[10px] text-zinc-500 truncate">${b.subtitle||''}</div>
+                <div class="text-[10px] text-red-400 truncate">${b.link||'/'}</div>
+            </div>
+            <div class="flex flex-col gap-1.5 flex-shrink-0">
+                <button onclick="toggleBanner('${b.id}')"
+                    class="px-2 py-1 rounded text-[10px] font-bold border transition-all ${b.active!==false?'border-emerald-500/30 text-emerald-400 bg-emerald-500/10':'border-zinc-600 text-zinc-500'}">
+                    ${b.active!==false?'Aktif':'Mati'}
+                </button>
+                <button onclick="deleteBanner('${b.id}')"
+                    class="px-2 py-1 rounded text-[10px] font-bold border border-red-500/30 text-red-400 bg-red-500/10 hover:bg-red-500/20 transition-all">
+                    Hapus
+                </button>
+            </div>
+        </div>`).join('');
+}
+
+async function addBanner(e) {
+    e.preventDefault();
+    const btn = document.getElementById('bannerAddBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Menyimpan...';
+    const fd = new FormData(e.target);
+    const res = await fetch('/admin/banners/add', { method: 'POST', body: fd });
+    const d = await res.json();
+    btn.disabled = false;
+    btn.innerHTML = '<iconify-icon icon="mdi:plus-circle"></iconify-icon> Tambah Banner';
+    if (d.success) {
+        toast('Banner berhasil ditambahkan!', 'success');
+        window._allBanners = d.banners;
+        renderBanners(d.banners);
+        e.target.reset();
+        document.getElementById('bannerFilePreview').classList.add('hidden');
+        document.getElementById('bannerUrlPreview').classList.add('hidden');
+    } else toast(d.message || 'Gagal tambah banner', 'error');
+}
+
+async function toggleBanner(id) {
+    const d = await api(`/admin/banners/toggle/${id}`, {});
+    if (d.success) {
+        window._allBanners = window._allBanners.map(b => b.id===id ? {...b, active:d.active} : b);
+        renderBanners(window._allBanners);
+        toast(`Banner ${d.active?'diaktifkan':'dinonaktifkan'}`, 'success');
+    }
+}
+
+async function deleteBanner(id) {
+    if (!confirm('Hapus banner ini?')) return;
+    const d = await api(`/admin/banners/delete/${id}`, {});
+    if (d.success) {
+        window._allBanners = window._allBanners.filter(b => b.id!==id);
+        renderBanners(window._allBanners);
+        toast('Banner dihapus', 'success');
+    }
+}
+
+// Override api() untuk DELETE yang butuh method POST tanpa body conflict
+window.api = window.api || async function(url, data) {
+    const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) });
+    return res.json();
+};
+
+// Load banners saat tab settings dibuka
+const _origSwitchTab = window.switchTab;
+window.switchTab = function(name) {
+    _origSwitchTab && _origSwitchTab(name);
+    if (name === 'settings' && !window._bannersLoaded) {
+        window._bannersLoaded = true;
+        fetch('/api/banners').then(r=>r.json()).then(banners=>{
+            // Fetch all banners including inactive via a trick:
+            // We use the already-rendered EJS data
+            window._allBanners = <%- safeJson(settings.banners || []) %>;
+            renderBanners(window._allBanners);
+        });
+    }
+};
+
+// Init jika sudah di tab settings
+if (document.querySelector('#pane-settings.active')) {
+    window._allBanners = <%- safeJson(settings.banners || []) %>;
+    renderBanners(window._allBanners);
+}
+
+// FIX (24 Agu 2026, diminta client): tombol "Tambah Cepat" untuk isi 3
+// kategori platform standar (android/ios/pc) sekali klik, tanpa perlu
+// admin ngetik manual format id:Label. Menambahkan ke baris yang SUDAH
+// ADA di textarea (tidak menimpa kategori custom lain seperti nama game
+// yang mungkin sudah diisi admin sebelumnya), dan melewati platform yang
+// sudah ada supaya tidak duplikat kalau diklik berkali-kali.
+function quickAddPlatformCategories() {
+    const textarea = document.getElementById('categoryTextarea');
+    const existingLines = textarea.value.split('\n').map(l => l.trim()).filter(Boolean);
+    const existingIds = existingLines.map(l => l.split(':')[0].trim().toLowerCase());
+    const platforms = [['android', 'ANDROID'], ['ios', 'IOS'], ['pc', 'PC']];
+    const toAdd = platforms.filter(([id]) => !existingIds.includes(id)).map(([id, label]) => `${id}:${label}`);
+    if (toAdd.length === 0) {
+        toast('Android, iOS, PC sudah ada di daftar kategori', 'info');
+        return;
+    }
+    textarea.value = existingLines.concat(toAdd).join('\n');
+    toast(`Ditambahkan: ${toAdd.map(l => l.split(':')[0]).join(', ')}. Klik "Simpan Kategori" untuk menyimpan.`, 'success');
+}
+
+document.getElementById('categoryForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fd = new FormData(this);
+    const raw = fd.get('categories') || '';
+    const lines = raw.trim().split('\n').filter(l=>l.trim());
+    const cats = [], labels = {};
+    lines.forEach(line => {
+        const [id, ...rest] = line.split(':');
+        if (id && id.trim()) { cats.push(id.trim()); labels[id.trim()] = rest.join(':').trim()||id.trim(); }
+    });
+    if (!cats.length) { toast('Minimal 1 kategori diperlukan', 'error'); return; }
+    const d = await api('/admin/settings/update', { categories: JSON.stringify(cats), categoryLabels: JSON.stringify(labels) });
+    if (d.success) { toast('Kategori disimpan!', 'success'); setTimeout(()=>window.location.href='/admin#settings',800); }
+    else toast(d.message, 'error');
+});
+
+// ═══ SALES CHART ═══
+(function initSalesChart() {
+    const ctx = document.getElementById('salesChart');
+    if (!ctx || typeof Chart === 'undefined') return;
+    const raw = <%- safeJson(chartData) %>;
+    const labels = raw.map(d => d.date);
+    const counts = raw.map(d => d.count);
+    const revenues = raw.map(d => d.revenue);
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: 'Transaksi',
+                    data: counts,
+                    backgroundColor: <%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || "#dc2626", 0.6)) %>,
+                    borderColor: <%- JSON.stringify(settings?.theme?.primaryColor || "#dc2626") %>,
+                    borderWidth: 1,
+                    borderRadius: 6,
+                    yAxisID: 'y'
+                },
+                {
+                    label: 'Revenue (K)',
+                    data: revenues.map(r => Math.round(r/1000)),
+                    type: 'line',
+                    borderColor: 'rgba(52,211,153,.8)',
+                    backgroundColor: 'rgba(52,211,153,.1)',
+                    pointBackgroundColor: '#34d399',
+                    pointRadius: 4,
+                    tension: 0.4,
+                    fill: true,
+                    yAxisID: 'y2'
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { labels: { color: '#a1a1aa', font: { size: 10 } } },
+                tooltip: { backgroundColor: 'rgba(15,15,37,.95)', titleColor:'#fff', bodyColor:'#a1a1aa', borderColor:<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || "#dc2626", 0.25)) %>, borderWidth:1 }
+            },
+            scales: {
+                x: { ticks: { color: '#52525b', font: { size: 9 } }, grid: { color: '#f4f4f5' } },
+                y: { ticks: { color: <%- JSON.stringify(settings?.theme?.accentColor || "#f87171") %>, font: { size: 9 } }, grid: { color: <%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || "#dc2626", 0.1)) %> }, title: { display: true, text: 'Transaksi', color: <%- JSON.stringify(settings?.theme?.accentColor || "#f87171") %>, font: { size: 9 } } },
+                y2: { position: 'right', ticks: { color: '#34d399', font: { size: 9 } }, grid: { drawOnChartArea: false }, title: { display: true, text: 'Revenue (K)', color: '#34d399', font: { size: 9 } } }
+            }
+        }
+    });
+})();
+
+// ═══ KEY POOL MANAGEMENT ═══
+let _allKeys = [];
+
+async function loadKeys() {
+    const r = await fetch('/admin/keyspool');
+    const d = await r.json();
+    if (!d.success) return;
+    _allKeys = d.data || [];
+    renderKeys(_allKeys);
+}
+
+function renderKeys(keys) {
+    const list = document.getElementById('keysList');
+    const total = document.getElementById('keyTotal');
+    const stats = document.getElementById('keyStatsLabel');
+    if (!list) return;
+    const used = keys.filter(k => k.used).length;
+    const avail = keys.length - used;
+    if (total) total.textContent = keys.length;
+    if (stats) stats.textContent = `${avail} tersedia · ${used} terpakai`;
+    if (!keys.length) {
+        list.innerHTML = '<div class="text-center py-8 text-zinc-600 text-xs"><iconify-icon icon="mdi:key-off" class="text-3xl block mx-auto mb-2 text-zinc-700"></iconify-icon>Belum ada key</div>';
+        return;
+    }
+    list.innerHTML = keys.map(k => `
+        <div class="neon-card p-3 flex items-center gap-3 ${k.used ? 'opacity-60' : ''}">
+            <div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${k.used ? 'bg-zinc-800' : 'bg-red-500/15 border border-zinc-500/25'}">
+                <iconify-icon icon="${k.used ? 'mdi:key-off' : 'mdi:key'}" class="text-base ${k.used ? 'text-zinc-600' : 'text-red-400'}"></iconify-icon>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-mono text-sm font-black text-white">${k.code}</span>
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded ${k.used ? 'bg-zinc-700 text-zinc-500' : 'bg-red-500/20 text-red-400 border border-red-500/30'}">
+                        ${k.duration} Hari
+                    </span>
+                    ${k.used ? `<span class="text-[9px] bg-red-500/15 text-red-400 border border-red-500/25 px-1.5 py-0.5 rounded font-bold">TERPAKAI</span>` : '<span class="text-[9px] bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 px-1.5 py-0.5 rounded font-bold">TERSEDIA</span>'}
+                </div>
+                <div class="text-[10px] text-zinc-500 mt-0.5">
+                    ${k.label !== k.duration + ' Hari' ? k.label + ' · ' : ''}
+                    ${k.used ? `Digunakan: <span class="text-zinc-400">${k.usedByUsername || '?'}</span>` : `Dibuat: ${new Date(k.createdAt).toLocaleDateString('id-ID')}`}
+                </div>
+            </div>
+            <button onclick="deleteKey('${k.id}')" class="btn-danger py-1 px-2 text-[10px]" ${k.used ? 'disabled style="opacity:.4"' : ''}>
+                <iconify-icon icon="mdi:trash-can"></iconify-icon>
+            </button>
+        </div>`).join('');
+}
+
+async function addKey() {
+    const code = document.getElementById('newKeyCode').value.trim();
+    const duration = document.getElementById('newKeyDuration').value.trim();
+    const label = document.getElementById('newKeyLabel').value.trim();
+    const note = document.getElementById('newKeyNote').value.trim();
+    if (!code || !duration) { toast('Kode dan durasi wajib diisi', 'error'); return; }
+    const d = await api('/admin/keyspool/add', { code, duration, label, note });
+    if (d.success) {
+        toast('Key berhasil ditambahkan!', 'success');
+        document.getElementById('newKeyCode').value = '';
+        document.getElementById('newKeyDuration').value = '';
+        document.getElementById('newKeyLabel').value = '';
+        document.getElementById('newKeyNote').value = '';
+        _allKeys = d.data;
+        renderKeys(_allKeys);
+    } else toast(d.message, 'error');
+}
+
+async function generateKeys() {
+    const count = document.getElementById('genCount').value;
+    const duration = document.getElementById('genDuration').value;
+    const prefix = document.getElementById('genPrefix').value;
+    if (!duration || parseInt(duration) <= 0) { toast('Durasi tidak valid', 'error'); return; }
+    const d = await api('/admin/keyspool/generate', { count, duration, prefix });
+    if (d.success) {
+        toast(`${d.generated} key berhasil dibuat!`, 'success');
+        _allKeys = d.data;
+        renderKeys(_allKeys);
+        const res = document.getElementById('genResult');
+        res.classList.remove('hidden');
+        res.innerHTML = `<div class="p-3 rounded-xl text-xs font-mono text-red-300 break-all" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">${d.codes.join('<br>')}</div>`;
+    } else toast(d.message, 'error');
+}
+
+async function deleteKey(id) {
+    if (!confirm('Hapus key ini?')) return;
+    const d = await api('/admin/keyspool/delete/' + id, {});
+    if (d.success) {
+        toast('Key dihapus', 'success');
+        _allKeys = _allKeys.filter(k => k.id !== id);
+        renderKeys(_allKeys);
+    } else toast(d.message, 'error');
+}
+
+// ═══ VOUCHER MANAGEMENT ═══
+async function loadVouchers() {
+    const r = await fetch('/admin/vouchers');
+    const d = await r.json();
+    if (!d.success) return;
+    renderVouchers(d.data || []);
+}
+
+function renderVouchers(vouchers) {
+    const list = document.getElementById('vouchersList');
+    const stats = document.getElementById('voucherStatsLabel');
+    if (!list) return;
+    const active = vouchers.filter(v => v.active).length;
+    if (stats) stats.textContent = `${vouchers.length} total · ${active} aktif`;
+    if (!vouchers.length) {
+        list.innerHTML = '<div class="text-center py-8 text-zinc-600 text-xs"><iconify-icon icon="mdi:ticket-outline" class="text-3xl block mx-auto mb-2 text-zinc-700"></iconify-icon>Belum ada voucher</div>';
+        return;
+    }
+    list.innerHTML = vouchers.map(v => {
+        const expired = v.expiresAt && new Date(v.expiresAt) < new Date();
+        const exhausted = v.maxUses > 0 && v.usedCount >= v.maxUses;
+        const isInactive = !v.active || expired || exhausted;
+        const valDisplay = v.type === 'percent' ? v.value + '%' : 'Rp ' + v.value.toLocaleString('id-ID');
+        const minDisplay = v.minPurchase > 0 ? 'Min Rp ' + v.minPurchase.toLocaleString('id-ID') : 'Tanpa min';
+        return `<div class="neon-card p-3 flex items-center gap-3 ${isInactive ? 'opacity-50' : ''}">
+            <div class="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${v.active ? 'bg-green-500/15 border border-green-500/25' : 'bg-zinc-800'}">
+                <iconify-icon icon="${v.active ? 'mdi:ticket-percent' : 'mdi:ticket-off'}" class="text-lg ${v.active ? 'text-green-400' : 'text-zinc-600'}"></iconify-icon>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <span class="font-mono text-sm font-black text-white">${v.code}</span>
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded ${v.active ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 'bg-zinc-700 text-zinc-500'}">${valDisplay}</span>
+                    ${v.excludeReseller ? '<span class="text-[9px] font-bold px-1.5 py-0.5 rounded" style="background:rgba(234,179,8,.12);color:#fbbf24;border:1px solid rgba(234,179,8,.25)">Non-Reseller</span>' : ''}
+                </div>
+                <div class="flex items-center gap-3 text-[10px] mt-0.5 flex-wrap">
+                    <span class="text-zinc-500">${v.description || '—'}</span>
+                    <span class="text-zinc-600">${minDisplay}</span>
+                    <span class="text-zinc-600">${v.usedCount}/${v.maxUses || '∞'} dipakai</span>
+                </div>
+                ${v.expiresAt ? `<div class="text-[9px] ${expired ? 'text-red-400' : 'text-zinc-500'}">Kadaluarsa: ${new Date(v.expiresAt).toLocaleDateString('id-ID')}</div>` : ''}
+            </div>
+            <div class="flex flex-col gap-1">
+                <button onclick="toggleVoucher('${v.id}')" class="px-2 py-1 text-[10px] rounded-lg border transition-all font-semibold ${v.active ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/25' : 'bg-emerald-500/15 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/25'}">
+                    <iconify-icon icon="${v.active ? 'mdi:pause' : 'mdi:play'}"></iconify-icon>
+                    ${v.active ? 'Nonaktif' : 'Aktifkan'}
+                </button>
+                <button onclick="deleteVoucher('${v.id}')" class="btn-danger py-1 px-2 text-[10px]">
+                    <iconify-icon icon="mdi:trash-can"></iconify-icon>
+                </button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+async function addVoucher() {
+    const code = document.getElementById('newVoucherCode').value.trim();
+    const type = document.getElementById('newVoucherType').value;
+    const value = document.getElementById('newVoucherValue').value;
+    const minPurchase = document.getElementById('newVoucherMin').value;
+    const maxUses = document.getElementById('newVoucherMax').value;
+    const perUserLimit = document.getElementById('newVoucherPerUser').value;
+    const expiresAt = document.getElementById('newVoucherExpiry').value;
+    const description = document.getElementById('newVoucherDesc').value.trim();
+    if (!code || !value) { toast('Kode dan nilai wajib diisi', 'error'); return; }
+    const d = await api('/admin/vouchers/add', { code, type, value, minPurchase, maxUses, perUserLimit, expiresAt, description, excludeReseller: document.getElementById('newVoucherExcludeReseller').checked });
+    if (d.success) {
+        toast('Voucher berhasil dibuat!', 'success');
+        document.getElementById('newVoucherCode').value = '';
+        document.getElementById('newVoucherValue').value = '';
+        document.getElementById('newVoucherDesc').value = '';
+        renderVouchers(d.data);
+    } else toast(d.message, 'error');
+}
+
+async function toggleVoucher(id) {
+    const d = await api('/admin/vouchers/toggle/' + id, {});
+    if (d.success) loadVouchers();
+    else toast(d.message, 'error');
+}
+
+async function deleteVoucher(id) {
+    if (!confirm('Hapus voucher ini?')) return;
+    const d = await api('/admin/vouchers/delete/' + id, {});
+    if (d.success) {
+        toast('Voucher dihapus', 'success');
+        loadVouchers();
+    } else toast(d.message, 'error');
+}
+
+// ═══ EXPORT / IMPORT DATABASE ═══
+async function importDB(event) {
+    const file = event.target.files[0];
+    const statusEl = document.getElementById('importStatus');
+    if (!file) return;
+    statusEl.classList.remove('hidden');
+    statusEl.innerHTML = '<div class="flex items-center gap-2 text-xs text-red-400"><iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Membaca file...</div>';
+    try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const r = await fetch('/admin/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        const d = await r.json();
+        if (d.success) {
+            statusEl.innerHTML = `<div class="flex items-center gap-2 text-xs text-emerald-400"><iconify-icon icon="mdi:check-circle"></iconify-icon> ${d.message}. Reload...</div>`;
+            setTimeout(() => location.reload(), 1000);
+        } else {
+            statusEl.innerHTML = `<div class="flex items-center gap-2 text-xs text-red-400"><iconify-icon icon="mdi:alert-circle"></iconify-icon> ${d.message}</div>`;
+        }
+    } catch(e) {
+        statusEl.innerHTML = `<div class="flex items-center gap-2 text-xs text-red-400"><iconify-icon icon="mdi:alert-circle"></iconify-icon> File tidak valid: ${e.message}</div>`;
+    }
+    event.target.value = '';
+}
+</script>
+</body>
+</html>

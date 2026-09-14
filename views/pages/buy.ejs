@@ -1,0 +1,996 @@
+<%
+const pageTitle = 'Beli ' + product.name;
+// SEO (diminta client 22 Agu 2026): description dinamis per-produk, biar
+// tiap halaman /buy/:id punya snippet unik di hasil pencarian Google
+// (bukan cuma pakai deskripsi toko generik yang sama untuk semua produk).
+const pageDescription = `Beli ${product.name} murah & terpercaya di ${settings?.siteName || 'AGHA NL'}. Proses instan, pembayaran QRIS aman. Harga mulai dari Rp ${(product.pricingOptions?.[0]?.price || product.items?.[0]?.p || 0).toLocaleString('id-ID')}.`;
+
+// SEO: Schema.org Product structured data (diminta client 22 Agu 2026) --
+// bikin Google bisa nampilkan rich snippet (harga, ketersediaan stok)
+// langsung di hasil pencarian, bukan cuma teks biasa.
+const schemaMinPrice = product.pricingOptions?.length
+  ? Math.min(...product.pricingOptions.map(o => o.price))
+  : (product.items?.[0]?.p || 0);
+const schemaProduct = {
+  '@context': 'https://schema.org',
+  '@type': 'Product',
+  name: product.name,
+  description: product.description ? product.description.replace(/\n/g, ' ').slice(0, 300) : pageDescription,
+  image: product.image ? (product.image.startsWith('http') ? product.image : siteUrl + product.image) : undefined,
+  offers: {
+    '@type': 'Offer',
+    price: schemaMinPrice,
+    priceCurrency: 'IDR',
+    availability: (product.stockCount > 0) ? 'https://schema.org/InStock' : 'https://schema.org/OutOfStock',
+    url: siteUrl + '/buy/' + product.id,
+  },
+};
+%>
+
+<style>
+    /* FIX (redesign 22 Agu 2026): file ini aslinya didesain untuk
+       background GELAP, penuh dengan class Tailwind text-white/text-white/40
+       dst di ratusan tempat. Sekarang background global sudah PUTIH (lihat
+       layout.ejs), jadi teks putih-di-atas-putih akan tidak terbaca sama
+       sekali. Daripada ganti setiap class text-white satu-satu (rawan
+       miss di file besar ini), override di sini: paksa semua elemen
+       dengan class text-white* di halaman ini jadi warna gelap.
+       Class lain (text-red-400, text-yellow-400, dst) TIDAK disentuh
+       karena itu warna aksen yang sudah sesuai. */
+    .text-white { color: #18181b !important; }
+    .text-white\/70 { color: rgba(24,24,27,.75) !important; }
+    .text-white\/60 { color: rgba(24,24,27,.65) !important; }
+    .text-white\/50 { color: rgba(24,24,27,.55) !important; }
+    .text-white\/40 { color: rgba(24,24,27,.45) !important; }
+    .text-white\/30 { color: rgba(24,24,27,.4) !important; }
+    .text-white\/25 { color: rgba(24,24,27,.35) !important; }
+    .text-white\/20 { color: rgba(24,24,27,.3) !important; }
+    .text-white\/15 { color: rgba(24,24,27,.25) !important; }
+    .placeholder-white\/25::placeholder { color: rgba(24,24,27,.3) !important; }
+    .bg-white\/5 { background: #f4f4f5 !important; }
+    .bg-white\/10 { background: #ececee !important; }
+    .border-white\/10 { border-color: #ececee !important; }
+    .border-white\/5 { border-color: #f4f4f5 !important; }
+    .border-white\/15 { border-color: #e4e4e7 !important; }
+
+    /* FIX (dark mode, 23 Agu 2026): sama seperti dashboard.ejs -- file ini
+       sudah dipaksa terang oleh override di atas, jadi butuh override
+       KEDUA khusus html.dark supaya ikut gelap lagi. */
+    html.dark .text-white,
+    html.dark .text-white\/70,
+    html.dark .text-white\/60,
+    html.dark .text-white\/50,
+    html.dark .text-white\/40,
+    html.dark .text-white\/30,
+    html.dark .text-white\/25,
+    html.dark .text-white\/20,
+    html.dark .text-white\/15 { color: var(--text-1) !important; }
+    html.dark .placeholder-white\/25::placeholder { color: var(--text-3) !important; }
+    html.dark .bg-white\/5 { background: var(--bg-hover) !important; }
+    html.dark .bg-white\/10 { background: var(--border) !important; }
+    html.dark .border-white\/10,
+    html.dark .border-white\/5,
+    html.dark .border-white\/15 { border-color: var(--border) !important; }
+    html.dark .text-zinc-400,
+    html.dark .text-zinc-500,
+    html.dark .text-zinc-600 { color: var(--text-2) !important; }
+    html.dark .text-zinc-700,
+    html.dark .text-zinc-900 { color: var(--text-1) !important; }
+    html.dark .pkg-card { background: var(--bg-card) !important; }
+
+    .pkg-option-label { display:block; cursor:pointer; }
+    .pkg-option-label input[type=radio] { display:none; }
+    .pkg-option-label input[type=radio]:checked + .pkg-card {
+        border-color: var(--neon-purple-35) !important;
+        background: var(--neon-purple-10) !important;
+    }
+    .pkg-card {
+        background:var(--bg-card);
+        border:1px solid var(--border);
+        border-radius:10px;
+        padding:12px 14px;
+        transition:border-color .15s;
+    }
+    .pkg-card:hover { border-color:var(--border-md); }
+    .count-up { opacity:1; }
+</style>
+
+<!-- SEO: Schema.org Product structured data -->
+<script type="application/ld+json"><%- safeJson(schemaProduct) %></script>
+
+<!-- NAVBAR -->
+<nav id="navbar" class="fixed top-0 left-0 right-0 z-50 transition-all duration-300" style="background:var(--bg-main);backdrop-filter:blur(12px);border-bottom:1px solid var(--border);">
+    <div class="max-w-3xl mx-auto px-4">
+        <div class="flex items-center justify-between h-14">
+            <a href="/" class="flex items-center gap-2" style="text-decoration:none;">
+                <img src="<%= settings?.logoUrl || '/uploads/logo-main.png' %>" alt="Logo" class="object-contain flex-shrink-0" style="height:40px;width:40px;">
+                <%- include('../partials/logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '16px' }) %>
+            </a>
+            <a href="/" class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg transition-colors" style="color:var(--text-2);border:1px solid var(--border);" onmouseover="this.style.color='var(--text-1)';this.style.background='rgba(0,0,0,.03)'" onmouseout="this.style.color='var(--text-2)';this.style.background='transparent'">
+                <iconify-icon icon="mdi:arrow-left" class="text-sm"></iconify-icon> Kembali
+            </a>
+        </div>
+    </div>
+</nav>
+
+<div class="min-h-screen pt-16 pb-8 px-4">
+<div class="max-w-3xl mx-auto space-y-4">
+
+    <!-- ── PRODUCT HEADER ── -->
+    <div class="card rounded-xl overflow-hidden mt-4 fade-in-up">
+        <div class="h-px w-full" style="background:var(--border-md);"></div>
+        <div class="flex items-center gap-3 p-4">
+            <div class="w-16 h-16 rounded-xl overflow-hidden flex-shrink-0 border border-white/10">
+                <% if (product.image) { %>
+                    <img src="<%= product.image %>" alt="<%= product.name %>" class="w-full h-full object-cover"
+                         onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+                    <div class="w-full h-full items-center justify-center bg-red-500/10" style="display:none">
+                        <iconify-icon icon="solar:gamepad-bold" class="text-2xl text-red-400"></iconify-icon>
+                    </div>
+                <% } else { %>
+                    <div class="w-full h-full flex items-center justify-center bg-red-500/10">
+                        <iconify-icon icon="solar:gamepad-bold" class="text-2xl text-red-400"></iconify-icon>
+                    </div>
+                <% } %>
+            </div>
+            <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                    <% if (product.badge) { %>
+                    <span class="badge-tag bg-yellow-500/80 text-black"><%= product.badge %></span>
+                    <% } %>
+                    <!-- FIX (diminta client 22 Agu 2026): label kategori sekarang
+                         dinamis dari `categories` (bisa lebih dari satu, bukan
+                         cuma Android/iOS/PC hardcode), backward-compat ke data
+                         lama (`platforms` array atau `category` string tunggal). -->
+                    <% const prodCategories = Array.isArray(product.categories) ? product.categories
+                         : (Array.isArray(product.platforms) ? product.platforms
+                         : (product.category ? [product.category] : [])); %>
+                    <% prodCategories.forEach(cat => { %>
+                    <span class="platform-label"><%= (categoryLabels?.[cat] || cat).toUpperCase() %></span>
+                    <% }) %>
+                </div>
+                <h1 class="text-sm font-black text-white font-display leading-tight"><%= product.name %></h1>
+                <div class="text-[10px] text-white/30 mt-0.5">
+                    <% const displaySold = (product.fakeSold != null) ? product.fakeSold : (product.sold || 0); %>
+                    v<%= product.version || '1.0' %> · Terjual <%= displaySold.toLocaleString('id-ID') %>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── TAB SHOWCASE & INFORMATION (diminta client 22 Agu 2026,
+         referensi screenshot vipibmstore.com) ── -->
+    <% const desc = parseProductDescription(product.description); %>
+    <% const hasShowcase = !!product.videoUrl; %>
+    <% const hasInfo = !!(product.compatibility || (product.featureList && product.featureList.length) || desc.paragraphs.length || desc.bullets.length); %>
+    <% if (hasShowcase || hasInfo || product.channelUrl) { %>
+    <div class="card rounded-xl overflow-hidden fade-in-up">
+        <% if (hasShowcase && hasInfo) { %>
+        <!-- Tab selector: cuma tampil kalau DUA-DUANYA ada isinya. Kalau
+             cuma salah satu, langsung tampilkan tanpa tab (tidak perlu
+             navigasi kalau isinya cuma 1 section). -->
+        <div style="display:flex;border-bottom:1px solid var(--border);">
+            <button onclick="switchProductTab('showcase')" id="tabBtnShowcase" class="product-tab-btn active" style="flex:1;padding:12px 0;font-size:11px;font-weight:800;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;">
+                <iconify-icon icon="mdi:play-circle"></iconify-icon> SHOWCASE
+            </button>
+            <button onclick="switchProductTab('info')" id="tabBtnInfo" class="product-tab-btn" style="flex:1;padding:12px 0;font-size:11px;font-weight:800;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;">
+                <iconify-icon icon="mdi:information"></iconify-icon> INFORMATION
+            </button>
+        </div>
+        <% } %>
+
+        <% if (hasShowcase) { %>
+        <div id="tabPaneShowcase" class="p-4" style="<%= hasInfo ? '' : '' %>">
+            <% const ytMatch = product.videoUrl.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+)/); %>
+            <% if (ytMatch) { %>
+            <div style="position:relative;padding-top:56.25%;border-radius:10px;overflow:hidden;background:#000;">
+                <iframe src="https://www.youtube.com/embed/<%= ytMatch[1] %>" style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;" allowfullscreen loading="lazy"></iframe>
+            </div>
+            <% } else { %>
+            <video src="<%= product.videoUrl %>" controls style="width:100%;border-radius:10px;background:#000;max-height:360px;"></video>
+            <% } %>
+        </div>
+        <% } %>
+
+        <% if (hasInfo) { %>
+        <div id="tabPaneInfo" class="p-4" style="<%= hasShowcase ? 'display:none;' : '' %>">
+            <% if (product.compatibility) { %>
+            <div class="mb-3">
+                <div class="text-[10px] font-bold uppercase tracking-[0.1em] mb-1" style="color:#eab308;">System Compatibility:</div>
+                <p class="text-xs text-zinc-300"><%= product.compatibility %></p>
+            </div>
+            <% } %>
+            <% if (product.featureList && product.featureList.length) { %>
+            <div class="mb-3">
+                <div class="text-[10px] font-bold uppercase tracking-[0.1em] mb-2" style="color:#eab308;">Feature List:</div>
+                <div class="space-y-1">
+                    <% product.featureList.forEach(feat => { %>
+                    <div class="flex items-start gap-2">
+                        <span class="text-zinc-500 mt-0.5" style="font-size:8px;">&#9679;</span>
+                        <span class="text-xs text-zinc-300"><%= feat %></span>
+                    </div>
+                    <% }) %>
+                </div>
+            </div>
+            <% } %>
+            <% desc.paragraphs.forEach(p => { %>
+            <p class="text-xs text-zinc-400 leading-relaxed mb-2"><%= p %></p>
+            <% }) %>
+            <% if (desc.bullets.length > 0) { %>
+            <div class="space-y-1.5 mt-2">
+                <% desc.bullets.forEach(b => { %>
+                <div class="flex items-center gap-2">
+                    <iconify-icon icon="mdi:check-circle" style="color:#4ade80;font-size:13px;flex-shrink:0;"></iconify-icon>
+                    <span class="text-xs text-zinc-300"><%= b %></span>
+                </div>
+                <% }) %>
+            </div>
+            <% } %>
+        </div>
+        <% } %>
+
+        <!-- Tombol download -- SATU tombol saja di bawah (diminta client
+             22 Agu 2026), bukan menyebar per-section. -->
+        <% if (product.channelUrl) { %>
+        <div class="p-4 pt-0">
+            <a href="<%= product.channelUrl %>" target="_blank" class="flex items-center justify-center gap-2 text-xs font-bold py-2.5" style="color:#fff;background:var(--accent-color);text-decoration:none;border-radius:4px;">
+                <iconify-icon icon="mdi:download" style="font-size:15px;"></iconify-icon>
+                <span>Download</span>
+            </a>
+        </div>
+        <% } %>
+    </div>
+    <script>
+    function switchProductTab(tab) {
+        const showcaseBtn = document.getElementById('tabBtnShowcase');
+        const infoBtn = document.getElementById('tabBtnInfo');
+        const showcasePane = document.getElementById('tabPaneShowcase');
+        const infoPane = document.getElementById('tabPaneInfo');
+        if (!showcaseBtn || !infoBtn) return; // tidak ada tab (cuma 1 section)
+        const isShowcase = tab === 'showcase';
+        showcaseBtn.classList.toggle('active', isShowcase);
+        infoBtn.classList.toggle('active', !isShowcase);
+        if (showcasePane) showcasePane.style.display = isShowcase ? '' : 'none';
+        if (infoPane) infoPane.style.display = isShowcase ? 'none' : '';
+    }
+    </script>
+    <style>
+        .product-tab-btn { color: var(--text-3); }
+        .product-tab-btn.active { color: var(--accent-color); border-bottom: 2px solid var(--accent-color); margin-bottom: -1px; }
+    </style>
+    <% } %>
+
+    <!-- ── SALDO WALLET (khusus reseller) ── -->
+    <% if (isReseller) { %>
+    <div class="rounded-xl p-4 flex items-center justify-between fade-in-up" style="background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.25);">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style="background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);">
+                <iconify-icon icon="mdi:wallet" style="color:#fbbf24;font-size:18px;"></iconify-icon>
+            </div>
+            <div>
+                <div class="text-[10px] text-zinc-500">Saldo Wallet Reseller</div>
+                <div class="text-base font-black text-yellow-400" id="walletBalanceShow">Rp <%= (user?.balance||0).toLocaleString('id-ID') %></div>
+            </div>
+        </div>
+        <a href="/dashboard#wallet" class="px-3 py-2 rounded-lg text-[11px] font-bold flex-shrink-0" style="background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);color:#fbbf24;text-decoration:none;">
+            <iconify-icon icon="mdi:plus-circle" style="vertical-align:-2px;"></iconify-icon> Top Up
+        </a>
+    </div>
+    <% } %>
+
+    <!-- ── PILIH DURASI ── -->
+    <div class="fade-in-up">
+        <div class="mb-3">
+            <p class="text-[10px] font-bold uppercase tracking-[0.15em] text-white/40">PILIH DURASI</p>
+        </div>
+        <div class="grid grid-cols-2 gap-2" id="pkg-grid">
+            <% if (product.items && product.items.length > 0) { %>
+                <% product.items.forEach((item, idx) => { %>
+                <% const itemStock = (item.stok || 0); %>
+                <% const isOutOfStock = itemStock === 0; %>
+                <% const displayPrice = (isReseller && item.reseller_price) ? item.reseller_price : item.p; %>
+                <label class="pkg-option-label" style="<%= isOutOfStock ? 'opacity:0.5;cursor:not-allowed;' : '' %>">
+                    <input type="radio" name="pkg" value="<%= idx %>"
+                           onchange="selectPkg('<%= item.l %>', <%= displayPrice %>, <%= itemStock %>, <%= item.durationValue||'null' %>, '<%= item.durationUnit||'d' %>')"
+                           <%= idx===0 && !isOutOfStock ? 'checked' : '' %>
+                           <%= isOutOfStock ? 'disabled' : '' %>>
+                    <div class="pkg-card rounded-2xl p-3">
+                        <div class="text-xs font-semibold text-white/70 mb-0.5">
+                            <%= item.l %>
+                        </div>
+                        <div class="text-sm font-black <%= isReseller && item.reseller_price ? 'text-yellow-400' : 'text-white' %>">
+                            Rp <%= displayPrice.toLocaleString('id-ID') %>
+                        </div>
+                        <% if (isReseller && item.reseller_price) { %>
+                            <div class="text-[9px] text-zinc-500 line-through">Rp <%= item.p.toLocaleString('id-ID') %></div>
+                        <% } else if (item.strike_price && item.strike_price > item.p) { %>
+                            <!-- Harga coret per-durasi (diminta client 22 Agu 2026, referensi screenshot produk "SENJU") -->
+                            <div class="text-[9px] text-zinc-500 line-through">Rp <%= item.strike_price.toLocaleString('id-ID') %></div>
+                        <% } %>
+                    </div>
+                </label>
+                <% }) %>
+            <% } %>
+        </div>
+    </div>
+
+    <!-- ── ORDER FORM ── -->
+    <div class="card rounded-xl p-5 space-y-4 fade-in-up">
+        <!-- WHATSAPP -->
+        <div>
+            <label class="text-[10px] font-bold uppercase tracking-[0.15em] text-white/40 mb-1.5 block">WHATSAPP</label>
+            <input type="tel" id="waInput" required
+                class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none transition-all"
+                style="background:var(--bg-section);border:1px solid var(--border);"
+                onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                placeholder="08xxxxxxxxxx"
+                value="<%= user?.wa || '' %>" maxlength="15">
+        </div>
+
+        <!-- NAMA -->
+        <div>
+            <label class="text-[10px] font-bold uppercase tracking-[0.15em] text-white/40 mb-1.5 block">NAMA</label>
+            <input type="text" id="customerName" required
+                class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none transition-all"
+                style="background:var(--bg-section);border:1px solid var(--border);"
+                onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                placeholder="Nama kamu"
+                value="<%= user?.username && !user?.isGuest ? user.username : '' %>" maxlength="60">
+        </div>
+
+        <!-- VOUCHER -->
+        <div>
+            <label class="text-[10px] font-bold uppercase tracking-[0.15em] text-white/40 mb-1.5 block">KODE VOUCHER (opsional)</label>
+            <div class="flex gap-2">
+                <input type="text" id="voucherInput" placeholder="Masukkan kode voucher"
+                    class="flex-1 px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none uppercase font-mono transition-all"
+                    style="background:var(--bg-section);border:1px solid var(--border);"
+                    onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                    maxlength="30" oninput="this.value=this.value.toUpperCase(); clearVoucher()">
+                <button onclick="applyVoucher()" id="voucherBtn"
+                    class="px-4 py-3 rounded-xl text-xs font-bold transition-all flex-shrink-0"
+                    style="background:rgba(234,179,8,.15);border:1px solid rgba(234,179,8,.3);color:#fbbf24;">
+                    Pakai
+                </button>
+            </div>
+            <div id="voucherStatus" class="mt-1.5 hidden"></div>
+        </div>
+
+        <!-- ORDER SUMMARY TABLE -->
+        <div class="rounded-xl p-4 space-y-2 text-xs" style="background:var(--bg-section);border:1px solid var(--border);">
+            <div class="flex justify-between text-white/40">
+                <span>Produk</span>
+                <span class="text-white font-semibold"><%= product.name %></span>
+            </div>
+            <div class="flex justify-between text-white/40">
+                <span>Durasi</span>
+                <span class="text-white font-semibold" id="selectedLabel"><%= product.items?.[0]?.l || '-' %></span>
+            </div>
+            <div id="voucherRow" class="hidden flex justify-between text-white/40">
+                <span>Diskon</span>
+                <span class="text-emerald-400 font-semibold" id="discountShow">-</span>
+            </div>
+            <div class="h-px" style="background:var(--border);"></div>
+            <div class="flex justify-between items-center">
+                <span class="text-white/50 text-sm font-semibold">Total</span>
+                <span class="text-2xl font-display font-black text-red-300" id="totalPrice">
+                    Rp <%= ((isReseller && product.items?.[0]?.reseller_price) ? product.items[0].reseller_price : (product.items?.[0]?.p||0)).toLocaleString('id-ID') %>
+                </span>
+            </div>
+            <div id="originalPriceShow" class="hidden text-right text-[10px] text-zinc-500 line-through"></div>
+        </div>
+
+        <!-- DOWNLOAD APK BUTTON -->
+        <% if (settings.contact?.downloadUrl) { %>
+        <a href="<%= settings.contact.downloadUrl %>"
+           target="_blank" rel="noopener"
+           class="btn-ghost w-full py-3 rounded-xl text-white/70 text-sm font-medium flex items-center justify-center gap-2">
+            <iconify-icon icon="solar:download-minimalistic-bold" class="text-base text-red-400"></iconify-icon>Download APK / Channel AGHA NL
+        </a>
+        <% } %>
+
+        <!-- KONFIRMASI / ORDER BUTTON -->
+        <% const hasStock = (product.stockCount || 0) > 0; %>
+        <% if (hasStock) { %>
+            <button id="submitBtn" onclick="handleOrder()"
+                class="btn-primary w-full py-4 text-sm font-black text-white flex items-center justify-center gap-2" style="border-radius:4px;">
+                <% if (isReseller) { %>
+                <iconify-icon icon="mdi:wallet" class="text-lg"></iconify-icon>Beli dengan Saldo
+                <% } else { %>
+                <iconify-icon icon="solar:bag-check-bold" class="text-lg"></iconify-icon>Konfirmasi
+                <% } %>
+            </button>
+            <button onclick="addProductToCart()"
+                class="btn-ghost w-full py-3 rounded-xl text-sm font-medium text-white/60 flex items-center justify-center gap-2">
+                <iconify-icon icon="solar:cart-plus-bold" class="text-base text-red-400"></iconify-icon>Simpan ke Keranjang
+            </button>
+        <% } else { %>
+            <button disabled class="w-full py-4 text-sm font-bold flex items-center justify-center gap-2 cursor-not-allowed" style="border-radius:4px;background:var(--bg-hover);color:var(--text-3);border:1px solid var(--border);">
+                <iconify-icon icon="solar:close-circle-bold"></iconify-icon>Stok Habis
+            </button>
+        <% } %>
+
+        <!-- WA CS + TELEGRAM CS -->
+        <div class="flex gap-2">
+            <a href="https://wa.me/<%= settings.contact?.whatsapp || '6285181236886' %>" target="_blank" rel="noopener"
+               class="flex-1 btn-ghost py-3 rounded-xl text-white/60 text-xs font-medium flex items-center justify-center gap-1.5">
+                <iconify-icon icon="solar:chat-round-bold" class="text-sm text-green-400"></iconify-icon>WA CS
+            </a>
+            <% if (settings.contact?.waChannel) { %>
+            <a href="<%= settings.contact.waChannel %>"
+               target="_blank" rel="noopener"
+               class="flex-1 btn-ghost py-3 rounded-xl text-white/60 text-xs font-medium flex items-center justify-center gap-1.5">
+                <iconify-icon icon="mdi:whatsapp" class="text-sm text-green-400"></iconify-icon>Channel WA
+            </a>
+            <% } %>
+        </div>
+    </div>
+
+    <!-- ── ULASAN & RATING ── -->
+    <div class="card rounded-xl p-5 fade-in-up">
+        <div class="flex items-center justify-between mb-4">
+            <h2 class="text-sm font-bold text-white flex items-center gap-2">
+                <iconify-icon icon="solar:star-bold" class="text-yellow-400 text-base"></iconify-icon>
+                Ulasan & Rating
+            </h2>
+            <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl" style="background:rgba(234,179,8,.1);border:1px solid rgba(234,179,8,.2);">
+                <iconify-icon icon="solar:star-bold" class="text-yellow-400 text-xs"></iconify-icon>
+                <span class="text-xs font-black text-yellow-400" id="avgRatingDisplay">—</span>
+                <span class="text-[10px] text-white/30" id="reviewCountDisplay"></span>
+            </div>
+        </div>
+
+        <!-- Rating bars -->
+        <div class="space-y-1.5 mb-5">
+            <% for(let s=5;s>=1;s--) { %>
+            <div class="flex items-center gap-2">
+                <span class="text-[10px] text-white/30 w-3"><%= s %></span>
+                <iconify-icon icon="solar:star-bold" class="text-yellow-400 text-[10px] flex-shrink-0"></iconify-icon>
+                <div class="flex-1 h-1.5 rounded-full overflow-hidden" style="background:var(--border)">
+                    <div class="h-full rounded-full" id="bar-<%= s %>" style="width:0%;background:#eab308;transition:width .7s;"></div>
+                </div>
+                <span class="text-[10px] text-white/25 w-4 text-right" id="rcount-<%= s %>">0</span>
+            </div>
+            <% } %>
+        </div>
+
+        <!-- Review list -->
+        <div id="reviewsList">
+            <div class="text-center py-6 text-white/20">
+                <iconify-icon icon="mdi:loading" class="text-2xl text-red-400 animate-spin block mx-auto mb-2"></iconify-icon>
+                <p class="text-xs">Memuat ulasan...</p>
+            </div>
+        </div>
+
+        <div class="h-px my-4" style="background:var(--border);"></div>
+
+        <!-- Write review -->
+        <% if (hasPurchased) { %>
+        <h3 class="text-xs font-bold text-white mb-3 flex items-center gap-2">
+            <iconify-icon icon="solar:pen-new-square-bold" class="text-red-400"></iconify-icon>
+            Tulis Ulasan Kamu
+        </h3>
+        <div class="flex gap-1 mb-3">
+            <% for(let i=1;i<=5;i++) { %>
+                <button type="button" onclick="setRating(<%= i %>)" id="rstar-<%= i %>"
+                    class="text-2xl text-white/15 transition-colors hover:text-yellow-400">
+                    <iconify-icon icon="solar:star-bold"></iconify-icon>
+                </button>
+            <% } %>
+        </div>
+        <textarea id="reviewText"
+            class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none resize-none mb-2 transition-all"
+            style="background:var(--bg-section);border:1px solid var(--border);"
+            onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+            rows="3" placeholder="Bagikan pengalaman kamu dengan produk ini..."></textarea>
+        <button onclick="submitReview()"
+            class="btn-ghost w-full py-2.5 rounded-xl text-xs font-bold text-red-400 flex items-center justify-center gap-2">
+            <iconify-icon icon="solar:plain-bold" class="text-sm"></iconify-icon>Kirim Ulasan
+        </button>
+        <% } else { %>
+        <div class="text-center py-4 px-3 rounded-xl text-xs text-white/40" style="background:var(--bg-section);border:1px solid var(--border);">
+            <iconify-icon icon="solar:lock-keyhole-bold" class="text-lg block mx-auto mb-1.5 text-white/25"></iconify-icon>
+            Hanya pembeli produk ini yang bisa memberikan rating &amp; ulasan.
+        </div>
+        <% } %>
+    </div>
+
+</div><!-- max-w -->
+</div>
+
+<!-- PAYMENT MODAL -->
+<div id="paymentModal" class="inset-0 hidden" style="position:fixed!important;z-index:99999;top:0;left:0;right:0;bottom:0;">
+    <div class="absolute inset-0 bg-black/85 backdrop-blur-sm" onclick="closePayment()"></div>
+    <div class="absolute inset-0 flex flex-col justify-end pointer-events-none">
+        <div class="pointer-events-auto rounded-t-2xl w-full"
+             style="background:var(--bg-card);border-top:1px solid var(--border);max-height:95dvh;overflow-y:auto;padding-bottom:calc(20px + env(safe-area-inset-bottom));">
+            <!-- top bar -->
+            <div class="h-px w-full" style="background:var(--border-md);"></div>
+            <!-- drag handle -->
+            <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full bg-white/15"></div></div>
+            <!-- header -->
+            <div class="flex items-center justify-between px-5 py-3 border-b border-white/5">
+                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                    <iconify-icon icon="mdi:qrcode-scan" class="text-red-400"></iconify-icon>
+                    Pembayaran QRIS
+                </h3>
+                <button onclick="closePayment()" class="w-8 h-8 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center text-zinc-400 hover:text-white transition-colors">
+                    <iconify-icon icon="mdi:close"></iconify-icon>
+                </button>
+            </div>
+
+            <div class="p-5 space-y-4">
+                <!-- QR CODE -->
+                <div class="flex flex-col items-center">
+                    <div id="qrCodeWrap" class="flex items-center justify-center" style="min-height:80px;">
+                        <iconify-icon icon="mdi:loading" class="text-4xl text-red-400 animate-spin"></iconify-icon>
+                    </div>
+                    <p class="text-[10px] text-zinc-500 mt-2">Scan dengan aplikasi mobile banking / e-wallet</p>
+                </div>
+
+                <!-- INFO BARIS -->
+                <div class="grid grid-cols-2 gap-2">
+                    <div class="rounded-xl p-3 text-center" style="background:var(--bg-section);border:1px solid var(--border);">
+                        <div class="text-[10px] text-zinc-500 mb-0.5">Kode Pesanan</div>
+                        <div class="text-sm font-mono font-black text-red-400 tracking-wider" id="orderCodeShow">—</div>
+                    </div>
+                    <div class="rounded-xl p-3 text-center" style="background:var(--bg-section);border:1px solid var(--border);">
+                        <div class="text-[10px] text-zinc-500 mb-0.5">Total Bayar</div>
+                        <div class="text-sm font-black text-emerald-400" id="payAmountShow">—</div>
+                    </div>
+                </div>
+
+                <!-- TIMER -->
+                <div id="timerWrap" class="hidden rounded-xl p-3 text-center" style="background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.2)">
+                    <div class="text-[10px] text-zinc-500 mb-0.5 flex items-center justify-center gap-1">
+                        <iconify-icon icon="mdi:clock-outline" class="text-yellow-400 text-xs"></iconify-icon>
+                        Batas Waktu Pembayaran
+                    </div>
+                    <div class="text-xl font-black font-bold text-yellow-400" id="timerDisplay">--:--</div>
+                </div>
+
+                <!-- STATUS -->
+                <div id="payStatusRow" class="flex items-center justify-center gap-2 py-2">
+                    <div class="w-2 h-2 rounded-full bg-yellow-400 "></div>
+                    <span class="text-xs text-zinc-400">Menunggu pembayaran...</span>
+                </div>
+
+                <!-- TOMBOL KONFIRMASI MANUAL (static) -->
+                <div id="staticNote" class="hidden text-center rounded-xl p-3" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">
+                    <p class="text-xs text-red-300">Setelah transfer, kirim bukti ke admin via WhatsApp / Telegram</p>
+                    <div class="flex gap-2 mt-2 justify-center">
+                        <a id="waConfirmBtn" href="#" target="_blank"
+                           class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white"
+                           style="background:rgba(34,197,94,.2);border:1px solid rgba(34,197,94,.35)">
+                            <iconify-icon icon="mdi:whatsapp" class="text-green-400 text-sm"></iconify-icon> WhatsApp
+                        </a>
+                    </div>
+                </div>
+
+                <!-- CEK ULANG -->
+                <button id="recheckBtn" onclick="recheckNow()" class="hidden w-full py-2.5 rounded-xl text-xs font-bold text-red-400 border border-red-500/25 bg-red-500/5 hover:bg-red-500/10 transition-all flex items-center justify-center gap-2">
+                    <iconify-icon icon="mdi:refresh" class="text-sm"></iconify-icon> Cek Status Sekarang
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let selPkg = { label:'<%= (product.items?.[0]?.l||"") %>', price:<%= (isReseller && product.items?.[0]?.reseller_price) ? product.items[0].reseller_price : (product.items?.[0]?.p||0) %>, durationValue: <%= product.items?.[0]?.durationValue||'null' %>, durationUnit: '<%= product.items?.[0]?.durationUnit||'d' %>' };
+    let myRating = 0;
+    let payInterval = null;
+    let currentRefId = null;
+    let appliedVoucher = null;   // { code, discount, finalPrice }
+    const PID   = '<%= product.id %>';
+    const PNAME = '<%= product.name %>';
+    const IS_RESELLER = <%= isReseller ? 'true' : 'false' %>;
+
+    function selectPkg(label, price, stock, durationValue, durationUnit) {
+        selPkg = { label, price, stock, durationValue, durationUnit: durationUnit || 'd' };
+        document.getElementById('selectedLabel').textContent = label;
+        clearVoucher();
+        updateTotalDisplay(price);
+    }
+
+    function updateTotalDisplay(basePrice) {
+        const origEl    = document.getElementById('originalPriceShow');
+        const priceEl   = document.getElementById('totalPrice');
+        const vRow      = document.getElementById('voucherRow');
+        const discShow  = document.getElementById('discountShow');
+        if (appliedVoucher) {
+            const fp = Math.max(basePrice - appliedVoucher.discount, 0);
+            origEl.textContent = 'Rp ' + basePrice.toLocaleString('id-ID');
+            origEl.classList.remove('hidden');
+            priceEl.textContent = 'Rp ' + fp.toLocaleString('id-ID');
+            if (vRow) { vRow.classList.remove('hidden'); vRow.classList.add('flex'); }
+            if (discShow) discShow.textContent = '- Rp ' + appliedVoucher.discount.toLocaleString('id-ID');
+        } else {
+            origEl.classList.add('hidden');
+            priceEl.textContent = 'Rp ' + basePrice.toLocaleString('id-ID');
+            if (vRow) { vRow.classList.add('hidden'); vRow.classList.remove('flex'); }
+        }
+    }
+
+    async function applyVoucher() {
+        const code = document.getElementById('voucherInput').value.trim();
+        const statusEl = document.getElementById('voucherStatus');
+        if (!code) { showToast('Masukkan kode voucher', 'error'); return; }
+        const btn = document.getElementById('voucherBtn');
+        btn.disabled = true;
+        btn.textContent = '...';
+        try {
+            const res = await fetch('/api/voucher/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code, price: selPkg.price })
+            });
+            const d = await res.json();
+            if (d.valid) {
+                appliedVoucher = { code: d.code, discount: d.discount, finalPrice: d.finalPrice };
+                statusEl.innerHTML = `<div class="flex items-center gap-2 text-xs text-emerald-400"><iconify-icon icon="mdi:check-circle" class="text-sm"></iconify-icon> Voucher <strong>${d.code}</strong> berhasil! Hemat Rp ${d.discount.toLocaleString('id-ID')}</div>`;
+                statusEl.classList.remove('hidden');
+                updateTotalDisplay(selPkg.price);
+                showToast('Voucher berhasil dipakai!', 'success');
+            } else {
+                appliedVoucher = null;
+                statusEl.innerHTML = `<div class="flex items-center gap-2 text-xs text-red-400"><iconify-icon icon="mdi:alert-circle" class="text-sm"></iconify-icon> ${d.error}</div>`;
+                statusEl.classList.remove('hidden');
+                updateTotalDisplay(selPkg.price);
+            }
+        } catch(e) { showToast('Gagal memeriksa voucher', 'error'); }
+        finally { btn.disabled = false; btn.textContent = 'Pakai'; }
+    }
+
+    function clearVoucher() {
+        appliedVoucher = null;
+        const statusEl = document.getElementById('voucherStatus');
+        statusEl.classList.add('hidden');
+        updateTotalDisplay(selPkg.price);
+    }
+
+    function addProductToCart() {
+        if (!selPkg.price) { showToast('Pilih paket dulu!','error'); return; }
+        addToCart({ productId:PID, name:PNAME, duration:selPkg.label, price:selPkg.price, image:'<%= product.image||"" %>' });
+    }
+
+    async function handleOrder() {
+        if (IS_RESELLER) return handleWalletOrder();
+
+        const name = document.getElementById('customerName').value.trim();
+        const wa    = document.getElementById('waInput').value.trim().replace(/[\s\-()]/g,'');
+        if (!wa)    { showToast('Masukkan nomor WhatsApp!','error'); document.getElementById('waInput').focus(); return; }
+        if (!/^(\+62|62|0)[0-9]{8,13}$/.test(wa)) { showToast('Format WhatsApp tidak valid!','error'); return; }
+        if (!name) { showToast('Masukkan nama kamu!','error'); document.getElementById('customerName').focus(); return; }
+
+        const btn = document.getElementById('submitBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<iconify-icon icon="mdi:loading" class="text-lg animate-spin"></iconify-icon> Memproses...';
+
+        try {
+            const res  = await fetch('/create-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+                productId: PID,
+                duration: selPkg.durationValue != null ? selPkg.durationValue : selPkg.label,
+                durationUnit: selPkg.durationUnit || 'd',
+                customerName: name,
+                wa,
+                voucherCode: appliedVoucher ? appliedVoucher.code : undefined
+            })});
+            const data = await res.json();
+            if (data.success) {
+                showPaymentModal(data);
+                showToast('Pesanan dibuat! Segera bayar via QRIS','success');
+            } else if (data.redirect) {
+                showToast('Silakan login terlebih dahulu','error');
+                setTimeout(() => window.location.href = data.redirect, 1000);
+            } else {
+                showToast(data.message||'Gagal membuat pesanan','error');
+            }
+        } catch(e) { showToast('Koneksi error: ' + e.message,'error'); }
+        finally {
+            btn.disabled = false;
+            btn.innerHTML = '<iconify-icon icon="solar:bag-check-bold" class="text-lg"></iconify-icon> Konfirmasi';
+        }
+    }
+
+    async function handleWalletOrder() {
+        const name = document.getElementById('customerName').value.trim();
+        const wa    = document.getElementById('waInput').value.trim().replace(/[\s\-()]/g,'');
+        if (!wa)    { showToast('Masukkan nomor WhatsApp!','error'); document.getElementById('waInput').focus(); return; }
+        if (!/^(\+62|62|0)[0-9]{8,13}$/.test(wa)) { showToast('Format WhatsApp tidak valid!','error'); return; }
+        if (!name) { showToast('Masukkan nama kamu!','error'); document.getElementById('customerName').focus(); return; }
+
+        const btn = document.getElementById('submitBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<iconify-icon icon="mdi:loading" class="text-lg animate-spin"></iconify-icon> Memproses...';
+
+        try {
+            const res  = await fetch('/wallet/buy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+                productId: PID,
+                duration: selPkg.durationValue != null ? selPkg.durationValue : selPkg.label,
+                durationUnit: selPkg.durationUnit || 'd',
+                customerName: name,
+                wa,
+                voucherCode: appliedVoucher ? appliedVoucher.code : undefined
+            })});
+            const data = await res.json();
+            if (data.success) {
+                showToast('Pembelian berhasil! Key sudah didapat.','success');
+                setTimeout(() => { window.location.href = '/invoice?code=' + data.code; }, 900);
+                return;
+            } else if (data.redirect) {
+                showToast('Silakan login terlebih dahulu','error');
+                setTimeout(() => window.location.href = data.redirect, 1000);
+            } else if (data.message === 'insufficient_balance') {
+                showToast(data.plainMessage || 'Saldo tidak cukup, top up dulu yuk!','error');
+                setTimeout(() => { window.location.href = '/dashboard#wallet'; }, 1400);
+            } else {
+                showToast(data.message||'Gagal melakukan pembelian','error');
+            }
+        } catch(e) { showToast('Koneksi error: ' + e.message,'error'); }
+        finally {
+            btn.disabled = false;
+            btn.innerHTML = '<iconify-icon icon="mdi:wallet" class="text-lg"></iconify-icon> Beli dengan Saldo';
+        }
+    }
+
+    function showPaymentModal(data) {
+        const { qrString, orderCode, refId, isStatic, qrisStaticImage, totalPayment, expiredAt } = data;
+        currentRefId = refId;
+
+        // Tampilkan modal
+        document.getElementById('paymentModal').classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+
+        // Isi info
+        document.getElementById('orderCodeShow').textContent = orderCode || '—';
+        document.getElementById('payAmountShow').textContent = totalPayment
+            ? 'Rp ' + Number(totalPayment).toLocaleString('id-ID') : '—';
+
+        // Reset status
+        document.getElementById('payStatusRow').innerHTML =
+            '<div class="w-2 h-2 rounded-full bg-yellow-400 "></div>' +
+            '<span class="text-xs text-zinc-400">Menunggu pembayaran...</span>';
+
+        // --- QR Code ---
+        const wrap = document.getElementById('qrCodeWrap');
+
+        if (isStatic && qrisStaticImage) {
+            // QRIS static dari admin
+            wrap.innerHTML = `
+                <div style="background:#fff;padding:12px;border-radius:16px;display:inline-block;">
+                    <img src="${qrisStaticImage}" style="display:block;width:210px;height:210px;object-fit:contain;border-radius:6px;"
+                         onerror="this.style.display='none';this.parentNode.innerHTML='<p style=color:#666;font-size:11px;padding:20px>Gambar QRIS tidak ditemukan</p>'">
+                </div>`;
+            document.getElementById('staticNote').classList.remove('hidden');
+            const waNum = '<%= settings.contact?.whatsapp || "6285181236886" %>';
+            document.getElementById('waConfirmBtn').href =
+                `https://wa.me/${waNum}?text=${encodeURIComponent('Konfirmasi pembayaran kode: ' + orderCode)}`;
+        } else if (qrString) {
+            // QRIS dari PakKasir API — render pakai img dari qrserver.com (putih bersih)
+            wrap.innerHTML = `
+                <div style="background:#fff;padding:12px;border-radius:16px;display:inline-block;">
+                    <img id="qrImg"
+                         src="https://api.qrserver.com/v1/create-qr-code/?size=210x210&color=000000&bgcolor=ffffff&qzone=1&data=${encodeURIComponent(qrString)}"
+                         style="display:block;width:210px;height:210px;border-radius:4px;"
+                         onerror="qrFallback('${encodeURIComponent(qrString)}')">
+                </div>`;
+            document.getElementById('recheckBtn').classList.remove('hidden');
+        } else {
+            wrap.innerHTML = `
+                <div class="text-center py-4">
+                    <iconify-icon icon="mdi:qrcode-remove" class="text-5xl text-zinc-700 block mb-2"></iconify-icon>
+                    <p class="text-xs text-zinc-500">QRIS belum dikonfigurasi.<br>Hubungi admin.</p>
+                </div>`;
+        }
+
+        // --- Timer countdown ---
+        if (expiredAt) {
+            document.getElementById('timerWrap').classList.remove('hidden');
+            startTimer(expiredAt);
+        }
+
+        // --- Auto polling status ---
+        if (refId && !isStatic) {
+            payInterval = setInterval(() => checkPay(refId), 4000);
+        }
+    }
+
+    // Fallback QR jika qrserver.com gagal
+    window.qrFallback = function(encoded) {
+        const wrap = document.getElementById('qrCodeWrap');
+        wrap.innerHTML = `
+            <div style="background:#fff;padding:12px;border-radius:16px;display:inline-block;">
+                <img src="https://quickchart.io/qr?text=${encoded}&size=210&margin=1&ecLevel=M"
+                     style="display:block;width:210px;height:210px;border-radius:4px;"
+                     onerror="this.parentNode.parentNode.innerHTML='<p style=color:#999;font-size:11px;padding:16px>Gagal load QR. Cek koneksi internet.</p>'">
+            </div>`;
+    };
+
+    let timerInterval = null;
+    function startTimer(expiredAt) {
+        const el = document.getElementById('timerDisplay');
+        const end = new Date(expiredAt).getTime();
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = setInterval(() => {
+            const diff = end - Date.now();
+            if (diff <= 0) {
+                clearInterval(timerInterval);
+                el.textContent = '00:00';
+                el.style.color = <%- JSON.stringify(settings?.theme?.accentColor || '#f87171') %>;
+                document.getElementById('payStatusRow').innerHTML =
+                    '<iconify-icon icon="mdi:clock-alert" class="text-red-400"></iconify-icon>' +
+                    '<span class="text-xs text-red-400">Waktu pembayaran habis</span>';
+                return;
+            }
+            const m = Math.floor(diff / 60000);
+            const s = Math.floor((diff % 60000) / 1000);
+            el.textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+            // Warna merah kalau < 2 menit
+            el.style.color = diff < 120000 ? <%- JSON.stringify(settings?.theme?.accentColor || '#f87171') %> : '#fbbf24';
+        }, 1000);
+    }
+
+    async function checkPay(refId) {
+        try {
+            const r = await fetch(`/check-payment/${refId}`);
+            const d = await r.json();
+            if (d.success && d.status === 'done') {
+                clearInterval(payInterval);
+                clearInterval(timerInterval);
+                if (d.outOfStock) {
+                    document.getElementById('payStatusRow').innerHTML =
+                        '<iconify-icon icon="mdi:clock-alert-outline" class="text-amber-400 text-xl"></iconify-icon>' +
+                        '<span class="text-sm font-bold text-amber-400">Pembayaran diterima, stok sedang kosong</span>';
+                    showToast('Pembayaran berhasil! Stok sedang kosong, admin akan segera proses pesananmu.','info');
+                } else {
+                    document.getElementById('payStatusRow').innerHTML =
+                        '<iconify-icon icon="mdi:check-circle" class="text-emerald-400 text-xl"></iconify-icon>' +
+                        '<span class="text-sm font-bold text-emerald-400">Pembayaran berhasil!</span>';
+                    showToast('Pembayaran berhasil! Key sudah dikirim!','success');
+                }
+                setTimeout(() => { closePayment(); window.location.href = '/invoice?code=' + d.code; }, 1800);
+            } else if (d.status === 'expired') {
+                clearInterval(payInterval);
+                document.getElementById('payStatusRow').innerHTML =
+                    '<iconify-icon icon="mdi:clock-alert" class="text-red-400"></iconify-icon>' +
+                    '<span class="text-xs text-red-400">Pembayaran expired</span>';
+            }
+        } catch(e) {}
+    }
+
+    async function recheckNow() {
+        if (!currentRefId) return;
+        const btn = document.getElementById('recheckBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<iconify-icon icon="mdi:loading" class="text-sm animate-spin"></iconify-icon> Mengecek...';
+        await checkPay(currentRefId);
+        setTimeout(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<iconify-icon icon="mdi:refresh" class="text-sm"></iconify-icon> Cek Status Sekarang';
+        }, 1000);
+    }
+
+    function closePayment() {
+        if (payInterval) { clearInterval(payInterval); payInterval = null; }
+        if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+        document.getElementById('paymentModal').classList.add('hidden');
+        document.getElementById('timerWrap').classList.add('hidden');
+        document.getElementById('staticNote').classList.add('hidden');
+        document.getElementById('recheckBtn').classList.add('hidden');
+        document.body.style.overflow = '';
+    }
+
+    function setRating(val) {
+        myRating = val;
+        for (let i=1;i<=5;i++) {
+            const el = document.getElementById(`rstar-${i}`);
+            if (el) el.style.color = i <= val ? '#fbbf24' : '#d4d4d8';
+        }
+    }
+
+    async function submitReview() {
+        if (!myRating) { showToast('Pilih rating bintang dulu!','error'); return; }
+        const text = document.getElementById('reviewText').value.trim();
+        if (!text) { showToast('Tulis ulasan terlebih dahulu!','error'); return; }
+        try {
+            const res = await fetch('/api/testimonials', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ productId: PID, productName: PNAME, rating: myRating, text })
+            });
+            const data = await res.json();
+            if (data.success) {
+                showToast('Ulasan berhasil dikirim! ','success');
+                document.getElementById('reviewText').value = '';
+                setRating(0);
+                loadReviews();
+            } else {
+                showToast(data.message || 'Gagal mengirim ulasan','error');
+            }
+        } catch(e) {
+            showToast('Koneksi error','error');
+        }
+    }
+
+    async function loadReviews() {
+        const el = document.getElementById('reviewsList');
+        try {
+            const res = await fetch(`/api/testimonials?product=${encodeURIComponent(PID)}`);
+            let reviews = await res.json();
+
+            const total = reviews.length;
+            const avg   = total ? (reviews.reduce((s,r)=>s+r.rating,0)/total).toFixed(1) : '—';
+            document.getElementById('avgRatingDisplay').textContent = avg;
+            document.getElementById('reviewCountDisplay').textContent = total ? `(${total})` : '';
+
+            for (let s=1;s<=5;s++) {
+                const cnt = reviews.filter(r=>r.rating===s).length;
+                const pct = total ? (cnt/total*100).toFixed(0) : 0;
+                const b = document.getElementById(`bar-${s}`);
+                const c = document.getElementById(`rcount-${s}`);
+                if (b) setTimeout(()=>b.style.width=pct+'%', 200);
+                if (c) c.textContent = cnt||'';
+            }
+
+            if (!total) {
+                el.innerHTML = `<div class="text-center py-8"><iconify-icon icon="mdi:comment-outline" class="text-4xl text-zinc-700 mb-2 block mx-auto"></iconify-icon><p class="text-xs text-zinc-600">Belum ada ulasan. Jadilah yang pertama!</p></div>`;
+                return;
+            }
+
+            const avatarGrads = ['bg-red-600','bg-sky-500','bg-orange-500','bg-emerald-500','bg-pink-500'];
+            el.innerHTML = reviews.slice(0,8).map((r,i) => {
+                const date  = new Date(r.date).toLocaleDateString('id-ID',{day:'numeric',month:'short',year:'numeric'});
+                const name  = r.name||r.username||'Anonymous';
+                const starsHtml = Array.from({length:5},(_,si) =>
+                    `<iconify-icon icon="solar:star-bold" style="font-size:10px;color:${si<r.rating?'#fbbf24':'#e4e4e7'};"></iconify-icon>`
+                ).join('');
+                return `<div class="glass rounded-xl p-3 mb-2 hover:border-red-500/20 transition-colors count-up">
+                    <div class="flex items-start justify-between gap-2 mb-2">
+                        <div class="flex items-center gap-2">
+                            <div class="w-8 h-8 rounded-xl ${avatarGrads[i%5]} flex items-center justify-center text-white text-xs font-bold flex-shrink-0">${name.charAt(0).toUpperCase()}</div>
+                            <div>
+                                <div class="text-xs font-semibold text-white leading-tight">${name}</div>
+                                <div class="flex items-center gap-0.5 mt-0.5">${starsHtml}${r.verified ? '<iconify-icon icon="solar:verified-check-bold" style="font-size:10px;color:#34d399;margin-left:3px;"></iconify-icon>' : ''}</div>
+                            </div>
+                        </div>
+                        <span class="text-[9px] text-white/25 flex-shrink-0">${date}</span>
+                    </div>
+                    <p class="text-[11px] text-white/50 leading-relaxed">"${r.text}"</p>
+                </div>`;
+            }).join('')
+            + (reviews.length>8 ? `<button onclick="loadAllReviews()" class="btn-ghost w-full py-2.5 rounded-xl text-xs text-white/40 flex items-center justify-center gap-1 mt-1">Lihat semua ${reviews.length} ulasan <iconify-icon icon="solar:alt-arrow-down-linear" style="font-size:12px;"></iconify-icon></button>` : '');
+        } catch(e) {
+            el.innerHTML = '<div class="text-center py-6 text-xs text-zinc-600">Gagal memuat ulasan</div>';
+        }
+    }
+
+    async function loadAllReviews() {
+        const res = await fetch(`/api/testimonials?product=${encodeURIComponent(PID)}`);
+        let reviews = await res.json();
+        const el = document.getElementById('reviewsList');
+        const avatarGrads2 = ['bg-red-600','bg-sky-500','bg-orange-500','bg-emerald-500','bg-pink-500'];
+        el.innerHTML = reviews.map((r,i) => {
+            const date  = new Date(r.date).toLocaleDateString('id-ID',{day:'numeric',month:'short',year:'numeric'});
+            const name  = r.name||r.username||'Anonymous';
+            const starsHtml = Array.from({length:5},(_,si) =>
+                `<iconify-icon icon="solar:star-bold" style="font-size:10px;color:${si<r.rating?'#fbbf24':'#e4e4e7'};"></iconify-icon>`
+            ).join('');
+            return `<div class="glass rounded-xl p-3 mb-2 hover:border-red-500/20 transition-colors count-up">
+                <div class="flex items-start justify-between gap-2 mb-2">
+                    <div class="flex items-center gap-2">
+                        <div class="w-8 h-8 rounded-xl ${avatarGrads2[i%5]} flex items-center justify-center text-white text-xs font-bold flex-shrink-0">${name.charAt(0).toUpperCase()}</div>
+                        <div>
+                            <div class="text-xs font-semibold text-white leading-tight">${name}</div>
+                            <div class="flex items-center gap-0.5 mt-0.5">${starsHtml}${r.verified ? '<iconify-icon icon="solar:verified-check-bold" style="font-size:10px;color:#34d399;margin-left:3px;"></iconify-icon>' : ''}</div>
+                        </div>
+                    </div>
+                    <span class="text-[9px] text-white/25 flex-shrink-0">${date}</span>
+                </div>
+                <p class="text-[11px] text-white/50 leading-relaxed">"${r.text}"</p>
+            </div>`;
+        }).join('');
+    }
+
+    document.addEventListener('DOMContentLoaded', loadReviews);
+</script>

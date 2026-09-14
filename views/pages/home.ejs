@@ -1,0 +1,916 @@
+<%
+const pageTitle = settings?.siteName || 'AGHA NL';
+%>
+
+<style>
+  :root {
+    --fz-red: <%= settings?.theme?.primaryColor || '#dc2626' %>;
+    --fz-red-dark: <%= settings?.theme?.accentColor || '#a3123a' %>;
+    --fz-bg: <%= settings?.theme?.backgroundColor || '#0a0a0a' %>;
+    --fz-bg-soft: <%= settings?.theme?.cardBackground || '#141414' %>;
+    --fz-border: <%= settings?.theme?.borderColor || '#3a1414' %>;
+    --fz-text: #f4f4f5;
+    --fz-text-muted: #a1a1aa;
+  }
+  /* Rebrand AGHA NL (14 Sep 2026): tema toko sekarang gelap secara default
+     (hitam-merah-ungu, sesuai referensi desain client), jadi --fz-* di atas
+     SUDAH gelap dari awal -- toggle dark mode tidak perlu lagi menukar ke
+     palet lain, cukup no-op supaya tidak "membalik" jadi terang. */
+  html.dark {
+    --fz-bg: <%= settings?.theme?.backgroundColor || '#0a0a0a' %>;
+    --fz-bg-soft: <%= settings?.theme?.cardBackground || '#141414' %>;
+    --fz-border: <%= settings?.theme?.borderColor || '#3a1414' %>;
+    --fz-text: #f4f4f5;
+    --fz-text-muted: #a1a1aa;
+  }
+  body { background: var(--fz-bg); }
+
+  /* ── Navbar ── */
+  .fz-navbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    background: var(--fz-bg); border-bottom: 1px solid var(--fz-border);
+  }
+
+  /* ── Category pills ── */
+  .fz-pill {
+    flex-shrink: 0; padding: 8px 18px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; white-space: nowrap; cursor: pointer;
+    border: 1px solid var(--fz-border); background: var(--fz-bg); color: var(--fz-text-muted);
+  }
+  .fz-pill.active { background: var(--fz-red); color: #fff; border-color: var(--fz-red); }
+
+  /* ── Product card (SATU desain, dipakai di semua section) ── */
+  .fz-card {
+    background: var(--fz-bg); border: 1px solid var(--fz-border); border-radius: 16px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .fz-card-img { position: relative; aspect-ratio: 1/1; background: var(--fz-bg-soft); overflow: hidden; }
+  .fz-card-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .fz-plat-badge {
+    /* FIX (diminta client 23 Agu 2026): balik dari ribbon lancip (yang
+       dianggap "gak cocok"/lincup) ke bentuk PILL BULAT seperti button --
+       posisi tetap di pojok kanan-atas card, tapi tidak lagi nempel rata
+       ke sudut, dikasih jarak kecil (top/right 6px) supaya terlihat
+       seperti badge mengambang, bukan potongan sudut. Warna per kategori
+       & opacity 80% tetap dipertahankan dari sebelumnya (lihat
+       .fz-plat-* di bawah). */
+    position: absolute; top: 6px; right: 6px; font-size: 8px; font-weight: 800;
+    padding: 4px 9px; border-radius: 999px; color: #fff; letter-spacing: .03em;
+  }
+  /* FIX (diminta client 22 Agu 2026): warna beda-beda per platform, bukan
+     satu warna generik untuk semua badge. Opacity 80% (rgba .8) supaya
+     gambar produk di baliknya masih sedikit tembus, sesuai referensi. */
+  .fz-plat-android { background: rgba(34,197,94,.8); }
+  .fz-plat-ios { background: rgba(59,130,246,.8); }
+  .fz-plat-pc { background: rgba(168,85,247,.8); }
+  .fz-plat-freefire { background: rgba(249,115,22,.8); }
+  .fz-plat-mobilelegends { background: rgba(6,182,212,.8); }
+  .fz-plat-pubgmobile { background: rgba(234,179,8,.8); }
+  .fz-plat-sertifikat { background: rgba(236,72,153,.8); }
+  .fz-plat-default { background: rgba(113,113,122,.8); }
+  .fz-card-body { padding: 10px; flex: 1; display: flex; flex-direction: column; }
+  .fz-card-name {
+    font-size: 12px; font-weight: 700; color: var(--fz-text); line-height: 1.3;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 4px;
+  }
+  .fz-card-from { font-size: 9px; color: var(--fz-text-muted); margin-bottom: 1px; }
+  .fz-card-price { font-size: 15px; font-weight: 800; color: var(--fz-red); }
+  .fz-card-sold { font-size: 10px; color: var(--fz-text-muted); display: flex; align-items: center; gap: 3px; margin: 6px 0 10px; }
+  .fz-btn-buy {
+    /* FIX (diminta client 22 Agu 2026): radius dikurangi drastis dari
+       pill-shape (999px, "bulat lucu") jadi hampir kotak. */
+    width: 100%; padding: 9px 0; border-radius: 4px; border: none;
+    background: var(--fz-red); color: #fff; font-size: 11px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer;
+  }
+  .fz-btn-buy:disabled {
+    /* FIX (diminta client 24 Agu 2026): sebelumnya pakai var(--fz-bg-soft)
+       yang warnanya nyaris sama dengan background card di sekitarnya --
+       tombol "Habis" jadi menyatu/nyaris tak terlihat beda dari tombol
+       Beli aktif. Diganti abu-abu tegas dengan border supaya jelas beda
+       statusnya. Di dark mode dibalik jadi putih terang (lihat
+       html.dark override di bawah) supaya tetap kontras tinggi
+       terhadap card gelap -- abu-abu redup akan nyaris tak kebaca di
+       atas background gelap. */
+    background: #e4e4e7; color: #71717a; border: 1px solid #d4d4d8; cursor: not-allowed;
+  }
+  html.dark .fz-btn-buy:disabled {
+    background: #f4f4f5; color: #3f3f46; border: 1px solid #e4e4e7;
+  }
+  .fz-btn-row { display: flex; gap: 6px; margin-top: auto; }
+
+  /* ── Product grid: 3 columns ── */
+  .fz-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+
+  /* ── Section heading ── */
+  .fz-heading { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .fz-heading .bar { width: 4px; height: 18px; border-radius: 2px; background: var(--fz-red); }
+  .fz-heading h2 { font-size: 14px; font-weight: 800; color: var(--fz-text); margin: 0; }
+  /* FIX (diminta client 23 Agu 2026): subtitle kecil di bawah judul
+     section, dipakai untuk "Paling banyak terjual minggu ini" (Produk
+     Populer) dan "Filter berdasarkan game" (Semua Produk) -- diberi
+     margin-left menyamai lebar bar+gap di atasnya supaya sejajar rapi
+     dengan teks judul, bukan mulai dari kiri mentok. */
+  .fz-subheading { font-size: 10px; color: var(--fz-text-muted); margin: 0 0 12px 12px; }
+
+  /* ── Leaderboard ── */
+  .fz-podium-avatar { border-radius: 50%; border: 3px solid var(--fz-red); overflow: hidden; background: var(--fz-bg-soft); }
+  .fz-rank-row {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    background: var(--fz-bg-soft); border-radius: 12px; margin-bottom: 6px;
+  }
+  .fz-rank-badge {
+    width: 26px; height: 26px; border-radius: 50%; background: var(--fz-bg); border: 1px solid var(--fz-border);
+    display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 800; color: var(--fz-text-muted);
+    flex-shrink: 0;
+  }
+
+  /* ── Trust badges ── */
+  .fz-trust { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 14px 8px; }
+  .fz-trust iconify-icon { font-size: 22px; color: var(--fz-red); }
+  .fz-trust span { font-size: 10px; font-weight: 700; color: var(--fz-text); }
+
+  /* ── Footer ── */
+  .fz-footer { background: var(--fz-bg-soft); border-top: 1px solid var(--fz-border); padding: 32px 16px 20px; }
+  .fz-footer h4 { font-size: 10px; font-weight: 800; letter-spacing: .08em; color: var(--fz-red); text-transform: uppercase; margin-bottom: 12px; }
+  .fz-footer a { font-size: 12px; color: #52525b; text-decoration: none; display: block; margin-bottom: 9px; }
+  .fz-pay-badge {
+    padding: 10px 16px; border-radius: 45%; background: var(--fz-bg); border: 1px solid var(--fz-border);
+    font-size: 11px; font-weight: 700; color: var(--fz-text-muted); flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center; min-height: 40px; min-width: 90px;
+    text-align: center;
+  }
+  /* Kotak logo metode pembayaran (diminta client 22 Agu 2026): rectangle
+     rounded, bukan lingkaran/pill seperti .fz-pay-badge di atas -- sesuai
+     referensi visual logo e-wallet resmi (kotak putih berisi logo). */
+  .fz-pay-logo-box {
+    background: var(--fz-bg-soft); border: 1px solid var(--fz-border); border-radius: 10px;
+    padding: 10px 18px; display: flex; align-items: center; justify-content: center;
+    height: 72px; min-width: 120px; flex-shrink: 0;
+  }
+  .fz-pay-logo-box img { height: 100%; width: auto; max-width: 160px; object-fit: contain; }
+  .fz-social {
+    width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    color: #fff; text-decoration: none; flex-shrink: 0; line-height: 1;
+  }
+  /* FIX (bug 25 Agu 2026, direvisi 26 Agu 2026): percobaan sebelumnya
+     mengunci width/height iconify-icon lewat CSS supaya nggak "collapse"
+     saat script CDN belum load -- ternyata itu malah bikin icon gepeng/
+     distorsi (bentrok dengan font-size inline yang mengontrol ukuran
+     icon secara default). iconify-icon paling stabil dikontrol lewat
+     font-size saja (lihat dokumentasi resmi), jadi width/height paksa
+     di CSS dihapus. display:block ditambahkan supaya tetap center rapi. */
+  .fz-social iconify-icon { display: block; }
+
+  @media (min-width: 640px) {
+    .fz-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+  @media (min-width: 1024px) {
+    .fz-grid { grid-template-columns: repeat(6, 1fr); }
+  }
+</style>
+
+<!-- ══ NAVBAR ══ -->
+<nav class="fz-navbar">
+  <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+    <a href="/" style="display:flex;align-items:center;gap:8px;text-decoration:none;">
+      <img src="<%= settings?.logoUrl || '/uploads/logo-main.png' %>" alt="Logo" style="height:38px;width:38px;object-fit:contain;border-radius:8px;">
+      <%- include('../partials/logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '16px' }) %>
+    </a>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <button onclick="document.getElementById('searchBox').classList.toggle('hidden')" style="width:34px;height:34px;border-radius:999px;border:1px solid var(--fz-border);background:var(--fz-bg-soft);display:flex;align-items:center;justify-content:center;color:var(--fz-text-muted);">
+        <iconify-icon icon="mdi:magnify" style="font-size:16px;"></iconify-icon>
+      </button>
+      <!-- FIX (23 Agu 2026): tombol pemicu menu drawer (hamburger) hilang
+           total dari navbar -- fungsi openMenu() di layout.ejs sudah ada
+           tapi TIDAK ADA satupun tombol di seluruh project yang
+           memanggilnya, jadi menu drawer (info akun, logout, dark mode
+           toggle, dll) tidak bisa diakses dari UI sama sekali. Ditambahkan
+           di sini, tampil untuk SEMUA kondisi (guest maupun login) karena
+           drawer berisi lebih banyak dari sekadar shortcut ke dashboard. -->
+      <button onclick="openMenu()" style="width:34px;height:34px;border-radius:999px;border:1px solid var(--fz-border);background:var(--fz-bg-soft);display:flex;align-items:center;justify-content:center;color:var(--fz-text-muted);">
+        <iconify-icon icon="mdi:menu" style="font-size:18px;"></iconify-icon>
+      </button>
+      <% if (user) { %>
+      <a href="/dashboard" style="width:34px;height:34px;border-radius:999px;background:var(--fz-bg-soft);border:1px solid var(--fz-border);display:flex;align-items:center;justify-content:center;text-decoration:none;color:var(--fz-text);" title="<%= user.username %>">
+        <iconify-icon icon="mdi:account" style="font-size:16px;"></iconify-icon>
+      </a>
+      <% } else { %>
+      <a href="javascript:void(0)" onclick="openAuthModal('login')" style="padding:8px 14px;border-radius:4px;font-size:12px;font-weight:700;color:var(--fz-text);text-decoration:none;">Masuk</a>
+      <a href="javascript:void(0)" onclick="openAuthModal('register')" style="padding:8px 16px;border-radius:4px;font-size:12px;font-weight:800;color:#fff;background:var(--fz-red);text-decoration:none;">Daftar</a>
+      <% } %>
+    </div>
+  </div>
+  <div id="searchBox" class="hidden px-4 pb-3">
+    <input type="text" id="searchInput" oninput="searchProducts(this.value)" placeholder="Cari produk..."
+      style="width:100%;padding:9px 14px;border-radius:999px;border:1px solid var(--fz-border);font-size:13px;outline:none;background:var(--fz-bg-soft);">
+  </div>
+</nav>
+
+<div style="height:56px;"></div>
+
+<!-- ══ HERO CAROUSEL ══ -->
+<div class="max-w-6xl mx-auto px-4 pt-3">
+  <div id="carousel-wrap" style="position:relative;border-radius:16px;overflow:hidden;background:var(--fz-bg-soft);aspect-ratio:16/7;">
+    <div id="carousel-track" style="display:flex;height:100%;transition:transform .5s ease;"></div>
+    <div id="carousel-dots" style="position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:5px;"></div>
+  </div>
+</div>
+
+<!-- ══ MARQUEE (teks berjalan) ══
+     Sempat hilang saat rombak ui.ejs total (diminta client 22 Agu 2026,
+     bandingkan referensi mallstore.id) -- lebar & padding disamakan persis
+     dengan container section lain (max-w-6xl mx-auto px-4) supaya sejajar,
+     bukan full-bleed lepas dari margin halaman. -->
+<% if (settings?.marqueeText) { %>
+<div class="max-w-6xl mx-auto px-4 pt-3">
+  <div style="border-radius:10px;border:1px solid var(--fz-border);background:var(--fz-bg-soft);overflow:hidden;padding:10px 0;">
+    <div class="marquee-track" style="display:flex;white-space:nowrap;animation:marqueeScroll 22s linear infinite;">
+      <% for (let i=0;i<2;i++) { %>
+      <span style="display:inline-flex;align-items:center;gap:24px;padding:0 24px;font-size:11px;font-weight:800;color:var(--fz-text);">
+        <span><%= settings.marqueeText %></span>
+        <iconify-icon icon="mdi:lightning-bolt" style="color:var(--fz-red);font-size:13px;"></iconify-icon>
+        <span><%= settings.marqueeText %></span>
+        <iconify-icon icon="mdi:lightning-bolt" style="color:var(--fz-red);font-size:13px;"></iconify-icon>
+      </span>
+      <% } %>
+    </div>
+  </div>
+</div>
+<style>
+  @keyframes marqueeScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+</style>
+<% } %>
+
+<!-- ══ CATEGORY FILTER ══
+     FIX (dipindah 23 Agu 2026): sebelumnya di sini (atas, dekat banner,
+     sebelum Grup Telegram/Produk Populer). Dipindah menyatu dengan
+     section "Semua Produk" di bawah (nempel di bawah subtitle "Filter
+     berdasarkan game"), sesuai referensi yang diminta client -- filter
+     kategori jadi terasa jadi bagian dari katalog, bukan section
+     terpisah sendiri di awal halaman. -->
+
+<!-- ══ TOMBOL GABUNG GRUP TELEGRAM (diminta client 22 Agu 2026) ══ -->
+<% if (settings?.contact?.telegram) { %>
+<div class="max-w-6xl mx-auto px-4 pt-4">
+  <a href="https://t.me/<%= settings.contact.telegram.replace('@','') %>" target="_blank"
+     style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:11px 0;border-radius:4px;background:#229ED9;color:#fff;text-decoration:none;font-size:12px;font-weight:800;">
+    <iconify-icon icon="mdi:telegram" style="font-size:16px;"></iconify-icon>
+    Gabung Grup Telegram
+  </a>
+</div>
+<% } %>
+
+<!-- ══ PRODUK POPULER (diminta client 23 Agu 2026) ══
+     Diurutkan dari sold/fakeSold tertinggi, tampil sebagai row scroll
+     horizontal di atas grid "Semua Produk" (bukan grid biasa, supaya
+     kelihatan beda sebagai sorotan/highlight, bukan katalog penuh).
+     Maksimal 8 item biar tidak kepanjangan. Kalau tidak ada produk
+     terjual sama sekali, section ini otomatis disembunyikan. -->
+<%
+// FIX (diminta client 24 Agu 2026): product.categories berisi CAMPURAN
+// platform (android/ios/pc) DAN nama game (freefire/mlbb/dst) dalam satu
+// array yang sama -- field ini dipakai dobel untuk filter kategori game
+// DAN sumber badge platform. Badge card cuma boleh nampilin PLATFORM
+// (nama game sudah kelihatan dari gambar/judul produk, tidak perlu
+// diulang jadi badge juga -- itu yang bikin badge "ANDROID" + "FREE FIRE"
+// numpuk berdempetan). Whitelist berikut menyaring product.categories
+// supaya badge cuma render entri yang benar-benar platform.
+const PLATFORM_KEYS = ['android', 'ios', 'pc'];
+const popularProducts = products
+  .map(p => ({ ...p, _displaySold: (p.fakeSold != null ? p.fakeSold : (p.sold || 0)) }))
+  .filter(p => p._displaySold > 0)
+  .sort((a, b) => b._displaySold - a._displaySold)
+  .slice(0, 8);
+%>
+<% if (popularProducts.length > 0) { %>
+<div class="max-w-6xl mx-auto px-4 pt-8" id="popularProductsSection">
+  <div class="fz-heading">
+    <span class="bar"></span>
+    <h2>🔥 Produk Populer</h2>
+  </div>
+  <div class="fz-subheading">Paling banyak terjual minggu ini</div>
+  <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch;">
+    <% popularProducts.forEach(product => {
+      const stock = product.keys ? product.keys.length : 0;
+      const isOut = stock === 0;
+      const prodCategories = Array.isArray(product.categories) ? product.categories
+        : (Array.isArray(product.platforms) ? product.platforms
+        : (product.category ? [product.category] : []));
+      const badgeCategories = prodCategories.filter(c => PLATFORM_KEYS.includes(String(c).toLowerCase()));
+      const pricingArr = product.pricingOptions || product.items || [];
+      const priceList  = pricingArr.map(x=>(typeof x==='object'?(x.price??x.p):x)).filter(v=>typeof v==='number');
+      const minPrice   = priceList.length ? Math.min(...priceList) : (product.price||0);
+    %>
+    <div class="fz-card" style="flex:0 0 140px;" data-categories="<%= prodCategories.join(' ') %>">
+      <div class="fz-card-img" onclick="location.href='/buy/<%= product.id %>'" style="cursor:pointer;">
+        <% if (product.image) { %>
+        <img src="<%= product.image %>" alt="<%= product.name %>" loading="lazy" onerror="this.style.display='none'">
+        <% } else { %>
+        <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;">
+          <iconify-icon icon="mdi:image-outline" style="font-size:28px;color:#d4d4d8;"></iconify-icon>
+        </div>
+        <% } %>
+        <% badgeCategories.slice(0, 2).forEach((cat, idx) => {
+          const platClass = 'fz-plat-' + String(cat).toLowerCase().replace(/[^a-z0-9]/g, '');
+        %>
+        <span class="fz-plat-badge <%= platClass %>" style="top:<%= 6 + idx * 20 %>px;"><%= (categoryLabels[cat] || cat).toUpperCase() %></span>
+        <% }) %>
+        <svg viewBox="0 0 100 12" preserveAspectRatio="none" style="position:absolute;bottom:-1px;left:0;width:100%;height:12px;display:block;">
+          <path d="M0,6 C8,10 17,10 25,6 C33,2 42,2 50,6 C58,10 67,10 75,6 C83,2 92,2 100,6 L100,12 L0,12 Z" fill="var(--fz-bg)"></path>
+        </svg>
+      </div>
+      <div class="fz-card-body">
+        <div class="fz-card-name" onclick="location.href='/buy/<%= product.id %>'" style="cursor:pointer;"><%= product.name %></div>
+        <div class="fz-card-from">Mulai dari</div>
+        <div style="margin-bottom:6px;">
+          <span class="fz-card-price">Rp <%= minPrice.toLocaleString('id-ID') %></span>
+        </div>
+        <div class="fz-card-sold">
+          <iconify-icon icon="mdi:cart-outline" style="font-size:11px;"></iconify-icon>
+          <%= product._displaySold.toLocaleString('id-ID') %> terjual
+        </div>
+        <div class="fz-btn-row">
+          <% if (product.downloadUrl) { %>
+          <button class="fz-btn-buy" onclick="event.stopPropagation();window.open('<%= product.downloadUrl %>','_blank')" style="background:#2563eb;">
+            <iconify-icon icon="mdi:download" style="font-size:12px;"></iconify-icon> Download
+          </button>
+          <% } else if (!isOut) { %>
+          <button class="fz-btn-buy" onclick="location.href='/buy/<%= product.id %>'">
+            <iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli
+          </button>
+          <% } else { %>
+          <button class="fz-btn-buy" disabled>Habis</button>
+          <% } %>
+        </div>
+      </div>
+    </div>
+    <% }) %>
+  </div>
+</div>
+<% } %>
+
+<!-- ══ KATALOG (grid 3 kolom, filter kategori dinamis) ══
+     FIX (diminta client 22 Agu 2026): sebelumnya produk dikelompokkan
+     jadi SECTION TERPISAH per-platform (Android/iOS/PC hardcode). Client
+     bilang ini "aneh" -- sekarang kembali jadi SATU grid flat, dengan
+     filter PILL kategori di atas (lihat section CATEGORY FILTER) yang
+     isinya sepenuhnya diatur admin. Produk bisa punya BEBERAPA kategori
+     sekaligus, jadi badge di card juga bisa nampilin lebih dari satu. -->
+<div class="max-w-6xl mx-auto px-4 pt-8" id="games">
+  <div class="fz-heading">
+    <span class="bar"></span>
+    <h2>Semua Produk</h2>
+  </div>
+  <div class="fz-subheading">Filter berdasarkan game</div>
+  <div style="display:flex;gap:8px;overflow-x:auto;padding-bottom:10px;" id="filterRow">
+    <button onclick="filterProducts('all')" class="fz-pill active" data-pf="all">SEMUA</button>
+    <% (categories||[]).forEach(cat => { %>
+    <button onclick="filterProducts('<%= cat %>')" class="fz-pill" data-pf="<%= cat %>"><%= (categoryLabels[cat]||cat).toUpperCase() %></button>
+    <% }) %>
+  </div>
+  <div class="fz-grid">
+    <% products.forEach(product => {
+      const stock = product.keys ? product.keys.length : 0;
+      const isOut = stock === 0;
+      // Backward-compat: produk lama mungkin masih punya `category` (string
+      // tunggal) atau `platforms` (array lama) alih-alih `categories` array baru.
+      const prodCategories = Array.isArray(product.categories) ? product.categories
+        : (Array.isArray(product.platforms) ? product.platforms
+        : (product.category ? [product.category] : []));
+      // FIX (diminta client 24 Agu 2026): sama seperti section Produk
+      // Populer di atas -- badge cuma boleh nampilin PLATFORM, bukan
+      // nama game (yang sudah kelihatan dari gambar/judul produk).
+      const badgeCategories = prodCategories.filter(c => PLATFORM_KEYS.includes(String(c).toLowerCase()));
+      const pricingArr = product.pricingOptions || product.items || [];
+      const priceList  = pricingArr.map(x=>(typeof x==='object'?(x.price??x.p):x)).filter(v=>typeof v==='number');
+      const minPrice   = priceList.length ? Math.min(...priceList) : (product.price||0);
+      const displaySold = (product.fakeSold != null) ? product.fakeSold : (product.sold || 0);
+    %>
+    <div class="fz-card" data-categories="<%= prodCategories.join(' ') %>">
+      <div class="fz-card-img" onclick="location.href='/buy/<%= product.id %>'" style="cursor:pointer;">
+        <% if (product.image) { %>
+        <img src="<%= product.image %>" alt="<%= product.name %>" loading="lazy"
+             onerror="this.style.display='none'">
+        <% } else { %>
+        <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;">
+          <iconify-icon icon="mdi:image-outline" style="font-size:28px;color:#d4d4d8;"></iconify-icon>
+        </div>
+        <% } %>
+        <!-- Badge kategori -- bisa lebih dari 1, ditumpuk ke bawah di pojok kanan atas.
+             Class warna dipilih dari nama kategori (disamakan huruf kecil & tanpa
+             spasi) supaya tiap kategori otomatis dapat warna ribbon berbeda; kalau
+             namanya tidak dikenali, jatuh ke abu-abu (fz-plat-default). -->
+        <% if (badgeCategories.length > 0) { %>
+        <% badgeCategories.slice(0, 2).forEach((cat, idx) => {
+          const platClass = 'fz-plat-' + String(cat).toLowerCase().replace(/[^a-z0-9]/g, '');
+        %>
+        <span class="fz-plat-badge <%= platClass %>" style="top:<%= 6 + idx * 20 %>px;"><%= (categoryLabels[cat] || cat).toUpperCase() %></span>
+        <% }) %>
+        <% } %>
+        <!-- Garis gelombang di bawah gambar (diminta client 22 Agu 2026:
+             "garis bawah logo gelombang intinya tidak lurus") -->
+        <svg viewBox="0 0 100 12" preserveAspectRatio="none" style="position:absolute;bottom:-1px;left:0;width:100%;height:12px;display:block;">
+          <path d="M0,6 C8,10 17,10 25,6 C33,2 42,2 50,6 C58,10 67,10 75,6 C83,2 92,2 100,6 L100,12 L0,12 Z" fill="var(--fz-bg)"></path>
+        </svg>
+      </div>
+      <div class="fz-card-body">
+        <div class="fz-card-name" onclick="location.href='/buy/<%= product.id %>'" style="cursor:pointer;"><%= product.name %></div>
+        <div class="fz-card-from">Mulai dari</div>
+        <!-- FIX (diminta client 22 Agu 2026): harga coret DIHAPUS dari
+             katalog halaman utama (masih tampil di halaman detail
+             produk /buy/:id, cuma tidak di sini). -->
+        <div style="margin-bottom:6px;">
+          <span class="fz-card-price">Rp <%= minPrice.toLocaleString('id-ID') %></span>
+        </div>
+        <div class="fz-card-sold">
+          <iconify-icon icon="mdi:cart-outline" style="font-size:11px;"></iconify-icon>
+          <%= displaySold.toLocaleString('id-ID') %> terjual
+        </div>
+        <!-- UPDATE (diminta client AGHA NL, 14 Sep 2026): tombol download per-
+             produk balik lagi -- kalau product.downloadUrl diisi admin, kartu
+             ini tampilkan tombol "Download" (buka link langsung, bukan alur
+             Beli/checkout), referensi mallstor.id. -->
+        <div class="fz-btn-row">
+          <% if (product.downloadUrl) { %>
+          <button class="fz-btn-buy" onclick="event.stopPropagation();window.open('<%= product.downloadUrl %>','_blank')" style="background:#2563eb;">
+            <iconify-icon icon="mdi:download" style="font-size:12px;"></iconify-icon> Download
+          </button>
+          <% } else if (!isOut) { %>
+          <button class="fz-btn-buy" onclick="location.href='/buy/<%= product.id %>'">
+            <iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli
+          </button>
+          <% } else { %>
+          <button class="fz-btn-buy" disabled>Habis</button>
+          <% } %>
+        </div>
+      </div>
+    </div>
+    <% }) %>
+  </div>
+  <% if (products.length === 0) { %>
+  <div style="text-align:center;padding:50px 0;color:var(--fz-text-muted);font-size:12px;">Belum ada produk tersedia.</div>
+  <% } %>
+</div>
+
+<!-- ══ TOP PEMBELI (leaderboard, podium style) ══ -->
+<!-- FIX (diminta client 25 Agu 2026): sebelumnya section ini cuma
+     dikasih pt-8 (32px) tanpa pemisah visual, jadi kelihatan nempel
+     langsung di bawah grid produk. Sekarang dipisah jadi "section"
+     sendiri: border-top tegas + background sedikit beda + jarak
+     lebih lega, supaya nggak terasa menyatu dengan katalog produk. -->
+<% if (leaderboardEntries && leaderboardEntries.length > 0) { %>
+<div style="margin-top:40px;padding-top:32px;padding-bottom:8px;border-top:1px solid var(--fz-border);background:var(--fz-bg-alt, rgba(0,0,0,0.015));">
+<div class="max-w-6xl mx-auto px-4">
+  <div class="fz-heading" style="justify-content:space-between;">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span class="bar"></span>
+      <h2>Top Pembeli</h2>
+    </div>
+    <a href="/leaderboard" style="font-size:11px;font-weight:700;color:var(--fz-red);text-decoration:none;display:flex;align-items:center;gap:2px;">
+      Lihat Semua <iconify-icon icon="mdi:chevron-right" style="font-size:14px;"></iconify-icon>
+    </a>
+  </div>
+
+  <% const top3 = leaderboardEntries.slice(0,3); const rest = leaderboardEntries.slice(3,10); %>
+  <% if (top3.length > 0) { %>
+  <div style="display:flex;align-items:flex-end;justify-content:center;gap:16px;margin-bottom:18px;padding:0 8px;">
+    <% [top3[1], top3[0], top3[2]].forEach((entry, idx) => { if (!entry) return;
+       const rank = idx === 1 ? 1 : (idx === 0 ? 2 : 3);
+       const size = rank === 1 ? 72 : 56;
+       const initial = (entry.username||'?').charAt(0).toUpperCase();
+    %>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:6px;">
+      <div class="fz-podium-avatar" style="width:<%= size %>px;height:<%= size %>px;display:flex;align-items:center;justify-content:center;font-size:<%= size/2.4 %>px;font-weight:800;color:var(--fz-red);position:relative;">
+        <% if (entry.photo) { %>
+        <img src="<%= entry.photo %>" alt="<%= entry.username %>" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <span style="display:none;width:100%;height:100%;align-items:center;justify-content:center;"><%= initial %></span>
+        <% } else { %>
+        <%= initial %>
+        <% } %>
+        <% if (rank === 1) { %>
+        <iconify-icon icon="mdi:crown" style="position:absolute;top:-16px;font-size:18px;color:#fbbf24;"></iconify-icon>
+        <% } %>
+      </div>
+      <div style="font-size:11px;font-weight:700;color:var(--fz-text);max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><%= entry.username %></div>
+      <div class="fz-rank-badge" style="width:20px;height:20px;font-size:10px;">#<%= rank %></div>
+    </div>
+    <% }) %>
+  </div>
+  <% } %>
+
+  <% rest.forEach((entry, idx) => { %>
+  <div class="fz-rank-row">
+    <div class="fz-rank-badge">#<%= idx + 4 %></div>
+    <div style="width:32px;height:32px;border-radius:50%;background:var(--fz-bg-soft);border:1px solid var(--fz-border);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--fz-text-muted);flex-shrink:0;overflow:hidden;">
+      <% if (entry.photo) { %>
+      <img src="<%= entry.photo %>" alt="<%= entry.username %>" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+      <span style="display:none;width:100%;height:100%;align-items:center;justify-content:center;"><%= (entry.username||'?').charAt(0).toUpperCase() %></span>
+      <% } else { %>
+      <%= (entry.username||'?').charAt(0).toUpperCase() %>
+      <% } %>
+    </div>
+    <div style="flex:1;min-width:0;">
+      <div style="font-size:12px;font-weight:700;color:var(--fz-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"><%= entry.username %></div>
+      <div style="font-size:10px;color:var(--fz-text-muted);"><%= entry.totalTransactions %>x beli</div>
+    </div>
+    <div style="font-size:11px;font-weight:800;color:var(--fz-red);white-space:nowrap;">Rp <%= (entry.totalSpent||0).toLocaleString('id-ID') %></div>
+  </div>
+  <% }) %>
+</div>
+</div>
+<% } %>
+
+<!-- ══ TRUST BADGES ══ -->
+<div class="max-w-6xl mx-auto px-4 pt-8">
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;border-top:1px solid var(--fz-border);border-bottom:1px solid var(--fz-border);padding:8px 0;">
+    <div class="fz-trust"><iconify-icon icon="mdi:shield-check-outline"></iconify-icon><span>Pembayaran Aman</span></div>
+    <div class="fz-trust"><iconify-icon icon="mdi:flash-outline"></iconify-icon><span>Proses Instan</span></div>
+    <div class="fz-trust"><iconify-icon icon="mdi:headset"></iconify-icon><span>CS 24/7</span></div>
+    <div class="fz-trust"><iconify-icon icon="mdi:star-outline"></iconify-icon><span>Rating <%= avgRating %></span></div>
+  </div>
+</div>
+
+<!-- ══ FOOTER ══ -->
+<footer class="fz-footer" style="margin-top:32px;">
+  <!-- Metode Pembayaran -->
+  <div class="max-w-6xl mx-auto">
+    <h4>Metode Pembayaran</h4>
+    <!-- FIX (diminta client 22 Agu 2026): logo asli (gambar), bukan cuma
+         teks badge -- kotak rectangle rounded berisi logo, admin isi
+         sendiri URL logo tiap metode pembayaran lewat Admin Panel (logo
+         resmi didapat dari kanal masing-masing e-wallet/bank, bukan aset
+         yang di-hardcode di sini karena itu logo berhak cipta pihak
+         ketiga). Kalau admin belum isi apapun, fallback ke badge teks
+         seperti sebelumnya supaya section ini tidak kosong total. -->
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:24px;">
+      <% if ((settings?.paymentMethods||[]).length > 0) { %>
+        <% settings.paymentMethods.forEach(pm => { %>
+        <div class="fz-pay-logo-box" title="<%= pm.name || '' %>">
+          <img src="<%= pm.logoUrl %>" alt="<%= pm.name || 'Metode pembayaran' %>" loading="lazy" onerror="this.parentElement.style.display='none'">
+        </div>
+        <% }) %>
+      <% } else { %>
+      <span class="fz-pay-badge">QRIS</span>
+      <span class="fz-pay-badge">Transfer Bank</span>
+      <span class="fz-pay-badge">E-Wallet</span>
+      <% } %>
+    </div>
+
+    <div style="height:1px;background:var(--fz-border);margin-bottom:24px;"></div>
+
+    <div style="display:grid;grid-template-columns:1fr;gap:24px;">
+      <div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <img src="<%= settings?.logoUrl || '/uploads/logo-main.png' %>" alt="Logo" style="height:34px;width:34px;object-fit:contain;border-radius:8px;">
+          <%- include('../partials/logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '15px' }) %>
+        </div>
+        <p style="font-size:12px;color:#52525b;line-height:1.5;margin-bottom:12px;max-width:320px;"><%= settings?.about || 'Toko mod menu & cheat game terpercaya dengan harga termurah dan proses instan.' %></p>
+        <div style="display:flex;gap:8px;">
+          <% if (settings?.contact?.whatsapp) { %>
+          <a href="https://wa.me/<%= (settings.contact.whatsapp||'').replace(/\D/g,'') %>" target="_blank" rel="noopener" class="fz-social" style="background:#25D366;">
+            <iconify-icon icon="mdi:whatsapp" style="font-size:18px;color:#fff;"></iconify-icon>
+          </a>
+          <% } %>
+          <% if (settings?.contact?.telegram) { %>
+          <a href="https://t.me/<%= (settings.contact.telegram||'').replace('@','') %>" target="_blank" rel="noopener" class="fz-social" style="background:#229ED9;">
+            <iconify-icon icon="mdi:telegram" style="font-size:18px;color:#fff;"></iconify-icon>
+          </a>
+          <% } %>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <h4>Layanan</h4>
+          <a href="/">Beranda</a>
+          <a href="#games">Katalog Produk</a>
+          <a href="/invoice">Lacak Pesanan</a>
+          <% if (resellerSettings?.enabled) { %>
+          <a href="/reseller">Jadi Reseller</a>
+          <% } %>
+        </div>
+        <div>
+          <h4>Bantuan</h4>
+          <a href="/informasi?tab=syarat">Syarat Ketentuan</a>
+          <a href="/informasi?tab=faq">FAQ</a>
+          <a href="/informasi?tab=cara-beli">Cara Beli</a>
+        </div>
+      </div>
+    </div>
+
+    <div style="height:1px;background:var(--fz-border);margin:24px 0 16px;"></div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-size:11px;color:#a1a1aa;">&copy; <%= new Date().getFullYear() %> <%= settings?.siteName || 'AGHA NL' %>. All rights reserved.</span>
+      <a href="/informasi?tab=faq" style="padding:8px 16px;border-radius:4px;background:var(--fz-red);color:#fff;font-size:11px;font-weight:800;text-decoration:none;">Bantuan</a>
+    </div>
+  </div>
+</footer>
+
+<!-- ══ MODAL LOGIN/DAFTAR (diminta client 22 Agu 2026: "login daftar nya
+     tuh di pop up dahsbord bkn di halaman beda") ══
+     Popup di atas homepage, tidak pindah halaman/URL sama sekali. Submit
+     lewat fetch() ke /api/auth/login /api/auth/register (JSON), bukan
+     form submit biasa yang reload halaman. -->
+<!-- FIX (BUG UTAMA popup auto muncul & tombol X gak keklik): sebelumnya
+     div ini punya class="hidden" (dari tailwind: display:none) TAPI JUGA
+     inline style="...display:flex...". Inline style SELALU menang atas
+     class dari external stylesheet untuk property yang sama (specificity
+     inline > class), jadi elemen ini SELALU display:flex alias SELALU
+     kelihatan sejak awal load, apapun isi class-nya -- class "hidden"
+     di situ efeknya nol. Makanya modal auto muncul walau belum diklik,
+     dan overlay full-screen itu (yang selalu aktif) juga yang bikin
+     interaksi ke elemen lain di baliknya jadi kacau. Fix: display TIDAK
+     lagi ditaruh di inline style, dikontrol murni lewat class
+     "auth-modal-overlay" + "hidden" (lihat <style> di bawah), classList
+     toggle di openAuthModal()/closeAuthModal() jadi satu-satunya yang
+     menentukan tampil/tidak. -->
+<div id="authModalOverlay" class="hidden auth-modal-overlay" style="position:fixed;inset:0;z-index:9600;background:rgba(0,0,0,.5);align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closeAuthModal()">
+  <!-- FIX (diminta client: "border container glasses" untuk modal
+       login/daftar) -- glassmorphism: background semi-transparan +
+       backdrop-filter blur, border tipis putih translucent, supaya
+       overlay gelap di belakangnya sedikit tembus dan modal terasa
+       "melayang" alih-alih kotak putih solid biasa. -->
+  <div style="background:rgba(255,255,255,.82);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.6);border-radius:16px;max-width:380px;width:100%;max-height:92vh;overflow-y:auto;position:relative;box-shadow:0 8px 32px rgba(0,0,0,.18);">
+    <button onclick="closeAuthModal()" style="position:absolute;top:12px;right:12px;width:28px;height:28px;border-radius:50%;background:var(--fz-bg-soft);border:none;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--fz-text-muted);z-index:1;">
+      <iconify-icon icon="mdi:close" style="font-size:16px;"></iconify-icon>
+    </button>
+
+    <div style="padding:28px 24px 20px;text-align:center;border-bottom:1px solid var(--fz-border);">
+      <img src="<%= settings?.logoUrl || '/uploads/logo-main.png' %>" alt="Logo" style="height:44px;width:44px;object-fit:contain;border-radius:10px;margin:0 auto 10px;display:block;">
+      <div id="authModalTitle" style="font-weight:900;font-size:15px;color:var(--fz-text);">Masuk ke Akun Anda</div>
+    </div>
+
+    <div style="display:flex;border-bottom:1px solid var(--fz-border);">
+      <button id="authTabLogin" onclick="switchAuthTab('login')" style="flex:1;padding:12px 0;font-size:12px;font-weight:800;border:none;background:transparent;cursor:pointer;color:var(--fz-red);border-bottom:2px solid var(--fz-red);">MASUK</button>
+      <button id="authTabRegister" onclick="switchAuthTab('register')" style="flex:1;padding:12px 0;font-size:12px;font-weight:800;border:none;background:transparent;cursor:pointer;color:var(--fz-text-muted);">DAFTAR</button>
+    </div>
+
+    <div id="authErrorBox" class="hidden" style="margin:16px 24px 0;padding:10px 12px;border-radius:8px;background:rgba(220,38,38,.08);border:1px solid rgba(220,38,38,.2);color:var(--fz-red);font-size:12px;font-weight:600;"></div>
+
+    <!-- Form Login -->
+    <form id="authFormLogin" style="padding:20px 24px 24px;" onsubmit="return handleAuthSubmit(event,'login')">
+      <div style="margin-bottom:12px;">
+        <label style="font-size:11px;font-weight:700;color:var(--fz-text-muted);display:block;margin-bottom:5px;">Username</label>
+        <input type="text" name="username" required class="fz-auth-input" placeholder="Masukkan username">
+      </div>
+      <div style="margin-bottom:8px;">
+        <label style="font-size:11px;font-weight:700;color:var(--fz-text-muted);display:block;margin-bottom:5px;">Password</label>
+        <div style="position:relative;">
+          <input type="password" id="loginPasswordInput" name="password" required class="fz-auth-input" placeholder="Masukkan password" style="padding-right:38px;">
+          <button type="button" onclick="togglePasswordVisibility('loginPasswordInput', this)" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--fz-text-muted);padding:4px;display:flex;">
+            <iconify-icon icon="mdi:eye-outline" style="font-size:17px;"></iconify-icon>
+          </button>
+        </div>
+      </div>
+      <% if (turnstileSiteKey) { %>
+      <div style="margin:14px 0;border:1px solid var(--fz-border);border-radius:8px;padding:8px;display:flex;justify-content:center;">
+        <div id="turnstileWidgetLogin"></div>
+      </div>
+      <% } %>
+      <button type="submit" id="authSubmitBtnLogin" style="width:100%;padding:11px 0;border-radius:4px;background:var(--fz-red);color:#fff;font-size:13px;font-weight:800;border:none;cursor:pointer;margin-top:14px;">Masuk</button>
+      <% if (googleOAuthEnabled) { %>
+      <a href="/auth/google" style="width:100%;padding:10px 0;border-radius:4px;background:#fff;border:1px solid var(--fz-border);color:var(--fz-text);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;margin-top:10px;">
+        <iconify-icon icon="mdi:google" style="font-size:15px;"></iconify-icon> Masuk dengan Google
+      </a>
+      <% } %>
+    </form>
+
+    <!-- Form Daftar -->
+    <form id="authFormRegister" class="hidden" style="padding:20px 24px 24px;" onsubmit="return handleAuthSubmit(event,'register')">
+      <div style="margin-bottom:12px;">
+        <label style="font-size:11px;font-weight:700;color:var(--fz-text-muted);display:block;margin-bottom:5px;">Username</label>
+        <input type="text" name="username" required class="fz-auth-input" placeholder="Pilih username">
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:11px;font-weight:700;color:var(--fz-text-muted);display:block;margin-bottom:5px;">Nomor WhatsApp</label>
+        <input type="text" name="wa" required class="fz-auth-input" placeholder="Contoh: 6281234567890">
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:11px;font-weight:700;color:var(--fz-text-muted);display:block;margin-bottom:5px;">Password</label>
+        <div style="position:relative;">
+          <input type="password" id="registerPasswordInput" name="password" required minlength="8" class="fz-auth-input" placeholder="Buat password" style="padding-right:38px;">
+          <button type="button" onclick="togglePasswordVisibility('registerPasswordInput', this)" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--fz-text-muted);padding:4px;display:flex;">
+            <iconify-icon icon="mdi:eye-outline" style="font-size:17px;"></iconify-icon>
+          </button>
+        </div>
+        <!-- FIX (23 Agu 2026): sebelumnya tidak ada validasi kekuatan
+             password sama sekali (password 6 karakter tanpa angka lolos).
+             Hint ini kasih tau syaratnya di depan supaya user tidak baru
+             tau setelah submit gagal. -->
+        <div style="font-size:10px;color:var(--fz-text-muted);margin-top:4px;">Minimal 8 karakter, kombinasi huruf & angka</div>
+      </div>
+      <div style="margin-bottom:8px;">
+        <label style="font-size:11px;font-weight:700;color:var(--fz-text-muted);display:block;margin-bottom:5px;">Konfirmasi Password</label>
+        <div style="position:relative;">
+          <input type="password" id="registerConfirmPasswordInput" name="confirmPassword" required class="fz-auth-input" placeholder="Ulangi password" style="padding-right:38px;">
+          <button type="button" onclick="togglePasswordVisibility('registerConfirmPasswordInput', this)" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--fz-text-muted);padding:4px;display:flex;">
+            <iconify-icon icon="mdi:eye-outline" style="font-size:17px;"></iconify-icon>
+          </button>
+        </div>
+      </div>
+      <% if (turnstileSiteKey) { %>
+      <div style="margin:14px 0;border:1px solid var(--fz-border);border-radius:8px;padding:8px;display:flex;justify-content:center;">
+        <div id="turnstileWidgetRegister"></div>
+      </div>
+      <% } %>
+      <button type="submit" id="authSubmitBtnRegister" style="width:100%;padding:11px 0;border-radius:4px;background:var(--fz-red);color:#fff;font-size:13px;font-weight:800;border:none;cursor:pointer;margin-top:14px;">Daftar Sekarang</button>
+      <% if (googleOAuthEnabled) { %>
+      <a href="/auth/google" style="width:100%;padding:10px 0;border-radius:4px;background:#fff;border:1px solid var(--fz-border);color:var(--fz-text);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:8px;text-decoration:none;margin-top:10px;">
+        <iconify-icon icon="mdi:google" style="font-size:15px;"></iconify-icon> Daftar dengan Google
+      </a>
+      <% } %>
+    </form>
+  </div>
+</div>
+<style>
+  .fz-auth-input {
+    width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--fz-border);
+    background: var(--fz-bg-soft); font-size: 13px; color: var(--fz-text); outline: none;
+  }
+  .fz-auth-input:focus { border-color: var(--fz-red); }
+  /* display diatur lewat class (bukan inline) supaya .hidden bisa menang
+     telak saat class itu dipasang -- lihat catatan FIX di elemen
+     authModalOverlay di atas. */
+  .auth-modal-overlay { display: flex; }
+  .auth-modal-overlay.hidden { display: none; }
+</style>
+<% if (turnstileSiteKey) { %>
+<!-- FIX (verifikasi turnstile selalu gagal): sebelumnya widget pakai auto-render
+     (class="cf-turnstile" statis), tapi widget itu ada di dalam modal yang
+     display:none saat halaman pertama load. Turnstile auto-render scan DOM saat
+     script api.js selesai load -- elemen yang saat itu hidden/display:none tidak
+     ke-render jadi widget, jadi token cf-turnstile-response tidak pernah terisi
+     dan verifikasi di server SELALU gagal. Fix: render=explicit, lalu render
+     manual pakai turnstile.render() saat modal benar-benar dibuka (elemen sudah
+     visible). Widget id disimpan per form (login & register, masing-masing
+     punya token sendiri) supaya reset salah satu tidak ganggu yang lain. -->
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onTurnstileLoad" async defer></script>
+<script>
+let _tsLoginId = null, _tsRegisterId = null, _tsReady = false;
+function onTurnstileLoad(){
+  _tsReady = true;
+  // Kalau modal sudah kebuka duluan sebelum script ini selesai load, render sekarang
+  if (!document.getElementById('authModalOverlay').classList.contains('hidden')) {
+    renderTurnstileWidgets();
+  }
+}
+function renderTurnstileWidgets(){
+  if (!_tsReady || typeof turnstile === 'undefined') return;
+  const loginEl = document.getElementById('turnstileWidgetLogin');
+  const registerEl = document.getElementById('turnstileWidgetRegister');
+  if (loginEl && _tsLoginId === null) {
+    _tsLoginId = turnstile.render(loginEl, { sitekey: '<%= turnstileSiteKey %>' });
+  }
+  if (registerEl && _tsRegisterId === null) {
+    _tsRegisterId = turnstile.render(registerEl, { sitekey: '<%= turnstileSiteKey %>' });
+  }
+}
+</script>
+<% } %>
+
+<script>
+const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: (keys||[]).length}))) %>;
+const CATEGORY_LABELS = <%- safeJson(categoryLabels || {}) %>;
+
+// ── Carousel ──
+(function(){
+  let slides=[],cur=0,timer=null;
+  async function init(){
+    try{const r=await fetch('/api/banners');slides=await r.json();}catch{slides=[];}
+    const track=document.getElementById('carousel-track');
+    const dots=document.getElementById('carousel-dots');
+    if(!slides.length){ document.getElementById('carousel-wrap').style.display='none'; return; }
+    // FIX (loading lambat): sebelumnya semua slide banner didownload
+    // bersamaan tanpa loading="lazy" -- kalau ada 4-5 banner, browser
+    // narik semuanya sekaligus padahal cuma slide pertama yang kelihatan.
+    // Slide pertama dibuat eager (memang harus tampil duluan), sisanya
+    // lazy supaya baru didownload pas mendekati giliran tampil. decoding
+    // async juga dipakai supaya decode gambar tidak ngeblok main thread.
+    track.innerHTML=slides.map((s,i)=>`<img src="${s.imageUrl||s.image||s.url}" style="width:100%;height:100%;object-fit:cover;flex-shrink:0;" loading="${i===0?'eager':'lazy'}" decoding="async" fetchpriority="${i===0?'high':'auto'}">`).join('');
+    dots.innerHTML=slides.map((_,i)=>`<span data-dot="${i}" style="width:6px;height:6px;border-radius:50%;background:${i===0?'#dc2626':'rgba(255,255,255,.6)'};transition:all .2s;"></span>`).join('');
+    if(slides.length>1) timer=setInterval(next,4500);
+  }
+  function next(){
+    cur=(cur+1)%slides.length;
+    document.getElementById('carousel-track').style.transform=`translateX(-${cur*100}%)`;
+    document.querySelectorAll('[data-dot]').forEach((d,i)=>{d.style.background=i===cur?'#dc2626':'rgba(255,255,255,.6)';d.style.width=i===cur?'16px':'6px';});
+  }
+  init();
+})();
+
+// ── Filter kategori ──
+function filterProducts(cat){
+  // FIX (diminta client 22 Agu 2026): 1 produk bisa punya BEBERAPA kategori
+  // sekaligus (data-categories berisi semua kategori dipisah spasi), jadi
+  // cek "apakah kategori yang dipilih ADA di dalam list", bukan exact match
+  // seperti sebelumnya (yang cuma cocok kalau produk persis 1 kategori saja).
+  document.querySelectorAll('[data-categories]').forEach(c=>{
+    const cats = (c.dataset.categories || '').split(' ').filter(Boolean);
+    const match = cat === 'all' || cats.includes(cat);
+    c.style.display = match ? '' : 'none';
+  });
+  document.querySelectorAll('.fz-pill').forEach(b=>{
+    b.classList.toggle('active', b.dataset.pf===cat);
+  });
+  // FIX (diminta client 24 Agu 2026): section "Produk Populer" disembunyikan
+  // SELURUHNYA (bukan cuma card-nya satu-satu difilter) saat user memilih
+  // kategori game tertentu -- section itu maksudnya sorotan lintas-kategori,
+  // jadi tidak relevan ditampilkan saat user sedang menyaring ke 1 game
+  // spesifik. Muncul lagi hanya saat filter "Semua" dipilih.
+  const popularSection = document.getElementById('popularProductsSection');
+  if (popularSection) popularSection.style.display = (cat === 'all') ? '' : 'none';
+}
+
+// ── Search ──
+function searchProducts(q){
+  const term=q.trim().toLowerCase();
+  document.querySelectorAll('.fz-card[data-categories]').forEach(card=>{
+    const name=(card.querySelector('.fz-card-name')?.textContent||'').toLowerCase();
+    card.style.display=(!term||name.includes(term))?'':'none';
+  });
+}
+
+// ── Toggle lihat/sembunyi password (ikon mata) ──
+function togglePasswordVisibility(inputId, btn){
+  const input = document.getElementById(inputId);
+  const icon = btn.querySelector('iconify-icon');
+  const isHidden = input.type === 'password';
+  input.type = isHidden ? 'text' : 'password';
+  icon.setAttribute('icon', isHidden ? 'mdi:eye-off-outline' : 'mdi:eye-outline');
+}
+
+// ── Modal Login/Daftar (diminta client 22 Agu 2026) ──
+function openAuthModal(tab){
+  document.getElementById('authModalOverlay').classList.remove('hidden');
+  document.body.style.overflow='hidden';
+  switchAuthTab(tab||'login');
+  // Elemen widget baru jadi visible sekarang -- render turnstile di sini,
+  // bukan mengandalkan auto-render saat page load (lihat catatan di atas).
+  if (typeof renderTurnstileWidgets === 'function') renderTurnstileWidgets();
+}
+function closeAuthModal(){
+  document.getElementById('authModalOverlay').classList.add('hidden');
+  document.body.style.overflow='';
+  document.getElementById('authErrorBox').classList.add('hidden');
+  if (typeof turnstile !== 'undefined') {
+    if (_tsLoginId !== null) turnstile.reset(_tsLoginId);
+    if (_tsRegisterId !== null) turnstile.reset(_tsRegisterId);
+  }
+}
+function switchAuthTab(tab){
+  const isLogin = tab==='login';
+  document.getElementById('authFormLogin').classList.toggle('hidden', !isLogin);
+  document.getElementById('authFormRegister').classList.toggle('hidden', isLogin);
+  document.getElementById('authTabLogin').style.color = isLogin ? 'var(--fz-red)' : 'var(--fz-text-muted)';
+  document.getElementById('authTabLogin').style.borderBottom = isLogin ? '2px solid var(--fz-red)' : 'none';
+  document.getElementById('authTabRegister').style.color = isLogin ? 'var(--fz-text-muted)' : 'var(--fz-red)';
+  document.getElementById('authTabRegister').style.borderBottom = isLogin ? 'none' : '2px solid var(--fz-red)';
+  document.getElementById('authModalTitle').textContent = isLogin ? 'Masuk ke Akun Anda' : 'Buat Akun Baru';
+  document.getElementById('authErrorBox').classList.add('hidden');
+}
+async function handleAuthSubmit(e, type){
+  e.preventDefault();
+  const form = e.target;
+  const btn = document.getElementById(type==='login' ? 'authSubmitBtnLogin' : 'authSubmitBtnRegister');
+  const errorBox = document.getElementById('authErrorBox');
+  errorBox.classList.add('hidden');
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = 'Memproses...';
+
+  const formData = new FormData(form);
+  const body = {};
+  formData.forEach((v,k) => body[k]=v);
+  // Ambil token dari widget explicit-render sesuai form-nya (login/register
+  // punya widget & id sendiri-sendiri, lihat renderTurnstileWidgets()).
+  if (typeof turnstile !== 'undefined') {
+    const widgetId = type === 'login' ? _tsLoginId : _tsRegisterId;
+    if (widgetId !== null) body['cf-turnstile-response'] = turnstile.getResponse(widgetId) || '';
+  }
+
+  try {
+    const res = await fetch(type==='login' ? '/api/auth/login' : '/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.success) {
+      window.location.href = data.redirect || '/';
+    } else {
+      errorBox.textContent = data.message || 'Terjadi kesalahan, coba lagi.';
+      errorBox.classList.remove('hidden');
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  } catch(err) {
+    errorBox.textContent = 'Gagal terhubung ke server. Coba lagi.';
+    errorBox.classList.remove('hidden');
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+  return false;
+}
+</script>
