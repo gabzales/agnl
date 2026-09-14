@@ -150,8 +150,8 @@ const pageTitle = settings?.siteName || 'AGHA NL';
   }
   .fz-pay-logo-box img { height: 100%; width: auto; max-width: 160px; object-fit: contain; }
   .fz-social {
-    width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-    color: #fff; text-decoration: none; flex-shrink: 0; line-height: 1;
+    height: 36px; padding: 0 14px 0 12px; border-radius: 999px; display: flex; align-items: center; gap: 7px;
+    color: #fff; text-decoration: none; flex-shrink: 0; line-height: 1; font-size: 12px; font-weight: 700;
   }
   /* FIX (bug 25 Agu 2026, direvisi 26 Agu 2026): percobaan sebelumnya
      mengunci width/height iconify-icon lewat CSS supaya nggak "collapse"
@@ -212,7 +212,7 @@ const pageTitle = settings?.siteName || 'AGHA NL';
 <!-- ══ HERO CAROUSEL ══ -->
 <div class="max-w-6xl mx-auto px-4 pt-3">
   <div id="carousel-wrap" style="position:relative;border-radius:16px;overflow:hidden;background:var(--fz-bg-soft);aspect-ratio:16/7;">
-    <div id="carousel-track" style="display:flex;height:100%;transition:transform .5s ease;"></div>
+    <div id="carousel-track" style="display:flex;height:100%;transition:transform .45s cubic-bezier(.22,.61,.36,1);"></div>
     <div id="carousel-dots" style="position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:5px;"></div>
   </div>
 </div>
@@ -565,16 +565,16 @@ const popularProducts = products
           <img src="<%= settings?.logoUrl || '/uploads/logo-main.png' %>" alt="Logo" style="height:34px;width:34px;object-fit:contain;border-radius:8px;">
           <%- include('../partials/logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '15px' }) %>
         </div>
-        <p style="font-size:12px;color:#52525b;line-height:1.5;margin-bottom:12px;max-width:320px;"><%= settings?.about || 'Toko mod menu & cheat game terpercaya dengan harga termurah dan proses instan.' %></p>
+        <p style="font-size:12px;color:var(--fz-text-muted);line-height:1.5;margin-bottom:12px;max-width:320px;"><%= settings?.about || 'Toko mod menu & cheat game terpercaya dengan harga termurah dan proses instan.' %></p>
         <div style="display:flex;gap:8px;">
           <% if (settings?.contact?.whatsapp) { %>
           <a href="https://wa.me/<%= (settings.contact.whatsapp||'').replace(/\D/g,'') %>" target="_blank" rel="noopener" class="fz-social" style="background:#25D366;">
-            <iconify-icon icon="mdi:whatsapp" style="font-size:18px;color:#fff;"></iconify-icon>
+            <iconify-icon icon="mdi:whatsapp" style="font-size:18px;color:#fff;"></iconify-icon> WhatsApp
           </a>
           <% } %>
           <% if (settings?.contact?.telegram) { %>
           <a href="https://t.me/<%= (settings.contact.telegram||'').replace('@','') %>" target="_blank" rel="noopener" class="fz-social" style="background:#229ED9;">
-            <iconify-icon icon="mdi:telegram" style="font-size:18px;color:#fff;"></iconify-icon>
+            <iconify-icon icon="mdi:telegram" style="font-size:18px;color:#fff;"></iconify-icon> Telegram
           </a>
           <% } %>
         </div>
@@ -774,29 +774,87 @@ function renderTurnstileWidgets(){
 const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: (keys||[]).length}))) %>;
 const CATEGORY_LABELS = <%- safeJson(categoryLabels || {}) %>;
 
-// ── Carousel ──
+// ── Carousel (swipe/drag bebas kiri-kanan, diminta client 14 Sep 2026) ──
 (function(){
   let slides=[],cur=0,timer=null;
+  let track,wrap,dotsEl;
+  let dragging=false,startX=0,startTranslate=0,dragDeltaPx=0,pointerId=null;
+
   async function init(){
     try{const r=await fetch('/api/banners');slides=await r.json();}catch{slides=[];}
-    const track=document.getElementById('carousel-track');
-    const dots=document.getElementById('carousel-dots');
-    if(!slides.length){ document.getElementById('carousel-wrap').style.display='none'; return; }
+    track=document.getElementById('carousel-track');
+    wrap=document.getElementById('carousel-wrap');
+    dotsEl=document.getElementById('carousel-dots');
+    if(!slides.length){ wrap.style.display='none'; return; }
     // FIX (loading lambat): sebelumnya semua slide banner didownload
     // bersamaan tanpa loading="lazy" -- kalau ada 4-5 banner, browser
     // narik semuanya sekaligus padahal cuma slide pertama yang kelihatan.
     // Slide pertama dibuat eager (memang harus tampil duluan), sisanya
     // lazy supaya baru didownload pas mendekati giliran tampil. decoding
     // async juga dipakai supaya decode gambar tidak ngeblok main thread.
-    track.innerHTML=slides.map((s,i)=>`<img src="${s.imageUrl||s.image||s.url}" style="width:100%;height:100%;object-fit:cover;flex-shrink:0;" loading="${i===0?'eager':'lazy'}" decoding="async" fetchpriority="${i===0?'high':'auto'}">`).join('');
-    dots.innerHTML=slides.map((_,i)=>`<span data-dot="${i}" style="width:6px;height:6px;border-radius:50%;background:${i===0?'#dc2626':'rgba(255,255,255,.6)'};transition:all .2s;"></span>`).join('');
+    track.innerHTML=slides.map((s,i)=>`<img src="${s.imageUrl||s.image||s.url}" draggable="false" style="width:100%;height:100%;object-fit:cover;flex-shrink:0;pointer-events:none;" loading="${i===0?'eager':'lazy'}" decoding="async" fetchpriority="${i===0?'high':'auto'}">`).join('');
+    dotsEl.innerHTML=slides.map((_,i)=>`<span data-dot="${i}" style="width:${i===0?'16px':'6px'};height:6px;border-radius:50%;background:${i===0?'#dc2626':'rgba(255,255,255,.6)'};transition:all .2s;cursor:pointer;"></span>`).join('');
+    dotsEl.querySelectorAll('[data-dot]').forEach(d=>{
+      d.addEventListener('click', ()=>{ goto(parseInt(d.dataset.dot,10)); resetAutoplay(); });
+    });
+    track.style.cursor='grab';
+    track.style.touchAction='pan-y'; // horizontal drag ditangani JS, scroll vertikal tetap jalan normal
+    track.addEventListener('pointerdown', onPointerDown);
+    track.addEventListener('pointermove', onPointerMove);
+    track.addEventListener('pointerup', onPointerUp);
+    track.addEventListener('pointercancel', onPointerUp);
+    track.addEventListener('pointerleave', (e)=>{ if(dragging && e.pointerId===pointerId) onPointerUp(e); });
+    resetAutoplay();
+  }
+
+  function setTransition(on){
+    track.style.transition = on ? 'transform .45s cubic-bezier(.22,.61,.36,1)' : 'none';
+  }
+  function applyPosition(offsetPx){
+    track.style.transform = `translateX(calc(-${cur*100}% + ${offsetPx}px))`;
+  }
+  function goto(i){
+    cur = ((i % slides.length) + slides.length) % slides.length;
+    setTransition(true);
+    applyPosition(0);
+    dotsEl.querySelectorAll('[data-dot]').forEach((d,idx)=>{
+      d.style.background = idx===cur ? '#dc2626' : 'rgba(255,255,255,.6)';
+      d.style.width = idx===cur ? '16px' : '6px';
+    });
+  }
+  function next(){ goto(cur+1); }
+  function resetAutoplay(){
+    if(timer) clearInterval(timer);
     if(slides.length>1) timer=setInterval(next,4500);
   }
-  function next(){
-    cur=(cur+1)%slides.length;
-    document.getElementById('carousel-track').style.transform=`translateX(-${cur*100}%)`;
-    document.querySelectorAll('[data-dot]').forEach((d,i)=>{d.style.background=i===cur?'#dc2626':'rgba(255,255,255,.6)';d.style.width=i===cur?'16px':'6px';});
+
+  function onPointerDown(e){
+    if(slides.length<2) return;
+    dragging=true; pointerId=e.pointerId;
+    startX=e.clientX; dragDeltaPx=0;
+    if(timer) clearInterval(timer);
+    setTransition(false);
+    track.style.cursor='grabbing';
+    try{ track.setPointerCapture(pointerId); }catch(err){}
   }
+  function onPointerMove(e){
+    if(!dragging || e.pointerId!==pointerId) return;
+    dragDeltaPx = e.clientX - startX;
+    applyPosition(dragDeltaPx);
+  }
+  function onPointerUp(e){
+    if(!dragging || e.pointerId!==pointerId) return;
+    dragging=false;
+    track.style.cursor='grab';
+    const width = wrap.getBoundingClientRect().width;
+    const threshold = width * 0.15; // geser >15% lebar buat pindah slide
+    if(dragDeltaPx <= -threshold) goto(cur+1);
+    else if(dragDeltaPx >= threshold) goto(cur-1);
+    else goto(cur); // kurang jauh -> snap balik ke slide semula, smooth
+    dragDeltaPx=0;
+    resetAutoplay();
+  }
+
   init();
 })();
 
