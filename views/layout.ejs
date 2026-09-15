@@ -329,6 +329,100 @@
         /* ── Payment modal ── */
         #paymentModal { position:fixed !important; z-index:99999 !important; }
 
+        /* ── FOOTER / SOCIAL ICON ALIGNMENT FIX ── */
+        footer a[aria-label],
+        footer .social-icon,
+        footer .social-link,
+        footer .footer-social a,
+        .footer-social a {
+            display:inline-flex !important;
+            align-items:center !important;
+            justify-content:center !important;
+            vertical-align:middle !important;
+            line-height:0 !important;
+            padding:0 !important;
+        }
+
+        footer a[aria-label] iconify-icon,
+        footer .social-icon iconify-icon,
+        footer .social-link iconify-icon,
+        footer .footer-social iconify-icon,
+        .footer-social iconify-icon {
+            display:block !important;
+            line-height:1 !important;
+            margin:0 !important;
+            transform:none !important;
+        }
+
+        /* Any circular social button keeps the glyph perfectly centered. */
+        .social-icon, .social-link {
+            box-sizing:border-box !important;
+        }
+
+        /* ── PAYMENT LOGO CARDS ── */
+        .payment-logo-list {
+            display:flex !important;
+            flex-wrap:wrap !important;
+            align-items:center !important;
+            gap:10px !important;
+            margin-top:12px !important;
+        }
+
+        .payment-logo-card {
+            width:108px !important;
+            height:48px !important;
+            min-width:108px !important;
+            border:1px solid rgba(220,38,38,.28) !important;
+            border-radius:12px !important;
+            background:#0b0b0b !important;
+            display:inline-flex !important;
+            align-items:center !important;
+            justify-content:center !important;
+            padding:7px 12px !important;
+            overflow:hidden !important;
+            box-sizing:border-box !important;
+            text-decoration:none !important;
+            transition:border-color .15s ease, transform .15s ease, background .15s ease !important;
+        }
+
+        .payment-logo-card:hover {
+            border-color:rgba(220,38,38,.65) !important;
+            background:#111 !important;
+            transform:translateY(-1px);
+        }
+
+        .payment-logo-card img {
+            display:block !important;
+            width:100% !important;
+            height:100% !important;
+            max-width:84px !important;
+            max-height:34px !important;
+            object-fit:contain !important;
+            margin:0 auto !important;
+        }
+
+        .payment-logo-card--bank {
+            color:#d4d4d8 !important;
+            font-size:11px !important;
+            font-weight:700 !important;
+            letter-spacing:.01em !important;
+            text-align:center !important;
+        }
+
+        .payment-logo-card--bank iconify-icon {
+            font-size:18px !important;
+            margin-right:6px !important;
+            line-height:1 !important;
+        }
+
+        @media (max-width:520px) {
+            .payment-logo-list { gap:8px !important; }
+            .payment-logo-card {
+                width:calc(50% - 4px) !important;
+                min-width:0 !important;
+            }
+        }
+
         /* ── Toast ── */
         #toast-container {
             position:fixed; bottom:20px;
@@ -924,9 +1018,89 @@
         setTimeout(() => { el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),300); }, 3800);
     }
 
+
+
+    // ─── PAYMENT / SOCIAL ICON BUG FIX ───
+    // Keeps footer social icons perfectly centered and upgrades the
+    // "Metode Pembayaran" strip to real logo cards without requiring
+    // another template file. The logo sources are public SVG/CDN assets.
+    function enhancePaymentMethods() {
+        // 1) Force-centering for any footer social icon that uses Iconify.
+        document.querySelectorAll('footer a iconify-icon, footer button iconify-icon, .footer-social iconify-icon').forEach(icon => {
+            const parent = icon.parentElement;
+            if (!parent) return;
+            parent.style.display = 'inline-flex';
+            parent.style.alignItems = 'center';
+            parent.style.justifyContent = 'center';
+            parent.style.lineHeight = '0';
+            icon.style.display = 'block';
+            icon.style.lineHeight = '1';
+            icon.style.margin = '0';
+            icon.style.transform = 'none';
+        });
+
+        // 2) Locate the payment-method section by its visible heading.
+        const heading = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6,p,span,div')].find(el => {
+            const t = (el.textContent || '').trim().toUpperCase();
+            return t === 'METODE PEMBAYARAN';
+        });
+        if (!heading) return;
+
+        // Avoid injecting twice.
+        if (heading.parentElement?.querySelector('.payment-logo-list[data-enhanced="1"]')) return;
+
+        // Find the nearest container that actually contains payment controls.
+        let scope = heading.parentElement;
+        for (let i = 0; i < 5 && scope; i++, scope = scope.parentElement) {
+            const labels = [...scope.querySelectorAll('button,a,[role="button"],span,div')].map(x => (x.textContent || '').trim().toLowerCase());
+            if (labels.some(t => /^(qris|transfer bank|e-?wallet)$/.test(t))) break;
+        }
+        if (!scope) return;
+
+        const targets = [...scope.querySelectorAll('button,a,[role="button"]')].filter(el => {
+            const t = (el.textContent || '').trim().toLowerCase();
+            return /^(qris|transfer bank|e-?wallet)$/.test(t);
+        });
+        if (!targets.length) return;
+
+        const row = document.createElement('div');
+        row.className = 'payment-logo-list';
+        row.dataset.enhanced = '1';
+        row.innerHTML = `
+            <div class="payment-logo-card" title="QRIS">
+                <img src="https://cdn.jsdelivr.net/npm/idn-finlogos@2/dist/icons/qris.svg" alt="QRIS" loading="lazy">
+            </div>
+            <div class="payment-logo-card" title="DANA">
+                <img src="https://cdn.jsdelivr.net/npm/idn-finlogos@2/dist/icons/dana.svg" alt="DANA" loading="lazy">
+            </div>
+            <div class="payment-logo-card" title="GoPay">
+                <img src="https://cdn.jsdelivr.net/npm/idn-finlogos@2/dist/icons/gopay.svg" alt="GoPay" loading="lazy">
+            </div>
+            <div class="payment-logo-card" title="OVO">
+                <img src="https://cdn.jsdelivr.net/npm/idn-finlogos@2/dist/icons/ovo.svg" alt="OVO" loading="lazy">
+            </div>
+            <div class="payment-logo-card" title="ShopeePay">
+                <img src="https://cdn.jsdelivr.net/npm/idn-finlogos@2/dist/icons/shopee-pay.svg" alt="ShopeePay" loading="lazy">
+            </div>
+            <div class="payment-logo-card" title="LinkAja">
+                <img src="https://cdn.jsdelivr.net/npm/idn-finlogos@2/dist/icons/linkaja.svg" alt="LinkAja" loading="lazy">
+            </div>
+            <div class="payment-logo-card payment-logo-card--bank" title="Transfer Bank">
+                <iconify-icon icon="mdi:bank-transfer"></iconify-icon>
+                <span>Transfer Bank</span>
+            </div>`;
+
+        // Replace the old pill-style controls with the logo strip.
+        const first = targets[0];
+        const targetContainer = first.parentElement;
+        targets.forEach(el => el.remove());
+        targetContainer?.appendChild(row);
+    }
+
     // ─── INIT ───
     document.addEventListener('DOMContentLoaded', () => {
         updateCartBadge();
+        enhancePaymentMethods();
         setTimeout(() => { loadPurchaseNotifs(); setInterval(loadPurchaseNotifs, 30000); }, 2000);
     });
     document.addEventListener('keydown', e => { if (e.key==='Escape') closeAll(); });
