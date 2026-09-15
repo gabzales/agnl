@@ -447,7 +447,7 @@ textarea.hm-input{resize:vertical;min-height:80px;}
                 </a>
                 <button
                     data-pid="<%= p.id %>"
-                    data-name="<%= p.name || '' %>"
+                    data-name="<%= (p.name||'').replace(/\"/g,'&quot;') %>"
                     data-count="<%= p.keys?.length||0 %>"
                     onclick="openAddKeysModal(this.dataset.pid, this.dataset.name, parseInt(this.dataset.count))"
                     class="btn-success py-1 px-2 text-[10px]">
@@ -587,19 +587,19 @@ textarea.hm-input{resize:vertical;min-height:80px;}
                 <% } %>
             </div>
             <div class="flex flex-col gap-1.5 flex-shrink-0">
-                <button data-uid="<%= u.id %>" data-username="<%= u.username %>" onclick="toggleReseller(this.dataset.uid, this.dataset.username)"
+                <button onclick="toggleReseller('<%= u.id %>','<%= u.username %>')"
                     class="py-1 px-2 text-[10px] rounded-lg border transition-all font-semibold <%= u.is_reseller ? 'bg-yellow-500/15 border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/25' : 'bg-white/5 border-white/15 text-zinc-400 hover:bg-red-500/15 hover:text-red-400 hover:border-red-500/30' %>"
                     id="reseller-btn-<%= u.id %>">
                     <iconify-icon icon="<%= u.is_reseller ? 'mdi:crown-off' : 'mdi:crown' %>"></iconify-icon>
                     <%= u.is_reseller ? 'Cabut' : 'Jadikan' %>
                 </button>
                 <% if(u.is_reseller){ %>
-                <button data-uid="<%= u.id %>" data-username="<%= u.username %>" onclick="adjustBalance(this.dataset.uid, this.dataset.username)"
+                <button onclick="adjustBalance('<%= u.id %>','<%= u.username %>')"
                     class="py-1 px-2 text-[10px] rounded-lg border transition-all font-semibold bg-emerald-500/10 border-emerald-500/25 text-emerald-400 hover:bg-emerald-500/20">
                     <iconify-icon icon="mdi:wallet-plus"></iconify-icon> Saldo
                 </button>
                 <% } %>
-                <button data-uid="<%= u.id %>" data-username="<%= u.username %>" onclick="deleteUser(this.dataset.uid, this.dataset.username)" class="btn-danger py-1 px-2 text-[10px]">
+                <button onclick="deleteUser('<%= u.id %>','<%= u.username %>')" class="btn-danger py-1 px-2 text-[10px]">
                     <iconify-icon icon="mdi:trash-can"></iconify-icon>
                 </button>
             </div>
@@ -625,6 +625,8 @@ textarea.hm-input{resize:vertical;min-height:80px;}
         </button>
     </div>
 </div>
+</div>
+
 <!-- ── TESTIMONI ── -->
 <div id="pane-testimonials" class="tab-pane">
     <div class="flex items-center justify-between mb-4">
@@ -1695,14 +1697,8 @@ function toast(msg, type='info') {
     const icons = { success:'mdi:check-circle', error:'mdi:alert-circle', info:'mdi:information', warn:'mdi:alert' };
     const el = document.createElement('div');
     el.className = `toast ${styles[type]||styles.info}`;
-    const icon = document.createElement('iconify-icon');
-    icon.setAttribute('icon', icons[type] || icons.info);
-    icon.className = 'text-base flex-shrink-0';
-    const message = document.createElement('span');
-    message.textContent = String(msg ?? '');
-    el.append(icon, message);
-    const container = document.getElementById('toast-container');
-    if (container) container.appendChild(el);
+    el.innerHTML = `<iconify-icon icon="${icons[type]||icons.info}" class="text-base flex-shrink-0"></iconify-icon><span>${msg}</span>`;
+    document.getElementById('toast-container').appendChild(el);
     setTimeout(() => { el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),300); }, 3000);
 }
 
@@ -1804,11 +1800,9 @@ setInterval(() => {
 
 // ── TAB SWITCH ──
 function switchTab(name) {
-    const pane = document.getElementById('pane-' + name);
-    if (!pane) return;
     document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-    pane.classList.add('active');
+    document.getElementById('pane-'+name).classList.add('active');
     const nb = document.getElementById('nav-'+name);
     if (nb) nb.classList.add('active');
     window.scrollTo({top:0,behavior:'smooth'});
@@ -1816,7 +1810,6 @@ function switchTab(name) {
     if (name === 'leaderboard') loadFakeLeaderboard();
     if (name === 'keys') loadKeys();
     if (name === 'vouchers') loadVouchers();
-    if (name === 'settings') loadBanners();
     history.replaceState(null, '', '/admin#' + name);
 }
 
@@ -1828,93 +1821,25 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── MODAL ──
-function openModal(id) {
-    const modal = document.getElementById(id);
-    if (!modal) return;
-    modal.classList.add('open');
-    document.body.style.overflow = 'hidden';
-}
-function closeModal(id) {
-    const modal = document.getElementById(id);
-    if (!modal) return;
-    modal.classList.remove('open');
-    document.body.style.overflow = '';
-}
+function openModal(id) { document.getElementById(id).classList.add('open'); document.body.style.overflow='hidden'; }
+function closeModal(id) { document.getElementById(id).classList.remove('open'); document.body.style.overflow=''; }
 // (openAddProductModal, openEditProductModal, openAddKeysModal defined above)
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') document.querySelectorAll('.modal-wrap.open').forEach(m => m.classList.remove('open'));
 });
 
 // ── API helper ──
-async function api(url, data = {}) {
-    try {
-        const r = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify(data ?? {})
-        });
-        const contentType = r.headers.get('content-type') || '';
-        let payload;
-        if (contentType.includes('application/json')) {
-            payload = await r.json().catch(() => ({}));
-        } else {
-            const text = await r.text().catch(() => '');
-            payload = { message: text || `Request gagal (${r.status})` };
-        }
-        if (!r.ok) {
-            return {
-                success: false,
-                ...(payload || {}),
-                message: payload?.message || `Request gagal (${r.status})`
-            };
-        }
-        return payload || { success: false, message: 'Respons server kosong' };
-    } catch (err) {
-        console.error(`[api] ${url}`, err);
-        return { success: false, message: `Error koneksi: ${err.message}` };
-    }
+async function api(url, data) {
+    const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    });
+    return r.json();
 }
 
 // ── PRODUK: Pricing rows ──
 let pricingRowCount = 0;
-
-function addPricingRow(days = '7', price = '', resellerPrice = '', unit = 'd', strikePrice = '') {
-    const row = document.createElement('div');
-    row.className = 'flex items-center gap-2';
-    row.setAttribute('data-pricing-row', '1');
-    row.innerHTML = `
-        <div class="flex-1 flex gap-2 flex-wrap">
-            <div style="flex:0 0 56px">
-                <input type="number" name="pricingDays" value="${days ?? ''}" min="1" required
-                    class="hm-input text-xs" placeholder="Jml">
-            </div>
-            <div style="flex:0 0 64px">
-                <select name="pricingUnits" class="hm-input text-xs">
-                    <option value="d" ${unit === 'd' ? 'selected' : ''}>Hari</option>
-                    <option value="h" ${unit === 'h' ? 'selected' : ''}>Jam</option>
-                </select>
-            </div>
-            <div style="flex:1 1 100px">
-                <input type="number" name="pricingPrices" value="${price ?? ''}" min="0" required
-                    class="hm-input text-xs" placeholder="Harga Normal (Rp)">
-            </div>
-            <div style="flex:1 1 100px">
-                <input type="number" name="pricingResellerPrices" value="${resellerPrice ?? ''}" min="0"
-                    class="hm-input text-xs" placeholder="Harga Reseller (Rp)" title="Kosongkan = ikut diskon % global">
-            </div>
-            <div style="flex:1 1 100px">
-                <input type="number" name="pricingStrikePrices" value="${strikePrice ?? ''}" min="0"
-                    class="hm-input text-xs" style="text-decoration-line:line-through;text-decoration-color:rgba(148,163,184,.4);"
-                    placeholder="Harga Coret (opsional)" title="Harga 'asli' yang dicoret di sebelah harga jual paket ini. Harus lebih besar dari harga normal. Kosongkan = tidak ada.">
-            </div>
-        </div>
-        <button type="button" onclick="this.closest('[data-pricing-row]').remove()" aria-label="Hapus opsi harga"
-            class="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 flex-shrink-0">
-            <iconify-icon icon="mdi:minus" class="text-sm"></iconify-icon>
-        </button>`;
-    document.getElementById('pricingRows')?.appendChild(row);
-    pricingRowCount += 1;
-}
 
 // ── Import Cepat dari Teks (diminta client 15 Sep 2026) ──
 // Contoh input yang harus kebaca:
@@ -1970,30 +1895,20 @@ function parseQuickImport() {
     const zone = document.getElementById('prodImageDropzone');
     const fileInput = document.getElementById('prodImageFile');
     const preview = document.getElementById('prodImagePreview');
-    if (!zone || !fileInput || !preview) return;
-    let previewUrl = null;
+    if (!zone || !fileInput) return;
 
     function showPreview(file) {
-        if (!file || !file.type || !file.type.startsWith('image/')) return;
-        if (previewUrl) URL.revokeObjectURL(previewUrl);
-        previewUrl = URL.createObjectURL(file);
-        preview.src = previewUrl;
+        if (!file || !file.type.startsWith('image/')) return;
+        const url = URL.createObjectURL(file);
+        preview.src = url;
         preview.classList.remove('hidden');
     }
     function setFile(file) {
-        if (!file || !file.type || !file.type.startsWith('image/')) {
-            toast('File gambar tidak valid', 'error');
-            return;
-        }
-        try {
-            const dt = new DataTransfer();
-            dt.items.add(file);
-            fileInput.files = dt.files;
-            showPreview(file);
-        } catch (err) {
-            console.error('[product image] gagal set file:', err);
-            toast('Browser tidak mendukung upload drag & drop ini', 'error');
-        }
+        if (!file) return;
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        showPreview(file);
     }
 
     fileInput.addEventListener('change', () => { if (fileInput.files[0]) showPreview(fileInput.files[0]); });
@@ -2111,25 +2026,56 @@ async function submitBulkImport() {
 }
 
 
+    const i = pricingRowCount++;
+    const row = document.createElement('div');
+    row.className = 'flex items-center gap-2';
+    row.setAttribute('data-pricing-row', '1');
+    row.innerHTML = `
+        <div class="flex-1 flex gap-2 flex-wrap">
+            <div style="flex:0 0 56px">
+                <input type="number" name="pricingDays" value="${days}" min="1" required
+                    class="hm-input text-xs" placeholder="Jml">
+            </div>
+            <div style="flex:0 0 64px">
+                <select name="pricingUnits" class="hm-input text-xs">
+                    <option value="d" ${unit==='d'?'selected':''}>Hari</option>
+                    <option value="h" ${unit==='h'?'selected':''}>Jam</option>
+                </select>
+            </div>
+            <div style="flex:1 1 100px">
+                <input type="number" name="pricingPrices" value="${price}" min="0" required
+                    class="hm-input text-xs" placeholder="Harga Normal (Rp)">
+            </div>
+            <div style="flex:1 1 100px">
+                <input type="number" name="pricingResellerPrices" value="${resellerPrice}" min="0"
+                    class="hm-input text-xs" placeholder="Harga Reseller (Rp)" title="Kosongkan = ikut diskon % global">
+            </div>
+            <div style="flex:1 1 100px">
+                <input type="number" name="pricingStrikePrices" value="${strikePrice}" min="0"
+                    class="hm-input text-xs" style="text-decoration-line:line-through;text-decoration-color:rgba(148,163,184,.4);"
+                    placeholder="Harga Coret (opsional)" title="Harga 'asli' yang dicoret di sebelah harga jual paket ini. Harus lebih besar dari harga normal. Kosongkan = tidak ada.">
+            </div>
+        </div>
+        <button type="button" onclick="this.closest('.flex').remove()" class="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 flex-shrink-0">
+            <iconify-icon icon="mdi:minus" class="text-sm"></iconify-icon>
+        </button>`;
+    document.getElementById('pricingRows').appendChild(row);
+}
+
 function openAddProductModal() {
     document.getElementById('editProductId').value = '';
     document.getElementById('modalProductTitle').innerHTML = '<iconify-icon icon="mdi:package-variant-plus" class="text-red-400"></iconify-icon> Tambah Produk';
     document.getElementById('prodSubmitLabel').textContent = 'Tambah Produk';
     document.getElementById('addProductForm').reset();
-    document.querySelectorAll('#prodCategoryCheckboxes input[name="categories"]').forEach(cb => { cb.checked = false; });
     document.getElementById('pricingRows').innerHTML = '';
     document.getElementById('prodKeyCount').textContent = '';
     document.getElementById('keysModeRow').style.display = 'none';
-    const imageInput = document.getElementById('prodImageFile');
-    if (imageInput) imageInput.value = '';
-    const imagePreview = document.getElementById('prodImagePreview');
-    if (imagePreview) { imagePreview.removeAttribute('src'); imagePreview.classList.add('hidden'); }
     pricingRowCount = 0;
     addPricingRow('7','60000'); addPricingRow('30','150000');
     openModal('modal-product');
 }
 
-function openEditProductModal(id, name, category, description, imageUrl, pricing, keyCount, status, channelUrl = '', downloadUrl = '', fakeSold = '', strikePrice = '') {
+function openEditProductModal(id, name, category, description, imageUrl, pricing, keyCount, status) {
     document.getElementById('editProductId').value = id;
     document.getElementById('modalProductTitle').innerHTML = '<iconify-icon icon="mdi:pencil" class="text-yellow-400"></iconify-icon> Edit Produk';
     document.getElementById('prodSubmitLabel').textContent = 'Simpan Perubahan';
@@ -2139,31 +2085,12 @@ function openEditProductModal(id, name, category, description, imageUrl, pricing
     document.getElementById('prodKeys').value = '';
     document.getElementById('prodKeyCount').textContent = `${keyCount} key aktif`;
     document.getElementById('keysModeRow').style.display = 'flex';
-    // Set multi-select categories (the old #prodCategory <select> no longer exists).
-    let selectedCategories = category;
-    if (typeof selectedCategories === 'string') {
-        try {
-            const parsed = JSON.parse(selectedCategories);
-            selectedCategories = Array.isArray(parsed) ? parsed : selectedCategories.split(',');
-        } catch (_) {
-            selectedCategories = selectedCategories.split(',');
-        }
-    }
-    const selectedCategorySet = new Set((Array.isArray(selectedCategories) ? selectedCategories : [selectedCategories]).filter(Boolean).map(String));
-    document.querySelectorAll('#prodCategoryCheckboxes input[name="categories"]').forEach(cb => {
-        cb.checked = selectedCategorySet.has(cb.value);
-    });
+    // Set category
+    const catSel = document.getElementById('prodCategory');
+    if (catSel) { for(let o of catSel.options) { o.selected = (o.value===category); } }
     // Set status
     const stSel = document.getElementById('prodStatus');
-    if (stSel) stSel.value = status || 'active';
-    const channelInput = document.getElementById('prodChannelUrl');
-    if (channelInput) channelInput.value = channelUrl || '';
-    const downloadInput = document.getElementById('prodDownloadUrl');
-    if (downloadInput) downloadInput.value = downloadUrl || '';
-    const fakeSoldInput = document.getElementById('prodFakeSold');
-    if (fakeSoldInput) fakeSoldInput.value = fakeSold ?? '';
-    const strikeInput = document.getElementById('prodStrikePrice');
-    if (strikeInput) strikeInput.value = strikePrice ?? '';
+    if (stSel) { for(let o of stSel.options) { o.selected = (o.value===status); } }
     // Pricing
     document.getElementById('pricingRows').innerHTML = '';
     pricingRowCount = 0;
@@ -2411,11 +2338,11 @@ document.getElementById('settingsForm').addEventListener('submit', async functio
 // dibaca, karena field t.product sekarang berisi UUID (lihat catatan
 // bug fix di dropdown form Tambah Testimoni). ──
 const productNameMap = Object.fromEntries(
-  (Array.isArray(<%- safeJson(products || []) %>) ? <%- safeJson(products || []) %> : []).map(p => [p.id, p.name])
+  (<%- safeJson(products || []) %>).map(p => [p.id, p.name])
 );
 
 // ── Metode Pembayaran (logo footer) — diminta client 22 Agu 2026 ──
-let paymentMethodsList = Array.isArray(<%- safeJson(settings.paymentMethods || []) %>) ? <%- safeJson(settings.paymentMethods || []) %> : [];
+let paymentMethodsList = <%- safeJson(settings.paymentMethods || []) %>;
 
 function renderPaymentMethodsRows() {
     const container = document.getElementById('paymentMethodsRows');
@@ -2449,7 +2376,7 @@ function syncPaymentMethodsToInput() {
 renderPaymentMethodsRows();
 
 // ── QRIS MODE ──
-let CURRENT_API_GATEWAY = <%- JSON.stringify(settings.apiGateway || 'pakasir') %>;
+let CURRENT_API_GATEWAY = '<%= settings.apiGateway||"pakasir" %>';
 
 function setQrisMode(mode) {
     document.getElementById('qrisModeVal').value = mode;
@@ -2462,8 +2389,8 @@ function setQrisMode(mode) {
     // supaya toggle static<->api tidak menimpa/reset konfigurasi gateway yang lagi dipakai.
     const endpoint = CURRENT_API_GATEWAY === 'genspay' ? '/admin/settings/genspay' : '/admin/settings/pakasir';
     const payload = CURRENT_API_GATEWAY === 'genspay'
-        ? { qrisMode: mode, apiKey: <%- JSON.stringify(settings.genspay?.apiKey || '') %>, baseUrl: <%- JSON.stringify(settings.genspay?.baseUrl || 'https://genspay.my.id/api/v1') %> }
-        : { qrisMode: mode, apiKey: <%- JSON.stringify(settings.pakasir?.apiKey || '') %>, project: <%- JSON.stringify(settings.pakasir?.project || '') %>, apiBaseUrl: <%- JSON.stringify(settings.pakasir?.apiBaseUrl || 'api.pakasir.com') %> };
+        ? { qrisMode: mode, apiKey: '<%= settings.genspay?.apiKey||"" %>', baseUrl: '<%= settings.genspay?.baseUrl||"https://genspay.my.id/api/v1" %>' }
+        : { qrisMode: mode, apiKey: '<%= settings.pakasir?.apiKey||"" %>', project: '<%= settings.pakasir?.project||"" %>', apiBaseUrl: '<%= settings.pakasir?.apiBaseUrl||"api.pakasir.com" %>' };
     api(endpoint, payload)
         .then(d => { if(d.success) toast(`Mode QRIS: ${isStatic ? 'Statis' : 'API (' + (CURRENT_API_GATEWAY === 'genspay' ? 'GensPay' : 'PakKasir') + ')'}`, 'success'); });
 }
@@ -2490,10 +2417,9 @@ document.getElementById('genspayForm').addEventListener('submit', async function
 
 // ── GATEWAY SELECTOR (PakKasir vs GensPay) ──
 function setApiGateway(gateway) {
-    if (gateway !== 'pakasir' && gateway !== 'genspay') return;
     CURRENT_API_GATEWAY = gateway;
-    document.querySelector('[data-gateway-form="pakasir"]')?.classList.toggle('hidden', gateway !== 'pakasir');
-    document.querySelector('[data-gateway-form="genspay"]')?.classList.toggle('hidden', gateway !== 'genspay');
+    document.querySelector('[data-gateway-form="pakasir"]').classList.toggle('hidden', gateway !== 'pakasir');
+    document.querySelector('[data-gateway-form="genspay"]').classList.toggle('hidden', gateway !== 'genspay');
     document.getElementById('gwPakasirBtn').className = `flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5 ${gateway === 'pakasir' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
     document.getElementById('gwGenspayBtn').className = `flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5 ${gateway === 'genspay' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
 }
@@ -2511,44 +2437,28 @@ function copyWebhookUrl(elId) {
     if (g) g.value = origin + '/webhook/genspay';
 })();
 
-document.getElementById('qrisStaticForm')?.addEventListener('submit', async function(e) {
+document.getElementById('qrisStaticForm').addEventListener('submit', async function(e) {
     e.preventDefault();
     const fd = new FormData(this);
-    const image = fd.get('qrisImage');
-    if (!image || !image.size) {
+    if (!fd.get('qrisImage') || !fd.get('qrisImage').size) {
         toast('Pilih file gambar QRIS terlebih dahulu', 'error'); return;
     }
     const btn = this.querySelector('button[type=submit]');
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Mengupload...';
-    }
-    try {
-        const res = await fetch('/admin/qris/upload', { method: 'POST', body: fd, headers: { 'Accept': 'application/json' } });
-        const ct = res.headers.get('content-type') || '';
-        const d = ct.includes('application/json') ? await res.json() : { success:false, message:`Upload gagal (${res.status})` };
-        if (!res.ok || !d.success) {
-            toast(d.message || 'Gagal upload', 'error');
-            return;
-        }
+    btn.disabled = true; btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Mengupload...';
+    const res = await fetch('/admin/qris/upload', { method: 'POST', body: fd });
+    const d = await res.json();
+    btn.disabled = false; btn.innerHTML = '<iconify-icon icon="mdi:upload"></iconify-icon> Upload Gambar QRIS';
+    if (d.success) {
         toast('QRIS berhasil diupload!', 'success');
         // Juga set mode ke statis dan save — supaya apiGateway (PakKasir/GensPay)
         // yang sudah dipilih admin tidak ikut ketiban.
         if (CURRENT_API_GATEWAY === 'genspay') {
-            await api('/admin/settings/genspay', { qrisMode: 'static', apiKey: <%- JSON.stringify(settings.genspay?.apiKey || '') %>, baseUrl: <%- JSON.stringify(settings.genspay?.baseUrl || 'https://genspay.my.id/api/v1') %> });
+            await api('/admin/settings/genspay', { qrisMode: 'static', apiKey: '<%= settings.genspay?.apiKey||"" %>', baseUrl: '<%= settings.genspay?.baseUrl||"https://genspay.my.id/api/v1" %>' });
         } else {
-            await api('/admin/settings/pakasir', { qrisMode: 'static', apiKey: <%- JSON.stringify(settings.pakasir?.apiKey || '') %>, project: <%- JSON.stringify(settings.pakasir?.project || '') %>, apiBaseUrl: <%- JSON.stringify(settings.pakasir?.apiBaseUrl || 'api.pakasir.com') %> });
+            await api('/admin/settings/pakasir', { qrisMode: 'static', apiKey: '<%= settings.pakasir?.apiKey||"" %>', project: '<%= settings.pakasir?.project||"" %>', apiBaseUrl: '<%= settings.pakasir?.apiBaseUrl||"api.pakasir.com" %>' });
         }
         setTimeout(() => location.reload(), 900);
-    } catch (err) {
-        toast(`Upload QRIS gagal: ${err.message}`, 'error');
-        console.error('[qris upload]', err);
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '<iconify-icon icon="mdi:upload"></iconify-icon> Upload Gambar QRIS';
-        }
-    }
+    } else toast(d.message || 'Gagal upload', 'error');
 });
 
 async function testPakasir() {
@@ -2745,8 +2655,8 @@ if (document.readyState !== 'loading') renderUserPage();
 async function adjustBalance(id, username) {
     const input = prompt(`Tambah/kurangi saldo "${username}"\nIsi angka positif untuk menambah, negatif untuk mengurangi.\nContoh: 50000 atau -20000`);
     if (input === null || input.trim() === '') return;
-    const amount = Number(input);
-    if (!Number.isFinite(amount) || !Number.isInteger(amount) || amount === 0) { toast('Nominal tidak valid', 'error'); return; }
+    const amount = parseInt(input);
+    if (isNaN(amount) || amount === 0) { toast('Nominal tidak valid', 'error'); return; }
     const d = await api(`/admin/user/adjust-balance/${id}`, { amount });
     if (d.success) {
         toast(`Saldo ${username} sekarang Rp ${d.balance.toLocaleString('id-ID')}`, 'success');
@@ -2801,11 +2711,14 @@ function previewBannerUrl(url) {
 }
 
 async function loadBanners() {
-    renderBanners(Array.isArray(window._allBanners) ? window._allBanners : []);
+    const res = await fetch('/api/banners');
+    // load all (including inactive) via settings
+    const sRes = await fetch('/admin/product/xxx').catch(()=>null); // dummy
+    // get settings banners directly from rendered data
+    renderBanners(window._allBanners || []);
 }
 
 function renderBanners(banners) {
-    banners = Array.isArray(banners) ? banners : [];
     const el = document.getElementById('bannerList');
     if (!banners.length) { el.innerHTML = '<div class="text-xs text-zinc-600 text-center py-4">Belum ada banner. Tambah banner di atas.</div>'; return; }
     el.innerHTML = banners.map((b,i) => `
@@ -2834,61 +2747,68 @@ function renderBanners(banners) {
 async function addBanner(e) {
     e.preventDefault();
     const btn = document.getElementById('bannerAddBtn');
-    if (btn) {
-        btn.disabled = true;
-        btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Menyimpan...';
-    }
-    try {
-        const fd = new FormData(e.target);
-        const res = await fetch('/admin/banners/add', { method: 'POST', body: fd, headers: { 'Accept': 'application/json' } });
-        const ct = res.headers.get('content-type') || '';
-        const d = ct.includes('application/json') ? await res.json() : { success:false, message:`Gagal tambah banner (${res.status})` };
-        if (!res.ok || !d.success) {
-            toast(d.message || 'Gagal tambah banner', 'error');
-            return;
-        }
+    btn.disabled = true;
+    btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Menyimpan...';
+    const fd = new FormData(e.target);
+    const res = await fetch('/admin/banners/add', { method: 'POST', body: fd });
+    const d = await res.json();
+    btn.disabled = false;
+    btn.innerHTML = '<iconify-icon icon="mdi:plus-circle"></iconify-icon> Tambah Banner';
+    if (d.success) {
         toast('Banner berhasil ditambahkan!', 'success');
-        window._allBanners = Array.isArray(d.banners) ? d.banners : [...(window._allBanners || [])];
-        renderBanners(window._allBanners);
+        window._allBanners = d.banners;
+        renderBanners(d.banners);
         e.target.reset();
-        document.getElementById('bannerFilePreview')?.classList.add('hidden');
-        document.getElementById('bannerUrlPreview')?.classList.add('hidden');
-    } catch (err) {
-        toast(`Gagal tambah banner: ${err.message}`, 'error');
-        console.error('[banner add]', err);
-    } finally {
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = '<iconify-icon icon="mdi:plus-circle"></iconify-icon> Tambah Banner';
-        }
-    }
+        document.getElementById('bannerFilePreview').classList.add('hidden');
+        document.getElementById('bannerUrlPreview').classList.add('hidden');
+    } else toast(d.message || 'Gagal tambah banner', 'error');
 }
 
 async function toggleBanner(id) {
-    try {
     const d = await api(`/admin/banners/toggle/${id}`, {});
     if (d.success) {
         window._allBanners = window._allBanners.map(b => b.id===id ? {...b, active:d.active} : b);
         renderBanners(window._allBanners);
         toast(`Banner ${d.active?'diaktifkan':'dinonaktifkan'}`, 'success');
-    } else toast(d.message || 'Gagal mengubah status banner', 'error');
-    } catch (err) { toast(`Gagal mengubah banner: ${err.message}`, 'error'); }
+    }
 }
 
 async function deleteBanner(id) {
     if (!confirm('Hapus banner ini?')) return;
-    try {
     const d = await api(`/admin/banners/delete/${id}`, {});
     if (d.success) {
         window._allBanners = window._allBanners.filter(b => b.id!==id);
         renderBanners(window._allBanners);
         toast('Banner dihapus', 'success');
-    } else toast(d.message || 'Gagal menghapus banner', 'error');
-    } catch (err) { toast(`Gagal menghapus banner: ${err.message}`, 'error'); }
+    }
 }
 
-// Banner data is rendered server-side so the admin can see inactive banners too.
-window._allBanners = <%- safeJson(settings.banners || []) %>;
+// Override api() untuk DELETE yang butuh method POST tanpa body conflict
+window.api = window.api || async function(url, data) {
+    const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data) });
+    return res.json();
+};
+
+// Load banners saat tab settings dibuka
+const _origSwitchTab = window.switchTab;
+window.switchTab = function(name) {
+    _origSwitchTab && _origSwitchTab(name);
+    if (name === 'settings' && !window._bannersLoaded) {
+        window._bannersLoaded = true;
+        fetch('/api/banners').then(r=>r.json()).then(banners=>{
+            // Fetch all banners including inactive via a trick:
+            // We use the already-rendered EJS data
+            window._allBanners = <%- safeJson(settings.banners || []) %>;
+            renderBanners(window._allBanners);
+        });
+    }
+};
+
+// Init jika sudah di tab settings
+if (document.querySelector('#pane-settings.active')) {
+    window._allBanners = <%- safeJson(settings.banners || []) %>;
+    renderBanners(window._allBanners);
+}
 
 // FIX (24 Agu 2026, diminta client): tombol "Tambah Cepat" untuk isi 3
 // kategori platform standar (android/ios/pc) sekali klik, tanpa perlu
@@ -2910,7 +2830,7 @@ function quickAddPlatformCategories() {
     toast(`Ditambahkan: ${toAdd.map(l => l.split(':')[0]).join(', ')}. Klik "Simpan Kategori" untuk menyimpan.`, 'success');
 }
 
-document.getElementById('categoryForm')?.addEventListener('submit', async function(e) {
+document.getElementById('categoryForm').addEventListener('submit', async function(e) {
     e.preventDefault();
     const fd = new FormData(this);
     const raw = fd.get('categories') || '';
@@ -2983,20 +2903,14 @@ document.getElementById('categoryForm')?.addEventListener('submit', async functi
 let _allKeys = [];
 
 async function loadKeys() {
-    try {
-        const r = await fetch('/admin/keyspool', { headers: { 'Accept': 'application/json' } });
-        const contentType = r.headers.get('content-type') || '';
-        const d = contentType.includes('application/json') ? await r.json() : { success:false, message:`Gagal memuat key (${r.status})` };
-        if (!r.ok || !d.success) { toast(d.message || 'Gagal memuat key', 'error'); return; }
-        _allKeys = Array.isArray(d.data) ? d.data : [];
-        renderKeys(_allKeys);
-    } catch (err) {
-        toast(`Gagal memuat key: ${err.message}`, 'error');
-    }
+    const r = await fetch('/admin/keyspool');
+    const d = await r.json();
+    if (!d.success) return;
+    _allKeys = d.data || [];
+    renderKeys(_allKeys);
 }
 
 function renderKeys(keys) {
-    keys = Array.isArray(keys) ? keys : [];
     const list = document.getElementById('keysList');
     const total = document.getElementById('keyTotal');
     const stats = document.getElementById('keyStatsLabel');
@@ -3079,19 +2993,13 @@ async function deleteKey(id) {
 
 // ═══ VOUCHER MANAGEMENT ═══
 async function loadVouchers() {
-    try {
-        const r = await fetch('/admin/vouchers', { headers: { 'Accept': 'application/json' } });
-        const contentType = r.headers.get('content-type') || '';
-        const d = contentType.includes('application/json') ? await r.json() : { success:false, message:`Gagal memuat voucher (${r.status})` };
-        if (!r.ok || !d.success) { toast(d.message || 'Gagal memuat voucher', 'error'); return; }
-        renderVouchers(Array.isArray(d.data) ? d.data : []);
-    } catch (err) {
-        toast(`Gagal memuat voucher: ${err.message}`, 'error');
-    }
+    const r = await fetch('/admin/vouchers');
+    const d = await r.json();
+    if (!d.success) return;
+    renderVouchers(d.data || []);
 }
 
 function renderVouchers(vouchers) {
-    vouchers = Array.isArray(vouchers) ? vouchers : [];
     const list = document.getElementById('vouchersList');
     const stats = document.getElementById('voucherStatsLabel');
     if (!list) return;

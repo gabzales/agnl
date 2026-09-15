@@ -2895,6 +2895,99 @@ app.get('/admin/db-status', requireAdmin, async (req, res) => {
 // SETUP_SECRET dari env Vercel setelah selesai (endpoint ini otomatis
 // nonaktif total / 404 kalau SETUP_SECRET tidak di-set, jadi aman by
 // default -- tidak akan kebuka ke publik selama env itu kosong).
+// ══════════════════════════════════════════════════════════════════
+// RAPIKAN KATEGORI PRODUK AGHA NL (one-off, diminta client 15 Sep 2026)
+// Sesuai chat client jam 16.02-16.03: pindahin 10 produk spesifik ke
+// kategori FF PROXY APKMOD / IOS [IPHONES PANEL / PC PANEL / ROOT ANDROID
+// (kategori terakhir ini belum ada, otomatis dibikin), sisanya tetap di
+// APK MOD NO ROOT (default). Kategori "GUILD GLORY BOT" yang nyasar di
+// dashboard TIDAK disentuh -- client belum pernah nyebut ini di chat manapun.
+// Dilindungi requireAdmin (bukan SETUP_SECRET) karena cuma dipakai sekali
+// oleh admin yang udah login -- gak perlu setting env var tambahan,
+// tinggal buka URL-nya pas lagi login admin. GET = preview (belum
+// menyimpan apa-apa), POST (tombol di halaman preview) = beneran apply.
+const AGHA_CATEGORY_FIX_PLAN = [
+  { categoryLabel: 'FF PROXY APKMOD', productNames: ['Hg prime proxy', 'Pato team regedit proxy', 'DRIP PROXY', 'HG CHEATS PROXY APKMOD'] },
+  { categoryLabel: 'IOS [IPHONES PANEL', productNames: ['Migul ios Pro', 'Migul ios lite', 'Fluriote mlbb ios', 'Gbox 1th'] },
+  { categoryLabel: 'PC PANEL', productNames: ['BR MODS PC'] },
+  { categoryLabel: 'ROOT ANDROID', productNames: ['RAPID CORE ROOT', 'Angry Mood root'] },
+];
+function aghaNormalize(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+function aghaSlugify(label) { return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
+async function aghaBuildCategoryFixPlan() {
+  const settings = await readFresh('settings.json');
+  const products = await readFresh('products.json');
+  settings.categories = settings.categories || [];
+  settings.categoryLabels = settings.categoryLabels || {};
+  const newCategories = [], productUpdates = [], notFound = [];
+  for (const item of AGHA_CATEGORY_FIX_PLAN) {
+    let slug = settings.categories.find(s => aghaNormalize(settings.categoryLabels[s]) === aghaNormalize(item.categoryLabel));
+    let isNew = false;
+    if (!slug) { slug = aghaSlugify(item.categoryLabel); isNew = true; }
+    if (isNew) newCategories.push({ slug, label: item.categoryLabel });
+    for (const targetName of item.productNames) {
+      const product = products.find(p => aghaNormalize(p.name) === aghaNormalize(targetName));
+      if (!product) { notFound.push(targetName); continue; }
+      productUpdates.push({ id: product.id, name: product.name, oldCategories: product.categories || [], newCategories: [slug], label: item.categoryLabel });
+    }
+  }
+  const guildSlug = settings.categories.find(s => aghaNormalize(settings.categoryLabels[s] || s).includes('guild glory'));
+  const guildCount = guildSlug ? products.filter(p => (p.categories || []).includes(guildSlug)).length : 0;
+  return { settings, products, newCategories, productUpdates, notFound, guildSlug, guildCount };
+}
+function aghaCategoryFixHtml({ newCategories, productUpdates, notFound, guildSlug, guildCount, applied }) {
+  const rows = productUpdates.map(u => `
+    <tr>
+      <td style="padding:8px;border-bottom:1px solid #222;">${u.name}</td>
+      <td style="padding:8px;border-bottom:1px solid #222;color:#888;">${u.oldCategories.join(', ') || '(default)'}</td>
+      <td style="padding:8px;border-bottom:1px solid #222;color:#4ade80;">${u.label}</td>
+    </tr>`).join('');
+  const newCatRows = newCategories.map(c => `<li>${c.label} <span style="color:#666;">(slug: ${c.slug})</span></li>`).join('') || '<li style="color:#666;">(tidak ada, semua kategori target sudah ada)</li>';
+  const notFoundHtml = notFound.length
+    ? `<p style="color:#facc15;">⚠️ Produk tidak ketemu di database (cek nama persis di admin): ${notFound.join(', ')}</p>` : '';
+  const guildHtml = guildSlug
+    ? `<p style="color:#888;">Kategori "GUILD GLORY BOT" ketemu (${guildCount} produk di dalamnya) -- TIDAK disentuh sama sekali, cek manual ke client apakah ini perlu atau salah nyasar.</p>`
+    : `<p style="color:#888;">Kategori "GUILD GLORY BOT" tidak ketemu (mungkin sudah dihapus manual).</p>`;
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Rapikan Kategori AGHA NL</title>
+  <style>body{background:#0a0a0a;color:#eee;font-family:sans-serif;max-width:720px;margin:40px auto;padding:0 16px;}
+  h1{color:#dc2626;font-size:20px;} table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;}
+  th{text-align:left;padding:8px;color:#888;border-bottom:1px solid #333;}
+  button{background:#dc2626;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:bold;cursor:pointer;font-size:14px;}
+  a{color:#f87171;}</style></head><body>
+  <h1>${applied ? '✅ Kategori berhasil dirapikan' : '🔍 Preview: Rapikan Kategori AGHA NL'}</h1>
+  <h3>Kategori baru ${applied ? 'ditambahkan' : 'yang akan ditambahkan'}:</h3>
+  <ul>${newCatRows}</ul>
+  <h3>Produk ${applied ? 'yang dipindah' : 'yang akan dipindah'}:</h3>
+  <table><tr><th>Produk</th><th>Dari</th><th>Ke</th></tr>${rows}</table>
+  ${notFoundHtml}
+  ${guildHtml}
+  ${applied
+    ? `<p style="margin-top:24px;"><a href="/">← Kembali ke beranda toko</a> untuk lihat hasilnya.</p>`
+    : `<form method="POST"><button type="submit">Terapkan Perubahan Ini</button></form>
+       <p style="color:#666;font-size:12px;margin-top:12px;">Belum ada yang disimpan. Klik tombol di atas kalau sudah yakin sesuai.</p>`
+  }
+  </body></html>`;
+}
+app.get('/admin/fix-categories-agha', requireAdmin, async (req, res) => {
+  try {
+    const plan = await aghaBuildCategoryFixPlan();
+    res.send(aghaCategoryFixHtml({ ...plan, applied: false }));
+  } catch (e) { res.status(500).send('Error: ' + e.message); }
+});
+app.post('/admin/fix-categories-agha', requireAdmin, async (req, res) => {
+  try {
+    const plan = await aghaBuildCategoryFixPlan();
+    plan.newCategories.forEach(c => { plan.settings.categories.push(c.slug); plan.settings.categoryLabels[c.slug] = c.label; });
+    plan.productUpdates.forEach(u => {
+      const p = plan.products.find(pr => pr.id === u.id);
+      if (p) p.categories = u.newCategories;
+    });
+    if (plan.newCategories.length > 0) await writeDB('settings.json', plan.settings);
+    if (plan.productUpdates.length > 0) await writeDB('products.json', plan.products);
+    res.send(aghaCategoryFixHtml({ ...plan, applied: true }));
+  } catch (e) { res.status(500).send('Error: ' + e.message); }
+});
+
 app.get('/admin/migrate-images', async (req, res) => {
   const secret = process.env.SETUP_SECRET;
   if (!secret || req.query.secret !== secret) {
