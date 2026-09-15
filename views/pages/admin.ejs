@@ -383,6 +383,9 @@ textarea.hm-input{resize:vertical;min-height:80px;}
             <button onclick="switchTab('settings');setTimeout(()=>document.getElementById('categoryManagerSection')?.scrollIntoView({behavior:'smooth',block:'start'}),50)" class="text-xs font-bold py-2.5 px-3.5 rounded-lg flex items-center gap-1.5" style="background:rgba(255,255,255,.05);color:#a1a1aa;border:1px solid rgba(255,255,255,.1);cursor:pointer;">
                 <iconify-icon icon="mdi:tag-multiple"></iconify-icon> Kelola Kategori
             </button>
+            <button onclick="openModal('modal-bulk-import')" class="text-xs font-bold py-2.5 px-3.5 rounded-lg flex items-center gap-1.5" style="background:rgba(255,255,255,.05);color:#a1a1aa;border:1px solid rgba(255,255,255,.1);cursor:pointer;">
+                <iconify-icon icon="mdi:file-upload-outline"></iconify-icon> Import Massal
+            </button>
             <button onclick="openAddProductModal()" class="btn-primary text-xs">
                 <iconify-icon icon="mdi:plus"></iconify-icon> Tambah
             </button>
@@ -1458,6 +1461,65 @@ textarea.hm-input{resize:vertical;min-height:80px;}
     </div>
 </div>
 
+<!-- MODAL: Import Massal Produk dari 1 File -->
+<!-- Diminta client 15 Sep 2026: 1 file isi banyak produk (nama + harga per
+     durasi), diproses otomatis jadi banyak produk sekaligus. Gambar TETAP
+     manual per produk (client sendiri yang bilang "gambar mah manual aja
+     entar"), jadi produk hasil import pakai placeholder dulu, admin tinggal
+     upload gambar belakangan lewat Edit Produk. -->
+<div id="modal-bulk-import" class="modal-wrap">
+    <div class="modal-bg" onclick="closeModal('modal-bulk-import')"></div>
+    <div class="modal-box">
+        <div class="modal-handle"></div>
+        <div class="p-5">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                    <iconify-icon icon="mdi:file-upload-outline" class="text-red-400"></iconify-icon> Import Massal Produk
+                </h3>
+                <button onclick="closeModal('modal-bulk-import')" class="w-7 h-7 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-zinc-400">
+                    <iconify-icon icon="mdi:close"></iconify-icon>
+                </button>
+            </div>
+
+            <div class="rounded-xl p-3 mb-3" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">
+                <p class="text-[11px]" style="color:var(--text-2);">Format 1 file <code class="text-red-400">.txt</code>, tiap produk dipisah <b>1 baris kosong</b>. Baris pertama tiap blok = nama produk, baris setelahnya = durasi + harga:</p>
+                <pre class="text-[10px] mt-1.5 p-2 rounded-lg overflow-x-auto" style="background:#000;color:#a1a1aa;">DRIP PROXY
+1day 10k
+3 day 25k
+7 day 45k
+30day 100k
+
+HG APK MOD
+1 day 13k
+7 day 30k
+10 day 45k
+30 day 130k</pre>
+                <p class="text-[10px] mt-1.5" style="color:var(--text-3);">Gambar TIDAK ikut dari file (upload gambar tetap manual belakangan lewat Edit Produk per item, pakai placeholder dulu).</p>
+            </div>
+
+            <div class="mb-3">
+                <input type="file" id="bulkImportFile" accept=".txt" class="hm-input text-xs py-2">
+            </div>
+            <div class="mb-3">
+                <p class="text-[10px] mb-1" style="color:var(--text-3);">atau tempel langsung di sini:</p>
+                <textarea id="bulkImportText" rows="6" class="hm-input text-xs font-mono"></textarea>
+            </div>
+
+            <button type="button" onclick="previewBulkImport()" class="btn-primary text-xs w-full justify-center mb-3">
+                <iconify-icon icon="mdi:eye-outline"></iconify-icon> Preview
+            </button>
+
+            <div id="bulkImportPreview" class="hidden">
+                <div class="text-[11px] font-bold text-zinc-300 mb-2" id="bulkImportSummary"></div>
+                <div id="bulkImportList" class="space-y-1.5 max-h-64 overflow-y-auto mb-3"></div>
+                <button type="button" id="bulkImportSubmitBtn" onclick="submitBulkImport()" class="btn-primary text-xs w-full justify-center" style="background:#dc2626;">
+                    <iconify-icon icon="mdi:check-all"></iconify-icon> <span id="bulkImportSubmitLabel">Buat Semua Produk Valid</span>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- MODAL: Kelola Keys Cepat -->
 <div id="modal-keys" class="modal-wrap">
     <div class="modal-bg" onclick="closeModal('modal-keys')"></div>
@@ -1789,28 +1851,34 @@ let pricingRowCount = 0;
 // Baris pertama yang bukan pola harga dipakai sebagai Nama Produk. Baris
 // berpola "<angka> <hari/day/jam/hour/h> <angka><opsional k/rb/ribu>"
 // otomatis jadi baris Opsi Harga (durasi + harga, "k"/"rb"/"ribu" = x1000).
-function parseQuickImport() {
-    const raw = document.getElementById('quickImportText').value;
-    if (!raw.trim()) { showToast('Tempel teks produknya dulu di kotak import', 'error'); return; }
-    const lines = raw.split(/\r\n|\r|\n/).map(l => l.trim()).filter(l => l);
-    const priceRe = /^(\d+)\s*(hari|day|jam|hour|h)s?\.?\s+(\d+(?:[.,]\d+)?)\s*(k|rb|ribu)?$/i;
+// Dipakai bareng oleh import 1-produk (quick) dan import banyak-produk sekaligus (bulk).
+const BULK_PRICE_RE = /^(\d+)\s*(hari|day|jam|hour|h)s?\.?\s+(\d+(?:[.,]\d+)?)\s*(k|rb|ribu)?$/i;
+function parseProductTextBlock(lines) {
     let name = '';
-    const parsedRows = [];
+    const rows = [];
     for (const line of lines) {
-        const m = line.match(priceRe);
+        const m = line.match(BULK_PRICE_RE);
         if (m) {
             const days = parseInt(m[1], 10);
             const unitWord = m[2].toLowerCase();
             const unit = (unitWord === 'jam' || unitWord === 'hour' || unitWord === 'h') ? 'h' : 'd';
             let price = parseFloat(m[3].replace(',', '.'));
-            if (m[4]) price = price * 1000; // k / rb / ribu
-            parsedRows.push({ days, unit, price: Math.round(price) });
+            if (m[4]) price = price * 1000;
+            rows.push({ days, unit, price: Math.round(price) });
         } else if (!name) {
-            name = line; // baris pertama yang bukan pola harga = nama produk
+            name = line;
         }
     }
+    return { name, rows };
+}
+
+function parseQuickImport() {
+    const raw = document.getElementById('quickImportText').value;
+    if (!raw.trim()) { toast('Tempel teks produknya dulu di kotak import', 'error'); return; }
+    const lines = raw.split(/\r\n|\r|\n/).map(l => l.trim()).filter(l => l);
+    const { name, rows: parsedRows } = parseProductTextBlock(lines);
     if (!name && parsedRows.length === 0) {
-        showToast('Teks tidak dikenali. Pastikan formatnya "1day 10k" per baris', 'error');
+        toast('Teks tidak dikenali. Pastikan formatnya "1day 10k" per baris', 'error');
         return;
     }
     if (name) document.getElementById('prodName').value = name;
@@ -1819,7 +1887,7 @@ function parseQuickImport() {
         pricingRowCount = 0;
         parsedRows.forEach(r => addPricingRow(r.days, r.price, '', r.unit, ''));
     }
-    showToast(`Terisi: ${name ? '1 nama produk' : 'nama produk (tidak terdeteksi)'}, ${parsedRows.length} opsi harga`, 'success');
+    toast(`Terisi: ${name ? '1 nama produk' : 'nama produk (tidak terdeteksi)'}, ${parsedRows.length} opsi harga`, 'success');
 }
 
 // ── Drag & drop + paste gambar ke field upload produk (diminta client 15 Sep 2026) ──
@@ -1867,14 +1935,97 @@ function parseQuickImport() {
         for (const item of items) {
             if (item.type.startsWith('image/')) {
                 const file = item.getAsFile();
-                if (file) { setFile(file); showToast('Gambar dari clipboard berhasil ditempel', 'success'); }
+                if (file) { setFile(file); toast('Gambar dari clipboard berhasil ditempel', 'success'); }
                 break;
             }
         }
     });
 })();
 
-function addPricingRow(days='', price='', resellerPrice='', unit='d', strikePrice='') {
+// ── Import Massal Produk dari 1 File (diminta client 15 Sep 2026) ──
+// Beda dari parseQuickImport (1 produk ke form): ini banyak produk sekaligus
+// dari 1 file/teks, tiap produk dipisah 1 baris kosong, lalu di-preview dulu
+// sebelum benar-benar dibuat (bikin banyak produk sekaligus itu destruktif
+// kalau salah parse, makanya wajib direview manual dulu satu-satu).
+let bulkParsedProducts = [];
+
+async function getBulkImportRawText() {
+    const fileInput = document.getElementById('bulkImportFile');
+    if (fileInput.files && fileInput.files[0]) {
+        return await fileInput.files[0].text();
+    }
+    return document.getElementById('bulkImportText').value;
+}
+
+function previewBulkImport() {
+    getBulkImportRawText().then(raw => {
+        if (!raw || !raw.trim()) { toast('Pilih file atau tempel teksnya dulu', 'error'); return; }
+        // blok dipisah baris kosong (boleh lebih dari 1 baris kosong berturut-turut)
+        const blocks = raw.split(/\r?\n\s*\r?\n/).map(b => b.trim()).filter(b => b);
+        bulkParsedProducts = blocks.map(block => {
+            const lines = block.split(/\r\n|\r|\n/).map(l => l.trim()).filter(l => l);
+            const { name, rows } = parseProductTextBlock(lines);
+            const valid = !!name && rows.length > 0;
+            return { name: name || '(nama tidak terdeteksi)', rows, valid, include: valid };
+        });
+
+        const validCount = bulkParsedProducts.filter(p => p.valid).length;
+        document.getElementById('bulkImportSummary').textContent =
+            `Terdeteksi ${bulkParsedProducts.length} blok produk — ${validCount} valid, ${bulkParsedProducts.length - validCount} gagal dibaca.`;
+
+        const listEl = document.getElementById('bulkImportList');
+        listEl.innerHTML = bulkParsedProducts.map((p, i) => `
+            <label class="flex items-start gap-2 p-2 rounded-lg border text-xs cursor-pointer"
+                style="border-color:${p.valid ? 'rgba(34,197,94,.25)' : 'rgba(239,68,68,.25)'};background:${p.valid ? 'rgba(34,197,94,.06)' : 'rgba(239,68,68,.06)'};">
+                <input type="checkbox" ${p.include ? 'checked' : ''} ${p.valid ? '' : 'disabled'}
+                    onchange="bulkParsedProducts[${i}].include=this.checked" class="mt-0.5 accent-red-500">
+                <div class="flex-1">
+                    <div class="font-bold ${p.valid ? 'text-white' : 'text-red-400'}">${p.name}</div>
+                    ${p.valid
+                        ? `<div class="text-[10px] text-zinc-500 mt-0.5">${p.rows.map(r => `${r.days}${r.unit==='h'?'jam':'hari'}: Rp${r.price.toLocaleString('id-ID')}`).join(' · ')}</div>`
+                        : `<div class="text-[10px] text-red-400/70 mt-0.5">Gak ketemu nama produk / opsi harga yang valid, dilewati</div>`
+                    }
+                </div>
+            </label>
+        `).join('');
+        document.getElementById('bulkImportPreview').classList.remove('hidden');
+    }).catch(err => toast('Gagal membaca file: ' + err.message, 'error'));
+}
+
+async function submitBulkImport() {
+    const toCreate = bulkParsedProducts.filter(p => p.valid && p.include);
+    if (toCreate.length === 0) { toast('Gak ada produk valid yang dicentang', 'error'); return; }
+    const btn = document.getElementById('bulkImportSubmitBtn');
+    const label = document.getElementById('bulkImportSubmitLabel');
+    btn.disabled = true;
+    let ok = 0, fail = 0;
+    for (let i = 0; i < toCreate.length; i++) {
+        const p = toCreate[i];
+        label.textContent = `Membuat ${i + 1}/${toCreate.length}: ${p.name}...`;
+        const fd = new FormData();
+        fd.append('name', p.name);
+        p.rows.forEach(r => {
+            fd.append('pricingDays', r.days);
+            fd.append('pricingUnits', r.unit);
+            fd.append('pricingPrices', r.price);
+            fd.append('pricingResellerPrices', '');
+            fd.append('pricingStrikePrices', '');
+        });
+        try {
+            const r = await fetch('/admin/product/add', { method: 'POST', body: fd });
+            const d = await r.json();
+            if (d.success) ok++; else { fail++; console.error('[bulk import] gagal:', p.name, d.message); }
+        } catch (err) {
+            fail++; console.error('[bulk import] error koneksi:', p.name, err);
+        }
+    }
+    btn.disabled = false;
+    label.textContent = 'Buat Semua Produk Valid';
+    toast(`Selesai: ${ok} produk berhasil dibuat${fail > 0 ? `, ${fail} gagal` : ''}. Jangan lupa upload gambar tiap produk lewat Edit Produk.`, fail > 0 ? 'warn' : 'success');
+    if (ok > 0) setTimeout(() => { window.location.href = '/admin#products'; }, 1200);
+}
+
+
     const i = pricingRowCount++;
     const row = document.createElement('div');
     row.className = 'flex items-center gap-2';
