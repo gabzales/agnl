@@ -150,8 +150,8 @@ const pageTitle = settings?.siteName || 'AGHA NL';
   }
   .fz-pay-logo-box img { height: 100%; width: auto; max-width: 160px; object-fit: contain; }
   .fz-social {
-    height: 36px; padding: 0 14px 0 12px; border-radius: 999px; display: flex; align-items: center; gap: 7px;
-    color: #fff; text-decoration: none; flex-shrink: 0; line-height: 1; font-size: 12px; font-weight: 700;
+    width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    color: #fff; text-decoration: none; flex-shrink: 0; line-height: 1;
   }
   /* FIX (bug 25 Agu 2026, direvisi 26 Agu 2026): percobaan sebelumnya
      mengunci width/height iconify-icon lewat CSS supaya nggak "collapse"
@@ -568,13 +568,13 @@ const popularProducts = products
         <p style="font-size:12px;color:var(--fz-text-muted);line-height:1.5;margin-bottom:12px;max-width:320px;"><%= settings?.about || 'Toko mod menu & cheat game terpercaya dengan harga termurah dan proses instan.' %></p>
         <div style="display:flex;gap:8px;">
           <% if (settings?.contact?.whatsapp) { %>
-          <a href="https://wa.me/<%= (settings.contact.whatsapp||'').replace(/\D/g,'') %>" target="_blank" rel="noopener" class="fz-social" style="background:#25D366;">
-            <iconify-icon icon="mdi:whatsapp" style="font-size:18px;color:#fff;"></iconify-icon> WhatsApp
+          <a href="https://wa.me/<%= (settings.contact.whatsapp||'').replace(/\D/g,'') %>" target="_blank" rel="noopener" class="fz-social" style="background:#25D366;" title="WhatsApp">
+            <iconify-icon icon="mdi:whatsapp" style="font-size:20px;color:#fff;"></iconify-icon>
           </a>
           <% } %>
           <% if (settings?.contact?.telegram) { %>
-          <a href="https://t.me/<%= (settings.contact.telegram||'').replace('@','') %>" target="_blank" rel="noopener" class="fz-social" style="background:#229ED9;">
-            <iconify-icon icon="mdi:telegram" style="font-size:18px;color:#fff;"></iconify-icon> Telegram
+          <a href="https://t.me/<%= (settings.contact.telegram||'').replace('@','') %>" target="_blank" rel="noopener" class="fz-social" style="background:#229ED9;" title="Telegram">
+            <iconify-icon icon="mdi:telegram" style="font-size:20px;color:#fff;"></iconify-icon>
           </a>
           <% } %>
         </div>

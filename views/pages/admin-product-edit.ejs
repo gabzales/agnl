@@ -157,7 +157,8 @@ const noIndex = true; // halaman admin, jangan di-index Google
     <p class="text-[11px] text-zinc-500 mb-4">Override manual untuk tampilan di halaman katalog. Kosongkan untuk pakai nilai otomatis/asli.</p>
     <div>
       <label class="text-[11px] text-zinc-400 font-bold mb-1 block">Angka "Terjual"</label>
-      <input type="number" id="fakeSoldInput" min="0" class="hm-input text-sm" placeholder="Otomatis">
+      <input type="text" inputmode="numeric" id="fakeSoldInput" class="hm-input text-sm" placeholder="Otomatis"
+        oninput="const n=this.value.replace(/[^0-9]/g,'');this.value=n===''?'':parseInt(n,10).toLocaleString('id-ID');">
     </div>
   </div>
 
@@ -232,8 +233,19 @@ const noIndex = true; // halaman admin, jangan di-index Google
       </div>
       <textarea id="keysInput" class="hm-input font-mono text-xs resize-none" rows="6"
         placeholder="Masukkan keys, satu per baris&#10;Contoh:&#10;FF7-001=7d&#10;FF30-001=30d&#10;ML12-001=12h"></textarea>
+      <input type="file" id="keysFileInput" accept=".txt,.csv" class="hidden" onchange="importKeysFromFile(event)">
+      <div class="flex gap-2 mt-2">
+        <button type="button" onclick="document.getElementById('keysFileInput').click()"
+          class="flex-1 py-2 rounded-lg text-[11px] font-bold text-red-400 border border-dashed border-red-500/30 hover:bg-red-500/10 transition-all flex items-center justify-center gap-1.5">
+          <iconify-icon icon="mdi:file-upload-outline" class="text-sm"></iconify-icon> Import dari File (.txt)
+        </button>
+        <button type="button" onclick="document.getElementById('keysInput').value=''"
+          class="px-3 py-2 rounded-lg text-[11px] font-bold text-zinc-500 border border-white/10 hover:text-white hover:bg-white/5 transition-all">
+          Bersihkan
+        </button>
+      </div>
       <p class="text-[10px] text-zinc-600 mt-1.5">
-        Format tag durasi: <code class="text-red-400">KEY=7d</code> (7 hari) atau <code class="text-red-400">KEY=12h</code> (12 jam). Key tanpa tag = generic.
+        Format tag durasi: <code class="text-red-400">KEY=7d</code> (7 hari) atau <code class="text-red-400">KEY=12h</code> (12 jam). Key tanpa tag = generic. File di-import otomatis dirapikan: baris kosong &amp; spasi nyasar dibuang, duplikat dibuang.
       </p>
     </div>
 
@@ -241,7 +253,12 @@ const noIndex = true; // halaman admin, jangan di-index Google
     <div id="existingKeys" class="mt-3 hidden">
       <div class="flex items-center justify-between mb-2">
         <span class="text-[11px] text-zinc-500" id="keyCountLabel"></span>
-        <button onclick="clearAllKeys()" class="text-[10px] text-red-400 hover:text-red-300 transition-colors">Hapus Semua Keys</button>
+        <div class="flex items-center gap-3">
+          <button onclick="exportKeysToFile()" class="text-[10px] text-red-400 hover:text-red-300 transition-colors flex items-center gap-1">
+            <iconify-icon icon="mdi:file-download-outline"></iconify-icon> Export
+          </button>
+          <button onclick="clearAllKeys()" class="text-[10px] text-red-400 hover:text-red-300 transition-colors">Hapus Semua Keys</button>
+        </div>
       </div>
       <div id="keyChips" class="max-h-32 overflow-y-auto"></div>
     </div>
@@ -299,7 +316,7 @@ async function loadProduct() {
   document.getElementById('downloadUrlInput').value = currentProduct.downloadUrl || '';
 
   // Tampilan katalog (opsional)
-  document.getElementById('fakeSoldInput').value = (currentProduct.fakeSold != null) ? currentProduct.fakeSold : '';
+  document.getElementById('fakeSoldInput').value = (currentProduct.fakeSold != null) ? Number(currentProduct.fakeSold).toLocaleString('id-ID') : '';
 
   // Ulasan & Rating produk ini
   loadProductTestimonials();
@@ -433,37 +450,37 @@ function renderPricingRows() {
   container.innerHTML = pricingOptions.map((opt, i) => `
     <div class="p-3 rounded-xl" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">
       <div class="flex gap-2 items-center mb-2">
-        <input type="number" value="${opt.days ?? ''}" min="1" placeholder="Jml"
+        <input type="text" inputmode="numeric" value="${opt.days ?? ''}" placeholder="Jml"
           class="hm-input text-sm text-center font-bold" style="width:60px"
-          oninput="pricingOptions[${i}].days=parseInt(this.value)||0">
+          oninput="const n=this.value.replace(/[^0-9]/g,'');pricingOptions[${i}].days=n===''?0:parseInt(n,10);this.value=n;">
         <select class="hm-input text-xs font-bold" style="width:76px" onchange="pricingOptions[${i}].unit=this.value">
           <option value="d" ${(opt.unit||'d')==='d'?'selected':''}>Hari</option>
           <option value="h" ${opt.unit==='h'?'selected':''}>Jam</option>
         </select>
         <div class="flex-1 relative">
           <span class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-xs font-bold">Rp</span>
-          <input type="number" value="${opt.price ?? ''}" min="0" step="1000" placeholder="Harga Normal"
+          <input type="text" inputmode="numeric" value="${(opt.price !== undefined && opt.price !== null) ? Number(opt.price).toLocaleString('id-ID') : ''}" placeholder="Harga Normal"
             class="hm-input text-sm pl-9 font-bold w-full"
-            oninput="pricingOptions[${i}].price=this.value===''?0:(parseInt(this.value)||0)">
+            oninput="const n=this.value.replace(/[^0-9]/g,'');pricingOptions[${i}].price=n===''?0:parseInt(n,10);this.value=n===''?'':parseInt(n,10).toLocaleString('id-ID');">
         </div>
         <button onclick="removePricingRow(${i})"
           class="shrink-0 w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/25 text-red-400 hover:bg-red-500/20 transition-all flex items-center justify-center text-lg font-black">×</button>
       </div>
       <div class="relative mb-2">
         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-xs font-bold">Rp</span>
-        <input type="number" value="${opt.reseller_price ?? ''}" min="0" step="1000" placeholder="Harga reseller (opsional)"
+        <input type="text" inputmode="numeric" value="${(opt.reseller_price !== undefined && opt.reseller_price !== null) ? Number(opt.reseller_price).toLocaleString('id-ID') : ''}" placeholder="Harga reseller (opsional)"
           class="hm-input text-xs pl-9 w-full"
           style="border-color:rgba(234,179,8,.25)"
           title="Kosongkan = ikut diskon % reseller global"
-          oninput="pricingOptions[${i}].reseller_price=this.value===''?null:(parseInt(this.value)||0)">
+          oninput="const n=this.value.replace(/[^0-9]/g,'');pricingOptions[${i}].reseller_price=n===''?null:parseInt(n,10);this.value=n===''?'':parseInt(n,10).toLocaleString('id-ID');">
       </div>
       <div class="relative">
         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-xs font-bold">Rp</span>
-        <input type="number" value="${opt.strike_price ?? ''}" min="0" step="1000" placeholder="Harga coret (opsional, harus > harga jual)"
+        <input type="text" inputmode="numeric" value="${(opt.strike_price !== undefined && opt.strike_price !== null) ? Number(opt.strike_price).toLocaleString('id-ID') : ''}" placeholder="Harga coret (opsional, harus > harga jual)"
           class="hm-input text-xs pl-9 w-full"
           style="border-color:rgba(148,163,184,.25);text-decoration-line:line-through;text-decoration-color:rgba(148,163,184,.4);"
           title="Harga 'asli' yang dicoret di sebelah harga jual paket ini, kesan diskon. Kosongkan = tidak ada."
-          oninput="pricingOptions[${i}].strike_price=this.value===''?null:(parseInt(this.value)||0)">
+          oninput="const n=this.value.replace(/[^0-9]/g,'');pricingOptions[${i}].strike_price=n===''?null:parseInt(n,10);this.value=n===''?'':parseInt(n,10).toLocaleString('id-ID');">
       </div>
     </div>
   `).join('');
@@ -542,6 +559,75 @@ function renderKeyInfo() {
   }
 }
 
+// ─── Import keys dari file (.txt) ───
+// Diminta client 15 Sep 2026: upload file isi key -> otomatis keisi ke
+// textarea, DIRAPIKAN dulu (baris kosong dibuang, spasi nyasar di awal/akhir
+// tiap baris dipangkas, duplikat dibuang tapi urutan kemunculan pertama
+// dipertahankan) sebelum digabung ke isi textarea yang sudah ada.
+async function importKeysFromFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { // 2MB, cukup lebar buat ribuan baris key
+    showToast('File terlalu besar (maks 2MB)', 'error');
+    e.target.value = '';
+    return;
+  }
+  try {
+    const text = await file.text();
+    const rawLines = text.split(/\r\n|\r|\n/);
+    const seen = new Set();
+    const cleaned = [];
+    let dupeCount = 0, emptyCount = 0;
+    for (let line of rawLines) {
+      line = line.trim();
+      if (!line) { emptyCount++; continue; }
+      if (seen.has(line)) { dupeCount++; continue; }
+      seen.add(line);
+      cleaned.push(line);
+    }
+    if (cleaned.length === 0) {
+      showToast('File tidak berisi key yang valid (kosong semua)', 'error');
+      e.target.value = '';
+      return;
+    }
+    const textarea = document.getElementById('keysInput');
+    const existing = textarea.value.trim();
+    textarea.value = existing ? existing + '\n' + cleaned.join('\n') : cleaned.join('\n');
+    let msg = `${cleaned.length} key dari file berhasil dimasukkan`;
+    const notes = [];
+    if (dupeCount > 0) notes.push(`${dupeCount} duplikat dibuang`);
+    if (emptyCount > 0) notes.push(`${emptyCount} baris kosong dibuang`);
+    if (notes.length) msg += ` (${notes.join(', ')})`;
+    showToast(msg, 'success');
+  } catch (err) {
+    showToast('Gagal membaca file', 'error');
+  } finally {
+    e.target.value = ''; // reset supaya file yang sama bisa dipilih lagi kalau perlu
+  }
+}
+
+// ─── Export keys existing ke file (.txt) ───
+// Format export SAMA PERSIS dengan format import (satu key per baris,
+// termasuk tag durasi KEY=7d/KEY=12h kalau ada) -- supaya file hasil
+// export bisa langsung dipakai lagi buat import ke produk lain tanpa
+// perlu diedit ulang.
+function exportKeysToFile() {
+  const keys = (currentProduct && currentProduct.keys) || [];
+  if (keys.length === 0) { showToast('Belum ada keys untuk di-export', 'error'); return; }
+  const content = keys.join('\n');
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safeName = (currentProduct.name || 'produk').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  a.href = url;
+  a.download = `keys-${safeName || 'produk'}-${keys.length}.txt`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast(`${keys.length} key berhasil di-export`, 'success');
+}
+
 async function clearAllKeys() {
   if (!confirm('Hapus semua keys? Stok akan menjadi 0.')) return;
   const res = await fetch(`/admin/product/keys/${currentProduct.id}`, {
@@ -567,7 +653,7 @@ async function saveProduct() {
   const featureList = document.getElementById('featureListInput').value.trim();
   const channelUrl = document.getElementById('channelUrlInput').value.trim();
   const downloadUrl = document.getElementById('downloadUrlInput').value.trim();
-  const fakeSoldRaw = document.getElementById('fakeSoldInput').value.trim();
+  const fakeSoldRaw = document.getElementById('fakeSoldInput').value.replace(/[^0-9]/g,'');
 
   // Validasi harga
   const validPricing = pricingOptions.filter(o => o.days > 0);

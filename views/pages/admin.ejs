@@ -1321,6 +1321,20 @@ textarea.hm-input{resize:vertical;min-height:80px;}
             </div>
             <form id="addProductForm" class="space-y-3" enctype="multipart/form-data">
                 <input type="hidden" name="_productId" id="editProductId">
+
+                <!-- IMPORT CEPAT DARI TEKS (diminta client 15 Sep 2026, referensi -->
+                <!-- forward chat WA jualan "1day 10k / 3 day 25k / 7 day 45k") -->
+                <div class="rounded-xl p-3" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">
+                    <div class="text-[11px] font-bold text-red-300 mb-1.5 flex items-center gap-1.5">
+                        <iconify-icon icon="mdi:auto-fix"></iconify-icon> Import Cepat dari Teks (opsional)
+                    </div>
+                    <textarea id="quickImportText" rows="4" class="hm-input text-xs" placeholder="Tempel di sini, contoh:&#10;DRIP PROXY&#10;1day 10k&#10;3 day 25k&#10;7 day 45k&#10;30day 100k"></textarea>
+                    <div class="flex items-center justify-between mt-1.5">
+                        <p class="text-[10px]" style="color:var(--text-3);">Baris pertama = nama produk, baris "angka + hari/jam + angka+k" otomatis jadi opsi harga. Gambar tetap upload manual di bawah (drag/drop atau paste gambar juga bisa).</p>
+                        <button type="button" onclick="parseQuickImport()" class="shrink-0 ml-2 px-3 py-1.5 rounded-lg text-[11px] font-bold text-white" style="background:#dc2626;">Isi Otomatis</button>
+                    </div>
+                </div>
+
                 <div class="grid grid-cols-2 gap-3">
                     <div>
                         <div class="setting-row-label">Nama Produk *</div>
@@ -1353,7 +1367,11 @@ textarea.hm-input{resize:vertical;min-height:80px;}
                 <div>
                     <div class="setting-row-label">Gambar (URL atau upload)</div>
                     <input type="text" name="imageUrl" id="prodImageUrl" class="hm-input mb-2" placeholder="https://cdn.../gambar.png">
-                    <input type="file" name="image" accept="image/*" class="hm-input text-xs py-2">
+                    <div id="prodImageDropzone" class="rounded-lg border border-dashed border-white/15 p-3 text-center transition-colors" style="cursor:pointer;">
+                        <input type="file" name="image" id="prodImageFile" accept="image/*" class="hm-input text-xs py-2">
+                        <p class="text-[10px] mt-1.5" style="color:var(--text-3);">Bisa juga drag & drop gambar ke sini, atau paste (Ctrl+V) gambar yang di-copy dari mana saja.</p>
+                        <img id="prodImagePreview" class="hidden mt-2 mx-auto rounded-lg" style="max-height:120px;object-fit:contain;">
+                    </div>
                 </div>
                 <div>
                     <div class="setting-row-label">Link Channel / Grup Produk</div>
@@ -1760,10 +1778,107 @@ async function api(url, data) {
 
 // ── PRODUK: Pricing rows ──
 let pricingRowCount = 0;
+
+// ── Import Cepat dari Teks (diminta client 15 Sep 2026) ──
+// Contoh input yang harus kebaca:
+//   DRIP PROXY
+//   1day 10k
+//   3 day 25k
+//   7 day 45k
+//   30day 100k
+// Baris pertama yang bukan pola harga dipakai sebagai Nama Produk. Baris
+// berpola "<angka> <hari/day/jam/hour/h> <angka><opsional k/rb/ribu>"
+// otomatis jadi baris Opsi Harga (durasi + harga, "k"/"rb"/"ribu" = x1000).
+function parseQuickImport() {
+    const raw = document.getElementById('quickImportText').value;
+    if (!raw.trim()) { showToast('Tempel teks produknya dulu di kotak import', 'error'); return; }
+    const lines = raw.split(/\r\n|\r|\n/).map(l => l.trim()).filter(l => l);
+    const priceRe = /^(\d+)\s*(hari|day|jam|hour|h)s?\.?\s+(\d+(?:[.,]\d+)?)\s*(k|rb|ribu)?$/i;
+    let name = '';
+    const parsedRows = [];
+    for (const line of lines) {
+        const m = line.match(priceRe);
+        if (m) {
+            const days = parseInt(m[1], 10);
+            const unitWord = m[2].toLowerCase();
+            const unit = (unitWord === 'jam' || unitWord === 'hour' || unitWord === 'h') ? 'h' : 'd';
+            let price = parseFloat(m[3].replace(',', '.'));
+            if (m[4]) price = price * 1000; // k / rb / ribu
+            parsedRows.push({ days, unit, price: Math.round(price) });
+        } else if (!name) {
+            name = line; // baris pertama yang bukan pola harga = nama produk
+        }
+    }
+    if (!name && parsedRows.length === 0) {
+        showToast('Teks tidak dikenali. Pastikan formatnya "1day 10k" per baris', 'error');
+        return;
+    }
+    if (name) document.getElementById('prodName').value = name;
+    if (parsedRows.length > 0) {
+        document.getElementById('pricingRows').querySelectorAll('[data-pricing-row]').forEach(r => r.remove());
+        pricingRowCount = 0;
+        parsedRows.forEach(r => addPricingRow(r.days, r.price, '', r.unit, ''));
+    }
+    showToast(`Terisi: ${name ? '1 nama produk' : 'nama produk (tidak terdeteksi)'}, ${parsedRows.length} opsi harga`, 'success');
+}
+
+// ── Drag & drop + paste gambar ke field upload produk (diminta client 15 Sep 2026) ──
+(function setupProductImageDropzone(){
+    const zone = document.getElementById('prodImageDropzone');
+    const fileInput = document.getElementById('prodImageFile');
+    const preview = document.getElementById('prodImagePreview');
+    if (!zone || !fileInput) return;
+
+    function showPreview(file) {
+        if (!file || !file.type.startsWith('image/')) return;
+        const url = URL.createObjectURL(file);
+        preview.src = url;
+        preview.classList.remove('hidden');
+    }
+    function setFile(file) {
+        if (!file) return;
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        fileInput.files = dt.files;
+        showPreview(file);
+    }
+
+    fileInput.addEventListener('change', () => { if (fileInput.files[0]) showPreview(fileInput.files[0]); });
+
+    ['dragenter','dragover'].forEach(evt => zone.addEventListener(evt, (e) => {
+        e.preventDefault(); e.stopPropagation();
+        zone.style.borderColor = '#dc2626';
+    }));
+    ['dragleave','drop'].forEach(evt => zone.addEventListener(evt, (e) => {
+        e.preventDefault(); e.stopPropagation();
+        zone.style.borderColor = '';
+    }));
+    zone.addEventListener('drop', (e) => {
+        const file = e.dataTransfer.files[0];
+        if (file) setFile(file);
+    });
+
+    // Paste gambar dari clipboard (mis. copy dari WA Web / browser lain) langsung ke form ini
+    document.addEventListener('paste', (e) => {
+        const modal = document.getElementById('modal-product');
+        if (!modal || !modal.classList.contains('open')) return; // cuma aktif kalau modal tambah/edit produk lagi kebuka
+        const items = e.clipboardData && e.clipboardData.items;
+        if (!items) return;
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                const file = item.getAsFile();
+                if (file) { setFile(file); showToast('Gambar dari clipboard berhasil ditempel', 'success'); }
+                break;
+            }
+        }
+    });
+})();
+
 function addPricingRow(days='', price='', resellerPrice='', unit='d', strikePrice='') {
     const i = pricingRowCount++;
     const row = document.createElement('div');
     row.className = 'flex items-center gap-2';
+    row.setAttribute('data-pricing-row', '1');
     row.innerHTML = `
         <div class="flex-1 flex gap-2 flex-wrap">
             <div style="flex:0 0 56px">

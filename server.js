@@ -1800,7 +1800,9 @@ app.post('/wallet/topup', requireAuth, async (req, res) => {
 
     const settings = readDB('settings.json');
     const minDeposit = settings.resellerMinDeposit || 50000;
-    const amount = parseInt(req.body.amount);
+    // FIX (bug 14 Sep 2026, sama kayak harga produk): bersihin dulu
+    // titik/koma nyempil sebelum parseInt biar "100.000" gak kebaca 100.
+    const amount = parseInt(String(req.body.amount||'').replace(/[^\d]/g,''), 10);
     if (isNaN(amount) || amount < minDeposit) {
       return res.json({ success: false, message: `Minimal top up Rp ${minDeposit.toLocaleString('id-ID')}` });
     }
@@ -3028,16 +3030,28 @@ function parsePricingOptions(days, prices, resellerPrices, units, strikePrices) 
   // seluruh produk seperti implementasi sebelumnya (product.strikePrice).
   const spa = Array.isArray(strikePrices) ? strikePrices : (strikePrices ? [strikePrices] : []);
   const opts = []; const seen = new Set();
+  // FIX (bug dilaporkan client 14 Sep 2026, screenshot form "Harga Paket"):
+  // sebagian keyboard HP (terutama Android) suka nyisipin titik pemisah
+  // ribuan pas ngetik angka di field number (misal ketik "10000" tapi yang
+  // kekirim/kesimpen jadi string "10.000"). parseInt("10.000") cuma baca
+  // sampai ketemu titik dan hasilnya 10 -- 3 angka nol di belakang hilang
+  // diam-diam. cleanNum() buang semua karakter selain digit dulu sebelum
+  // di-parseInt, jadi "10.000" atau "10,000" tetap kebaca 10000 yang bener.
+  const cleanNum = (v) => {
+    if (v === undefined || v === null || v === '') return NaN;
+    const digitsOnly = String(v).replace(/[^\d]/g, '');
+    return digitsOnly === '' ? NaN : parseInt(digitsOnly, 10);
+  };
   for (let i = 0; i < da.length; i++) {
-    const d = parseInt(da[i]), p = parseInt(pa[i]);
+    const d = cleanNum(da[i]), p = cleanNum(pa[i]);
     const unit = (ua[i] === 'h' ? 'h' : 'd'); // default 'd' kalau tidak diisi/tidak valid
     const seenKey = `${d}${unit}`;
     if (d > 0 && p >= 0 && !seen.has(seenKey)) {
       seen.add(seenKey);
-      const rp = rpa[i] !== undefined && rpa[i] !== '' ? parseInt(rpa[i]) : null;
+      const rp = rpa[i] !== undefined && rpa[i] !== '' ? cleanNum(rpa[i]) : null;
       let sp = null;
       if (spa[i] !== undefined && spa[i] !== null && spa[i] !== '') {
-        const parsed = parseInt(spa[i]);
+        const parsed = cleanNum(spa[i]);
         if (!isNaN(parsed) && parsed > p) sp = parsed; // harga coret harus LEBIH BESAR dari harga jual, kalau tidak dianggap tidak valid (diabaikan)
       }
       opts.push({ days: d, unit, price: p, reseller_price: (rp !== null && !isNaN(rp) && rp >= 0) ? rp : null, strike_price: sp });
@@ -3120,7 +3134,7 @@ app.post('/admin/product/add', requireAdmin, (req, res, next) => {
     // per-durasi (ada di dalam tiap pricingOptions/items, lihat di atas),
     // bukan lagi field tunggal per-produk.
     let fakeSoldVal = null;
-    if (fakeSold !== undefined && fakeSold !== '' && fakeSold !== null) { const fs = parseInt(fakeSold); if (!isNaN(fs) && fs >= 0) fakeSoldVal = fs; }
+    if (fakeSold !== undefined && fakeSold !== '' && fakeSold !== null) { const fs = parseInt(String(fakeSold).replace(/[^\d]/g,''), 10); if (!isNaN(fs) && fs >= 0) fakeSoldVal = fs; }
     // FIX (diminta client 22 Agu 2026): categories sekarang array (bisa
     // lebih dari 1 sekaligus), dari multer bisa berupa string tunggal
     // (kalau cuma 1 checkbox dicentang) atau array (kalau lebih dari 1) --
@@ -3163,7 +3177,7 @@ app.post('/admin/product/edit/:id', requireAdmin, (req, res, next) => {
     // product.sold asli.
     if (fakeSold !== undefined) {
       if (fakeSold === '' || fakeSold === null) product.fakeSold = null;
-      else { const fs = parseInt(fakeSold); if (!isNaN(fs) && fs >= 0) product.fakeSold = fs; }
+      else { const fs = parseInt(String(fakeSold).replace(/[^\d]/g,''), 10); if (!isNaN(fs) && fs >= 0) product.fakeSold = fs; }
     }
     // Harga coret (strikethrough) -- FIX (diminta client 22 Agu 2026,
     // referensi screenshot produk "SENJU"): sekarang PER-OPSI DURASI, ada
@@ -3188,7 +3202,19 @@ app.post('/admin/product/keys/:id', requireAdmin, async (req, res) => {
     const product=products.find(p=>p.id===req.params.id);
     if(!product)return res.json({success:false,message:'Produk tidak ditemukan'});
     const nk=(keys||'').split('\n').map(k=>k.trim()).filter(k=>k);
-    product.keys=mode==='replace'?nk:[...(product.keys||[]),...nk];
+    if (mode === 'replace') {
+      product.keys = nk;
+    } else {
+      // FIX (diminta client 15 Sep 2026, fitur import key dari file): mode
+      // "tambah" dulu asal concat mentah -- kalau file yang di-import
+      // kebetulan ada key yang udah pernah masuk sebelumnya, jadi numpuk
+      // duplikat di database. Sekarang key baru yang PERSIS SAMA dengan
+      // key yang sudah ada di produk ini otomatis dilewati (skip), biar
+      // stok tetap akurat.
+      const existing = new Set(product.keys || []);
+      const uniqueNew = nk.filter(k => !existing.has(k));
+      product.keys = [...(product.keys || []), ...uniqueNew];
+    }
     await writeDB('products.json',products);res.json({success:true,keyCount:product.keys.length});
   }catch(e){res.json({success:false,message:e.message});}
 });
@@ -3512,7 +3538,13 @@ app.post('/admin/user/toggle-reseller/:id', requireAdmin, async (req, res) => {
 // Admin koreksi/tambah saldo wallet user secara manual (mis. transfer di luar QRIS)
 app.post('/admin/user/adjust-balance/:id', requireAdmin, async (req, res) => {
   try {
-    const amount = parseInt(req.body.amount);
+    // FIX (bug 14 Sep 2026, sama kayak harga produk): bersihin karakter
+    // non-digit dulu biar "50.000" tidak kebaca cuma 50. Nominal koreksi
+    // saldo tetap boleh negatif (potong saldo), jadi tanda minus dipertahankan.
+    const rawAmount = String(req.body.amount||'').trim();
+    const isNegative = rawAmount.startsWith('-');
+    const digitsOnly = rawAmount.replace(/[^\d]/g,'');
+    const amount = digitsOnly === '' ? NaN : parseInt(digitsOnly, 10) * (isNegative ? -1 : 1);
     if (isNaN(amount) || amount === 0) return res.json({ success: false, message: 'Nominal tidak valid' });
 
     const users = await readFresh('users.json');
@@ -4136,7 +4168,7 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
     // product.sold asli.
     if (fakeSold !== undefined) {
       if (fakeSold === '' || fakeSold === null) p.fakeSold = null;
-      else { const fs = parseInt(fakeSold); if (!isNaN(fs) && fs >= 0) p.fakeSold = fs; }
+      else { const fs = parseInt(String(fakeSold).replace(/[^\d]/g,''), 10); if (!isNaN(fs) && fs >= 0) p.fakeSold = fs; }
     }
     // FIX (diminta client 22 Agu 2026, referensi screenshot produk "SENJU"):
     // harga coret sekarang PER-OPSI DURASI (strike_price di dalam tiap
@@ -4148,9 +4180,18 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
     if (Array.isArray(pricingOptions) && pricingOptions.length > 0) {
       const seenDays = new Set();
       const validOpts = [];
+      // FIX (bug dilaporkan client 14 Sep 2026): sama seperti parsePricingOptions()
+      // di atas -- parseInt("10.000") = 10 kalau ada titik/koma nyempil di
+      // value yang dikirim. cleanNum() bersihin dulu sebelum di-parseInt.
+      const cleanNum = (v) => {
+        if (v === undefined || v === null || v === '') return NaN;
+        if (typeof v === 'number') return v;
+        const digitsOnly = String(v).replace(/[^\d]/g, '');
+        return digitsOnly === '' ? NaN : parseInt(digitsOnly, 10);
+      };
       for (const o of pricingOptions) {
-        const days = parseInt(o.days);
-        const price = parseInt(o.price);
+        const days = cleanNum(o.days);
+        const price = cleanNum(o.price);
         const unit = (o.unit === 'h' ? 'h' : 'd'); // default 'd' (hari) kalau tidak dikirim, backward-compat
         const seenKey = `${days}${unit}`;
         // Lewati baris yang harinya tidak valid, harga tidak valid, atau duplikat hari+unit
@@ -4162,7 +4203,7 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
         // (checkout akan fallback ke diskon % global) — bukan otomatis dari data lama.
         let resellerPrice = null;
         if (o.reseller_price !== undefined && o.reseller_price !== null && o.reseller_price !== '') {
-          const rp = parseInt(o.reseller_price);
+          const rp = cleanNum(o.reseller_price);
           if (!isNaN(rp) && rp >= 0) resellerPrice = rp;
         }
         // Harga coret per-durasi. Harus LEBIH BESAR dari harga jual paket
@@ -4170,7 +4211,7 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
         // keras, supaya tidak mengganggu simpan opsi harga lain yang valid).
         let strikePriceVal = null;
         if (o.strike_price !== undefined && o.strike_price !== null && o.strike_price !== '') {
-          const sp = parseInt(o.strike_price);
+          const sp = cleanNum(o.strike_price);
           if (!isNaN(sp) && sp > price) strikePriceVal = sp;
         }
         validOpts.push({ days, unit, price, reseller_price: resellerPrice, strike_price: strikePriceVal });
@@ -4188,7 +4229,16 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
     if (keys !== undefined && keys !== null) {
       const newKeys = String(keys).split('\n').map(k => k.trim()).filter(k => k);
       if (newKeys.length > 0) {
-        p.keys = keysMode === 'replace' ? newKeys : [...(p.keys || []), ...newKeys];
+        if (keysMode === 'replace') {
+          p.keys = newKeys;
+        } else {
+          // FIX (diminta client 15 Sep 2026, fitur import key dari file):
+          // skip key yang PERSIS SAMA dengan yang sudah ada di produk ini
+          // biar mode "tambah" gak numpuk duplikat di database.
+          const existing = new Set(p.keys || []);
+          const uniqueNew = newKeys.filter(k => !existing.has(k));
+          p.keys = [...(p.keys || []), ...uniqueNew];
+        }
       }
     }
 
