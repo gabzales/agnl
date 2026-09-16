@@ -566,7 +566,7 @@ const popularProducts = products
           <%- include('../partials/logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '15px' }) %>
         </div>
         <p style="font-size:12px;color:var(--fz-text-muted);line-height:1.5;margin-bottom:12px;max-width:320px;"><%= settings?.about || 'Toko mod menu & cheat game terpercaya dengan harga termurah dan proses instan.' %></p>
-        <div style="display:flex;gap:8px;">
+        <div style="display:flex;gap:8px;justify-content:center;">
           <% if (settings?.contact?.whatsapp) { %>
           <a href="https://wa.me/<%= (settings.contact.whatsapp||'').replace(/\D/g,'') %>" target="_blank" rel="noopener" class="fz-social" style="background:#25D366;" title="WhatsApp">
             <iconify-icon icon="mdi:whatsapp" style="font-size:20px;color:#fff;"></iconify-icon>
