@@ -1200,12 +1200,16 @@ textarea.hm-input{resize:vertical;min-height:80px;}
                     <input type="number" name="restockQty" min="1" value="<%= settings.dripstore?.restockQty ?? 10 %>" class="hm-input text-sm">
                 </div>
             </div>
-            <p class="text-[10px] text-zinc-600"><iconify-icon icon="mdi:information-outline" style="vertical-align:-2px;"></iconify-icon> Auto-restock cuma jalan buat durasi yang sudah diisi "DripStore Variant ID" di halaman Edit Produk. Tiap restock motong saldo reseller DripStore kamu -- pastikan saldo cukup.</p>
-            <div class="flex gap-2">
-                <button type="button" onclick="checkDripstoreBalance()" class="flex-1 py-2 rounded-xl text-xs font-bold text-blue-300 border border-blue-500/25 bg-blue-500/10 hover:bg-blue-500/20 transition-all flex items-center justify-center gap-1.5">
-                    <iconify-icon icon="mdi:wallet-outline"></iconify-icon> Cek Saldo DripStore
+            <p class="text-[10px] text-zinc-600"><iconify-icon icon="mdi:information-outline" style="vertical-align:-2px;"></iconify-icon> Sekarang Auto-Restock bisa <b>auto-mapping</b>: nama produk + durasi di AGHA NL dicocokkan ke variant DripStore, lalu Variant ID disimpan otomatis. Kalau Auto-Restock aktif, stok yang masih ≤ threshold juga langsung diisi dari DripStore.</p>
+            <div class="grid grid-cols-2 gap-2">
+                <button type="button" onclick="checkDripstoreBalance()" class="py-2 rounded-xl text-xs font-bold text-blue-300 border border-blue-500/25 bg-blue-500/10 hover:bg-blue-500/20 transition-all flex items-center justify-center gap-1.5">
+                    <iconify-icon icon="mdi:wallet-outline"></iconify-icon> Cek Saldo
+                </button>
+                <button type="button" onclick="autoMapDripstore(true)" id="dripstoreAutoMapBtn" class="py-2 rounded-xl text-xs font-bold text-cyan-300 border border-cyan-500/25 bg-cyan-500/10 hover:bg-cyan-500/20 transition-all flex items-center justify-center gap-1.5">
+                    <iconify-icon icon="mdi:link-variant"></iconify-icon> Sync & Auto Map
                 </button>
             </div>
+            <div id="dripstoreAutoMapResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
             <div id="dripstoreBalanceResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
             <button type="submit" class="btn-primary w-full justify-center py-2.5 text-sm">
                 <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Pengaturan DripStore
@@ -2461,10 +2465,60 @@ document.getElementById('dripstoreForm').addEventListener('submit', async functi
     e.preventDefault();
     const fd = new FormData(this);
     const data = Object.fromEntries(fd);
-    const d = await api('/admin/settings/dripstore', data);
-    if (d.success) toast('Pengaturan DripStore disimpan!', 'success');
-    else toast(d.message, 'error');
+    const saveBtn = this.querySelector('button[type="submit"]');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.dataset.oldText = saveBtn.innerHTML; saveBtn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Menyimpan + Auto Mapping...'; }
+    try {
+        const d = await api('/admin/settings/dripstore', data);
+        if (d.success) {
+            if (d.autoMap?.warning) {
+                toast('Settings tersimpan, tapi auto mapping gagal: ' + d.autoMap.warning, 'error');
+                showDripstoreAutoMapResult(d.autoMap, true);
+            } else {
+                toast(`DripStore tersimpan • ${d.autoMap?.mapped || 0} mapping baru • ${d.autoMap?.restocked || 0} key masuk stok`, 'success');
+                showDripstoreAutoMapResult(d.autoMap || {}, false);
+            }
+        } else toast(d.message, 'error');
+    } catch (err) {
+        toast('Gagal menyimpan DripStore: ' + err.message, 'error');
+    } finally {
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = saveBtn.dataset.oldText || saveBtn.innerHTML; }
+    }
 });
+
+function showDripstoreAutoMapResult(d, isError) {
+    const box = document.getElementById('dripstoreAutoMapResult');
+    box.className = 'text-[11px] p-2.5 rounded-lg ' + (isError ? 'bg-red-500/10 text-red-300 border border-red-500/25' : 'bg-cyan-500/10 text-cyan-200 border border-cyan-500/25');
+    const unmatched = Array.isArray(d.unmatchedList) && d.unmatchedList.length ? `<div class="mt-1 text-zinc-400">Belum ketemu: ${d.unmatchedList.join(' • ')}</div>` : '';
+    const errors = Array.isArray(d.restockErrors) && d.restockErrors.length ? `<div class="mt-1 text-red-300">Restock error: ${d.restockErrors.join(' • ')}</div>` : '';
+    box.innerHTML = `<div><b>${isError ? '⚠️' : '✅'} Auto Mapping DripStore</b> — ${d.supplierVariants || 0} variant supplier • ${d.mapped || 0} mapping baru • ${d.unchanged || 0} sudah cocok • ${d.restocked || 0} key ditambahkan</div>${unmatched}${errors}${d.warning ? `<div class="mt-1">${d.warning}</div>` : ''}`;
+    box.classList.remove('hidden');
+}
+
+async function autoMapDripstore(restockLowStock = true) {
+    const btn = document.getElementById('dripstoreAutoMapBtn');
+    const box = document.getElementById('dripstoreAutoMapResult');
+    if (btn?.dataset.busy === '1') return;
+    if (btn) { btn.dataset.busy = '1'; btn.disabled = true; btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Syncing...'; }
+    box.className = 'text-[11px] p-2.5 rounded-lg bg-white/5 text-zinc-400';
+    box.textContent = 'Mengambil daftar product DripStore, mencocokkan nama + durasi, lalu mengisi stok yang perlu...';
+    box.classList.remove('hidden');
+    try {
+        const r = await fetch('/admin/dripstore/auto-map', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ restockLowStock }) });
+        const d = await r.json();
+        if (d.success) {
+            showDripstoreAutoMapResult(d, false);
+            toast(`Selesai: ${d.mapped || 0} mapping baru, ${d.restocked || 0} key masuk stok`, 'success');
+        } else {
+            showDripstoreAutoMapResult({ warning: d.message }, true);
+            toast('Auto mapping gagal: ' + (d.message || 'error'), 'error');
+        }
+    } catch (err) {
+        showDripstoreAutoMapResult({ warning: err.message }, true);
+        toast('Gagal sync DripStore: ' + err.message, 'error');
+    } finally {
+        if (btn) { btn.dataset.busy = '0'; btn.disabled = false; btn.innerHTML = '<iconify-icon icon="mdi:link-variant"></iconify-icon> Sync & Auto Map'; }
+    }
+}
 
 async function checkDripstoreBalance() {
     const box = document.getElementById('dripstoreBalanceResult');

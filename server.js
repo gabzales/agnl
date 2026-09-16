@@ -1144,6 +1144,174 @@ function extractDripstoreKeys(resp) {
   throw new Error('Key berhasil digenerate tapi bentuk response tidak dikenali, cek manual: ' + JSON.stringify(resp).slice(0, 300));
 }
 
+
+// ── DripStore Product Auto-Mapping ────────────────────────────────────────────
+// Mengubah daftar product/variant dari products.php menjadi mapping yang bisa
+// dipakai AGHA NL tanpa admin perlu mengisi variant_id satu per satu.
+function _dsFirst(obj, keys) {
+  for (const key of keys) {
+    if (obj && obj[key] !== undefined && obj[key] !== null && obj[key] !== '') return obj[key];
+  }
+  return null;
+}
+
+function _dsNormalizeName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[_|/\\-]+/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\b(1|3|6|7|14|15|30|60|90|365)\s*(hari|day|days|d|jam|hour|hours|h)\b/gi, ' ')
+    .replace(/\b\d+\s*(hari|day|days|d|jam|hour|hours|h)\b/gi, ' ')
+    .replace(/\b(1|7|30)d\b/gi, ' ')
+    .replace(/\b(1|12|24|72)h\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function _dsDurationFromText(value) {
+  const text = String(value || '').toLowerCase().trim();
+  let m = text.match(/(^|\b)(\d+)\s*(hours?|hrs?|jam|h)\b/);
+  if (m) return { days: parseInt(m[2], 10), unit: 'h' };
+  m = text.match(/(^|\b)(\d+)\s*(days?|hari|d)\b/);
+  if (m) return { days: parseInt(m[2], 10), unit: 'd' };
+  m = text.match(/(?:^|[^0-9])(\d+)h(?:$|[^a-z0-9])/);
+  if (m) return { days: parseInt(m[1], 10), unit: 'h' };
+  m = text.match(/(?:^|[^0-9])(\d+)d(?:$|[^a-z0-9])/);
+  if (m) return { days: parseInt(m[1], 10), unit: 'd' };
+  return null;
+}
+
+function _dsExtractProductItems(resp) {
+  const out = [];
+  const seen = new Set();
+  const walk = (node, parentProductName = '') => {
+    if (!node) return;
+    if (Array.isArray(node)) { node.forEach(x => walk(x, parentProductName)); return; }
+    if (typeof node !== 'object') return;
+
+    const ownProductName = _dsFirst(node, ['product_name', 'productName', 'product_title', 'productTitle', 'name', 'title', 'product']);
+    const productName = typeof ownProductName === 'string' ? ownProductName : parentProductName;
+    const variantId = _dsFirst(node, ['variant_id', 'variantId', 'id']);
+    const variantName = _dsFirst(node, ['variant_name', 'variantName', 'variant_title', 'variantTitle', 'name', 'title', 'label']);
+    const explicitDays = _dsFirst(node, ['days', 'duration_days', 'durationDays']);
+    const explicitHours = _dsFirst(node, ['hours', 'duration_hours', 'durationHours']);
+    const explicitUnit = _dsFirst(node, ['unit', 'duration_unit', 'durationUnit']);
+    let duration = null;
+    if (explicitHours !== null && Number(explicitHours) > 0) duration = { days: Number(explicitHours), unit: 'h' };
+    else if (explicitDays !== null && Number(explicitDays) > 0) duration = { days: Number(explicitDays), unit: explicitUnit === 'h' ? 'h' : 'd' };
+    if (!duration) duration = _dsDurationFromText(`${variantName || ''} ${productName || ''}`);
+
+    if (variantId !== null && (productName || variantName) && duration && !seen.has(String(variantId))) {
+      seen.add(String(variantId));
+      out.push({
+        variantId: String(variantId),
+        productName: String(productName || variantName || '').trim(),
+        variantName: String(variantName || '').trim(),
+        days: Number(duration.days),
+        unit: duration.unit === 'h' ? 'h' : 'd',
+        raw: node,
+      });
+    }
+
+    for (const key of ['variants', 'options', 'plans', 'items', 'products', 'data', 'result']) {
+      if (node[key] !== undefined) walk(node[key], productName || parentProductName);
+    }
+  };
+  walk(resp, '');
+  return out;
+}
+
+function _dsNameMatch(localName, supplierName) {
+  const a = _dsNormalizeName(localName);
+  const b = _dsNormalizeName(supplierName);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (a.length >= 4 && b.includes(a)) return true;
+  if (b.length >= 4 && a.includes(b)) return true;
+  const aw = new Set(a.split(' ').filter(w => w.length >= 3));
+  const bw = new Set(b.split(' ').filter(w => w.length >= 3));
+  if (!aw.size || !bw.size) return false;
+  let hit = 0;
+  for (const w of aw) if (bw.has(w)) hit++;
+  return hit >= Math.max(1, Math.min(3, Math.ceil(Math.min(aw.size, bw.size) * 0.6)));
+}
+
+async function autoMapDripstoreProducts({ restockLowStock = false } = {}) {
+  const settings = await readFresh('settings.json');
+  if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
+
+  const resp = await dripstoreCall(settings, 'products.php');
+  const supplierItems = _dsExtractProductItems(resp);
+  if (!supplierItems.length) {
+    throw new Error('Daftar produk DripStore kosong / format response products.php belum dikenali. Klik Sync lagi setelah memastikan endpoint products.php mengembalikan data produk + variant_id.');
+  }
+
+  const products = await readFresh('products.json');
+  let mapped = 0, unchanged = 0, unmatched = 0;
+  const unmatchedList = [];
+  const restockTargets = [];
+
+  for (const product of products) {
+    if (!Array.isArray(product.pricingOptions)) continue;
+    for (const opt of product.pricingOptions) {
+      const candidates = supplierItems
+        .filter(s => Number(s.days) === Number(opt.days) && (s.unit || 'd') === (opt.unit || 'd') && _dsNameMatch(product.name, s.productName));
+      if (!candidates.length) {
+        unmatched++;
+        unmatchedList.push(`${product.name} — ${opt.days}${opt.unit === 'h' ? 'h' : 'd'}`);
+        continue;
+      }
+      // Prioritaskan kecocokan exact-normalized name, lalu yang paling panjang.
+      candidates.sort((x, y) => {
+        const xe = _dsNormalizeName(x.productName) === _dsNormalizeName(product.name) ? 1 : 0;
+        const ye = _dsNormalizeName(y.productName) === _dsNormalizeName(product.name) ? 1 : 0;
+        if (xe !== ye) return ye - xe;
+        return String(y.productName).length - String(x.productName).length;
+      });
+      const chosen = candidates[0];
+      if (String(opt.dripstoreVariantId || '') !== chosen.variantId) {
+        opt.dripstoreVariantId = chosen.variantId;
+        mapped++;
+      } else unchanged++;
+      restockTargets.push({ productId: product.id, days: opt.days, unit: opt.unit || 'd', variantId: chosen.variantId });
+    }
+  }
+
+  await writeDB('products.json', products);
+
+  let restocked = 0;
+  const restockErrors = [];
+  if (restockLowStock && settings.dripstore?.autoRestockEnabled) {
+    for (const target of restockTargets) {
+      try {
+        const freshProducts = await readFresh('products.json');
+        const product = freshProducts.find(p => p.id === target.productId);
+        const opt = product?.pricingOptions?.find(o => Number(o.days) === Number(target.days) && (o.unit || 'd') === target.unit);
+        if (!product || !opt || !opt.dripstoreVariantId) continue;
+        const remaining = (product.keys || []).filter(k => keyMatchesDuration(k, target.days, target.unit)).length;
+        const threshold = Number.isFinite(settings.dripstore.lowStockThreshold) ? settings.dripstore.lowStockThreshold : 3;
+        if (remaining > threshold) continue;
+        const qty = Number.isFinite(settings.dripstore.restockQty) && settings.dripstore.restockQty > 0 ? settings.dripstore.restockQty : 10;
+        const newKeys = await dripstoreGenerateKey(settings, opt.dripstoreVariantId, qty);
+        const tag = `=${target.days}${target.unit}`;
+        const fresh2 = await readFresh('products.json');
+        const p2 = fresh2.find(p => p.id === target.productId);
+        if (p2) {
+          const existing = new Set(p2.keys || []);
+          const tagged = newKeys.map(k => `${k}${tag}`).filter(k => !existing.has(k));
+          p2.keys = [...(p2.keys || []), ...tagged];
+          await writeDB('products.json', fresh2);
+          restocked += tagged.length;
+        }
+      } catch (e) {
+        restockErrors.push(`${target.days}${target.unit}: ${e.message}`);
+      }
+    }
+  }
+
+  return { supplierVariants: supplierItems.length, mapped, unchanged, unmatched, unmatchedList: unmatchedList.slice(0, 20), restocked, restockErrors: restockErrors.slice(0, 10) };
+}
+
 async function dripstoreGenerateKey(settings, variantId, quantity) {
   // KETERBATASAN YANG DIKETAHUI (audit 16 Sep 2026): dokumentasi client
   // Node.js resmi DripStore punya logic "Bala Mod aware" -- sebagian
@@ -3804,6 +3972,7 @@ app.post('/admin/settings/pakasir', requireAdmin, async (req, res) => {
     if (qrisMode) settings.qrisMode = qrisMode;
 
     await writeDB('settings.json', settings);
+
     res.json({ success: true });
   } catch (error) {
     res.json({ success: false, message: error.message });
@@ -3846,9 +4015,33 @@ app.post('/admin/settings/dripstore', requireAdmin, async (req, res) => {
       restockQty: Number.isFinite(parseInt(restockQty, 10)) && parseInt(restockQty, 10) > 0 ? parseInt(restockQty, 10) : (settings.dripstore?.restockQty ?? 10),
     };
     await writeDB('settings.json', settings);
-    res.json({ success: true });
+
+    // Saat Auto-Restock diaktifkan + token tersedia, langsung sinkronkan
+    // product -> variant DripStore dan isi stok yang masih <= threshold.
+    // Pengaturan provider tetap tersimpan walaupun API mapping sedang error.
+    let autoMap = null;
+    if (settings.dripstore.apiToken && settings.dripstore.autoRestockEnabled) {
+      try {
+        autoMap = await autoMapDripstoreProducts({ restockLowStock: true });
+      } catch (e) {
+        autoMap = { warning: e.message };
+      }
+    }
+    res.json({ success: true, autoMap });
   } catch (error) {
     res.json({ success: false, message: error.message });
+  }
+});
+
+// Sinkronkan semua produk AGHA NL ke variant DripStore berdasarkan nama + durasi.
+// Endpoint ini juga bisa dipanggil manual dari Settings kapan saja.
+app.post('/admin/dripstore/auto-map', requireAdmin, async (req, res) => {
+  try {
+    const restockLowStock = req.body?.restockLowStock !== false;
+    const result = await autoMapDripstoreProducts({ restockLowStock });
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.json({ success: false, message: e.message });
   }
 });
 
