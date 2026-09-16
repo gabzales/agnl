@@ -2911,7 +2911,22 @@ const AGHA_CATEGORY_FIX_PLAN = [
   { categoryLabel: 'IOS [IPHONES PANEL', productNames: ['Migul ios Pro', 'Migul ios lite', 'Fluriote mlbb ios', 'Gbox 1th'] },
   { categoryLabel: 'PC PANEL', productNames: ['BR MODS PC'] },
   { categoryLabel: 'ROOT ANDROID', productNames: ['RAPID CORE ROOT', 'Angry Mood root'] },
+  // UPDATE (chat client 16 Sep 2026 jam 20.51): client kasih daftar EKSPLISIT
+  // buat kategori ini (bukan "sisanya semua" seperti asumsi awal), dan minta
+  // tab-nya diurutkan PALING PERTAMA setelah "Semua/All" -- ditangani lewat
+  // AGHA_PRIORITY_CATEGORY_SLUG di bawah, bukan lewat urutan array ini.
+  { categoryLabel: 'APK MOD NO ROOT', productNames: ['DRIP CLINT APK MOD', 'ABCD PANEL', 'DRIP WIRE', 'AIM HACK', 'SILENT CHEATS', 'HG APK MOD', 'XREG APK MOD', 'PATO ORANGE', 'PATO GREEN', 'PATO BLUE'] },
 ];
+// Kategori yang harus tampil PALING PERTAMA di dashboard setelah "Semua/All"
+// (client: "buat paling pertama setelah smua /all"). Ditaruh di index 0
+// array settings.categories, karena urutan tab render di home.ejs ngikutin
+// urutan array ini.
+const AGHA_PRIORITY_CATEGORY_LABEL = 'APK MOD NO ROOT';
+// Produk yang KETEMU di database tapi NAMANYA gak persis sama dengan yang
+// client sebutin di chat manapun (baik chat kategori atau chat pricelist) --
+// jadi statusnya AMBIGU, sengaja TIDAK diotak-atik, biar Mul konfirmasi dulu
+// ke client baru masuk kategori mana.
+const AGHA_AMBIGUOUS_PRODUCTS = ['DRIP CLINT ROOT'];
 function aghaNormalize(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
 function aghaSlugify(label) { return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''); }
 async function aghaBuildCategoryFixPlan() {
@@ -2933,9 +2948,24 @@ async function aghaBuildCategoryFixPlan() {
   }
   const guildSlug = settings.categories.find(s => aghaNormalize(settings.categoryLabels[s] || s).includes('guild glory'));
   const guildCount = guildSlug ? products.filter(p => (p.categories || []).includes(guildSlug)).length : 0;
-  return { settings, products, newCategories, productUpdates, notFound, guildSlug, guildCount };
+
+  // Reorder: kategori prioritas harus jadi INDEX 0 di array (tampil paling
+  // pertama setelah tab "Semua/All" yang di-render terpisah di home.ejs).
+  const priorityEntry = newCategories.find(c => c.label === AGHA_PRIORITY_CATEGORY_LABEL)
+    || { slug: settings.categories.find(s => aghaNormalize(settings.categoryLabels[s]) === aghaNormalize(AGHA_PRIORITY_CATEGORY_LABEL)), label: AGHA_PRIORITY_CATEGORY_LABEL };
+  const reorderNote = priorityEntry.slug ? `Kategori "${AGHA_PRIORITY_CATEGORY_LABEL}" akan dipindah jadi tab PALING PERTAMA (setelah Semua/All).` : null;
+
+  // Produk yang ADA di database tapi namanya gak kesebut di manapun (baik
+  // di rencana kategori ini maupun daftar produk yang pernah diproses) --
+  // supaya kelihatan kalau ada yang "kececer" dan belum jelas kategorinya.
+  const ambiguous = AGHA_AMBIGUOUS_PRODUCTS
+    .map(name => products.find(p => aghaNormalize(p.name) === aghaNormalize(name)))
+    .filter(Boolean)
+    .map(p => ({ name: p.name, currentCategories: p.categories || [] }));
+
+  return { settings, products, newCategories, productUpdates, notFound, guildSlug, guildCount, priorityEntry, reorderNote, ambiguous };
 }
-function aghaCategoryFixHtml({ newCategories, productUpdates, notFound, guildSlug, guildCount, applied }) {
+function aghaCategoryFixHtml({ newCategories, productUpdates, notFound, guildSlug, guildCount, reorderNote, ambiguous, applied }) {
   const rows = productUpdates.map(u => `
     <tr>
       <td style="padding:8px;border-bottom:1px solid #222;">${u.name}</td>
@@ -2948,6 +2978,10 @@ function aghaCategoryFixHtml({ newCategories, productUpdates, notFound, guildSlu
   const guildHtml = guildSlug
     ? `<p style="color:#888;">Kategori "GUILD GLORY BOT" ketemu (${guildCount} produk di dalamnya) -- TIDAK disentuh sama sekali, cek manual ke client apakah ini perlu atau salah nyasar.</p>`
     : `<p style="color:#888;">Kategori "GUILD GLORY BOT" tidak ketemu (mungkin sudah dihapus manual).</p>`;
+  const reorderHtml = reorderNote ? `<p style="color:#60a5fa;">↑ ${reorderNote}</p>` : '';
+  const ambiguousHtml = ambiguous.length
+    ? `<p style="color:#facc15;">⚠️ Produk berikut ADA di database tapi belum pernah disebut client di kategori manapun (dibiarkan apa adanya, cek manual): ${ambiguous.map(a => `${a.name} (sekarang: ${a.currentCategories.join(', ') || 'default'})`).join('; ')}</p>`
+    : '';
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Rapikan Kategori AGHA NL</title>
   <style>body{background:#0a0a0a;color:#eee;font-family:sans-serif;max-width:720px;margin:40px auto;padding:0 16px;}
   h1{color:#dc2626;font-size:20px;} table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;}
@@ -2957,9 +2991,11 @@ function aghaCategoryFixHtml({ newCategories, productUpdates, notFound, guildSlu
   <h1>${applied ? '✅ Kategori berhasil dirapikan' : '🔍 Preview: Rapikan Kategori AGHA NL'}</h1>
   <h3>Kategori baru ${applied ? 'ditambahkan' : 'yang akan ditambahkan'}:</h3>
   <ul>${newCatRows}</ul>
+  ${reorderHtml}
   <h3>Produk ${applied ? 'yang dipindah' : 'yang akan dipindah'}:</h3>
   <table><tr><th>Produk</th><th>Dari</th><th>Ke</th></tr>${rows}</table>
   ${notFoundHtml}
+  ${ambiguousHtml}
   ${guildHtml}
   ${applied
     ? `<p style="margin-top:24px;"><a href="/">← Kembali ke beranda toko</a> untuk lihat hasilnya.</p>`
@@ -2982,9 +3018,115 @@ app.post('/admin/fix-categories-agha', requireAdmin, async (req, res) => {
       const p = plan.products.find(pr => pr.id === u.id);
       if (p) p.categories = u.newCategories;
     });
-    if (plan.newCategories.length > 0) await writeDB('settings.json', plan.settings);
+    // Reorder: kategori prioritas dipindah ke index 0 (tab pertama setelah Semua/All)
+    if (plan.priorityEntry && plan.priorityEntry.slug) {
+      const idx = plan.settings.categories.indexOf(plan.priorityEntry.slug);
+      if (idx > 0) {
+        plan.settings.categories.splice(idx, 1);
+        plan.settings.categories.unshift(plan.priorityEntry.slug);
+      }
+    }
+    if (plan.newCategories.length > 0 || plan.priorityEntry?.slug) await writeDB('settings.json', plan.settings);
     if (plan.productUpdates.length > 0) await writeDB('products.json', plan.products);
     res.send(aghaCategoryFixHtml({ ...plan, applied: true }));
+  } catch (e) { res.status(500).send('Error: ' + e.message); }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// BERSIHKAN KATEGORI KOSONG/GAK DIPAKAI (one-off, diminta client 16 Sep 2026
+// lewat video: kategori lain -- kayak PUBG Mobile dkk -- gak ada produknya
+// sama sekali dan harus dihapus, sisain cuma yang tampil di dashboard).
+// Beda dari /admin/fix-categories-agha (yang MEMINDAHKAN produk ke kategori
+// baru): tool ini buat HAPUS kategori yang sudah gak kepake, dicek otomatis
+// dari jumlah produk yang masih nempel di tiap kategori -- bukan tebak-tebakan
+// nama. Kategori yang harus tetap ada (APK MOD NO ROOT, FF PROXY APKMOD,
+// IOS [IPHONES PANEL, PC PANEL, ROOT ANDROID) otomatis TIDAK dicentang
+// default, walau seharusnya semua sudah ada isinya. Kategori "GUILD GLORY
+// BOT" sengaja dibiarkan mengikuti data asli (dicentang HANYA kalau memang
+// 0 produk) karena client belum pernah menjelaskan kategori itu untuk apa.
+const AGHA_KEEP_CATEGORY_LABELS = ['APK MOD NO ROOT', 'FF PROXY APKMOD', 'IOS [IPHONES PANEL', 'PC PANEL', 'ROOT ANDROID'];
+
+app.get('/admin/cleanup-categories-agha', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const products = await readFresh('products.json');
+    settings.categories = settings.categories || [];
+    settings.categoryLabels = settings.categoryLabels || {};
+
+    const rows = settings.categories.map(slug => {
+      const label = settings.categoryLabels[slug] || slug;
+      const count = products.filter(p => (p.categories || []).includes(slug)).length;
+      const isProtected = AGHA_KEEP_CATEGORY_LABELS.some(l => aghaNormalize(l) === aghaNormalize(label));
+      return { slug, label, count, isProtected, suggestDelete: count === 0 && !isProtected };
+    });
+
+    const rowsHtml = rows.map(r => `
+      <tr>
+        <td style="padding:8px;border-bottom:1px solid #222;">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+            <input type="checkbox" name="deleteSlug" value="${r.slug}" ${r.suggestDelete ? 'checked' : ''}>
+            <span>${r.label}</span>
+          </label>
+        </td>
+        <td style="padding:8px;border-bottom:1px solid #222;color:#666;">${r.slug}</td>
+        <td style="padding:8px;border-bottom:1px solid #222;color:${r.count === 0 ? '#f87171' : '#4ade80'};">${r.count} produk</td>
+        <td style="padding:8px;border-bottom:1px solid #222;color:#666;">${r.isProtected ? '🔒 kategori inti, jangan dihapus' : (r.count === 0 ? '⚠️ kosong, aman dihapus' : '')}</td>
+      </tr>`).join('');
+
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Bersihkan Kategori AGHA NL</title>
+    <style>body{background:#0a0a0a;color:#eee;font-family:sans-serif;max-width:760px;margin:40px auto;padding:0 16px;}
+    h1{color:#dc2626;font-size:20px;} table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13px;}
+    th{text-align:left;padding:8px;color:#888;border-bottom:1px solid #333;}
+    button{background:#dc2626;color:#fff;border:none;padding:12px 20px;border-radius:8px;font-weight:bold;cursor:pointer;font-size:14px;}
+    </style></head><body>
+    <h1>🧹 Bersihkan Kategori yang Gak Kepake</h1>
+    <p style="color:#888;font-size:13px;">Kategori dengan checkbox tercentang otomatis kepilih buat DIHAPUS (yang 0 produk & bukan kategori inti). Cek dulu manual sebelum submit -- kategori bertanda 🔒 sengaja TIDAK dicentang walau kebetulan 0 produk, biar gak kehapus gak sengaja.</p>
+    <form method="POST">
+      <table><tr><th>Kategori (centang = hapus)</th><th>Slug</th><th>Jumlah Produk</th><th>Catatan</th></tr>${rowsHtml}</table>
+      <button type="submit" onclick="return confirm('Yakin hapus kategori yang dicentang? Produk di dalamnya TIDAK ikut terhapus, cuma label kategorinya yang dilepas.')">Hapus Kategori Terpilih</button>
+    </form>
+    </body></html>`);
+  } catch (e) { res.status(500).send('Error: ' + e.message); }
+});
+
+app.post('/admin/cleanup-categories-agha', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const products = await readFresh('products.json');
+    settings.categories = settings.categories || [];
+    settings.categoryLabels = settings.categoryLabels || {};
+
+    let toDelete = req.body.deleteSlug || [];
+    if (!Array.isArray(toDelete)) toDelete = [toDelete];
+    toDelete = toDelete.filter(Boolean);
+
+    if (toDelete.length === 0) {
+      return res.send('<p style="font-family:sans-serif;color:#facc15;">Gak ada kategori yang dicentang, tidak ada yang dihapus. <a href="/admin/cleanup-categories-agha" style="color:#f87171;">← Kembali</a></p>');
+    }
+
+    settings.categories = settings.categories.filter(s => !toDelete.includes(s));
+    toDelete.forEach(s => delete settings.categoryLabels[s]);
+    // Safety net: lepas slug yang dihapus dari categories array tiap produk juga,
+    // jaga-jaga kalau ternyata ada produk yang masih nempel (harusnya sudah 0 dari preview).
+    let productsTouched = 0;
+    products.forEach(p => {
+      if (Array.isArray(p.categories) && p.categories.some(c => toDelete.includes(c))) {
+        p.categories = p.categories.filter(c => !toDelete.includes(c));
+        productsTouched++;
+      }
+    });
+
+    await writeDB('settings.json', settings);
+    if (productsTouched > 0) await writeDB('products.json', products);
+
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Selesai</title>
+    <style>body{background:#0a0a0a;color:#eee;font-family:sans-serif;max-width:600px;margin:40px auto;padding:0 16px;} a{color:#f87171;}</style>
+    </head><body>
+    <h1 style="color:#4ade80;">✅ Kategori berhasil dibersihkan</h1>
+    <p>Dihapus: ${toDelete.join(', ')}</p>
+    ${productsTouched > 0 ? `<p style="color:#facc15;">${productsTouched} produk ada yang masih nempel di kategori itu, sudah otomatis dilepas (produknya sendiri TIDAK dihapus).</p>` : ''}
+    <p><a href="/">← Kembali ke beranda toko</a></p>
+    </body></html>`);
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
 
