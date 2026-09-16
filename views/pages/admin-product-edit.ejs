@@ -482,6 +482,16 @@ function renderPricingRows() {
           title="Harga 'asli' yang dicoret di sebelah harga jual paket ini, kesan diskon. Kosongkan = tidak ada."
           oninput="const n=this.value.replace(/[^0-9]/g,'');pricingOptions[${i}].strike_price=n===''?null:parseInt(n,10);this.value=n===''?'':parseInt(n,10).toLocaleString('id-ID');">
       </div>
+      <div class="flex gap-2 items-center mt-2 pt-2" style="border-top:1px dashed var(--neon-purple-20);">
+        <input type="text" value="${opt.dripstoreVariantId || ''}" placeholder="DripStore Variant ID (opsional)"
+          class="hm-input text-xs flex-1" style="border-color:rgba(96,165,250,.25)"
+          title="Isi kalau durasi ini mau bisa di-restock otomatis/manual dari DripStore. Lihat variant_id di tabel 'Your Products' DripStore."
+          oninput="pricingOptions[${i}].dripstoreVariantId=this.value.trim()||null;">
+        <button type="button" onclick="restockFromDripstore(${i}, this)"
+          class="shrink-0 px-2.5 py-2 rounded-lg text-[10px] font-bold text-blue-300 border border-blue-500/25 hover:bg-blue-500/10 transition-all flex items-center gap-1 whitespace-nowrap">
+          <iconify-icon icon="mdi:cloud-download-outline"></iconify-icon> Restock
+        </button>
+      </div>
     </div>
   `).join('');
 }
@@ -494,6 +504,40 @@ function addPricingRow() {
 function removePricingRow(i) {
   pricingOptions.splice(i, 1);
   renderPricingRows();
+}
+
+// ─── Restock manual dari DripStore (diminta client 16 Sep 2026) ───
+async function restockFromDripstore(i, btn) {
+  const opt = pricingOptions[i];
+  if (!opt.dripstoreVariantId) { showToast('Isi dulu DripStore Variant ID buat durasi ini', 'error'); return; }
+  const qtyStr = prompt(`Generate berapa key baru dari DripStore buat "${currentProduct.name}" (${opt.days}${opt.unit==='h'?'jam':'hari'})?`, '10');
+  if (qtyStr === null) return;
+  const qty = parseInt(qtyStr.replace(/[^0-9]/g, ''), 10);
+  if (!qty || qty <= 0) { showToast('Jumlah tidak valid', 'error'); return; }
+
+  // Busy-guard: cegah klik dobel yang bisa bikin 2 request restock nembak
+  // bersamaan buat durasi yang sama sebelum request pertama selesai.
+  if (btn) { if (btn.dataset.busy === '1') return; btn.dataset.busy = '1'; btn.disabled = true; btn.style.opacity = '0.5'; }
+
+  showToast('Menghubungi DripStore, tunggu sebentar...', 'info');
+  try {
+    const r = await fetch(`/admin/product/${currentProduct.id}/restock-dripstore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days: opt.days, unit: opt.unit, quantity: qty })
+    });
+    const d = await r.json();
+    if (d.success) {
+      showToast(`Berhasil! ${d.keyCount} key baru ditambahkan dari DripStore`, 'success');
+      loadProduct(); // refresh preview keys existing
+    } else {
+      showToast('Gagal restock: ' + (d.message || 'error tidak diketahui'), 'error');
+    }
+  } catch (err) {
+    showToast('Gagal konek ke server: ' + err.message, 'error');
+  } finally {
+    if (btn) { btn.dataset.busy = '0'; btn.disabled = false; btn.style.opacity = ''; }
+  }
 }
 
 // ─── Keys Mode ───

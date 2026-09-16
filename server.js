@@ -665,6 +665,7 @@ const initDB = async () => {
     fonnteToken: '',
     pakasir: { apiKey: '', project: '', mode: 'production' },
     genspay: { apiKey: '', baseUrl: 'https://genspay.my.id/api/v1' },
+    dripstore: { apiToken: '', baseUrl: 'https://dripclientstore.shop/api/v1', autoRestockEnabled: false, lowStockThreshold: 3, restockQty: 10 },
     apiGateway: 'pakasir',
     adminUsername: fallbackUsername,
     adminPassword: bcrypt.hashSync(fallbackPassword, 12),
@@ -1047,6 +1048,180 @@ const createQRISPaymentGenspay = (orderId, amount, settings) => {
     req.write(body); req.end();
   });
 };
+
+// ══════════════════════════════════════════════════════════════════
+// DRIP STORE RESELLER API (dripclientstore.shop) — supplier key/stok
+// buat produk-produk mod-menu (dokumentasi dari client library resmi
+// yang dikasih owner DripStore ke client aghanl, 16 Sep 2026).
+//
+// BEDA PENTING dari GensPay/Pakasir: ini BUKAN payment gateway, ini API
+// buat BELI STOK KEY dari supplier (motong saldo reseller DripStore
+// tiap generate). Dipakai buat 2 hal:
+//   1. Tombol manual "Restock dari DripStore" di admin-product-edit
+//   2. Auto-restock opsional: begitu stok durasi tertentu tersisa
+//      <= threshold pas ada penjualan, otomatis generate key baru
+//      (lihat maybeAutoRestockDripstore() di bawah)
+//
+// Auth: header X-API-Token (BUKAN X-API-Key kayak GensPay).
+// Endpoint dasar: balance.php, products.php, generate_key.php (POST),
+// reset_apis.php, reset_key.php (POST), key_history.php.
+// Rate limit: retry SEKALI kalau kena 429, hormati header Retry-After
+// (persis seperti client Node.js resmi dari DripStore).
+//
+// CATATAN JUJUR: dokumentasi yang kami terima cuma nunjukkin CONTOH
+// ERROR (401/403/423/429/5xx) secara detail, TIDAK ada contoh response
+// SUKSES generate_key.php. extractDripstoreKeys() di bawah nyoba
+// beberapa bentuk response yang umum (data.keys, data.key, dst) --
+// kalau ternyata bentuknya beda, error akan nunjukkin RAW response biar
+// gampang di-debug, bukan gagal diam-diam.
+function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _retried = false) {
+  return new Promise((resolve, reject) => {
+    const token = (settings.dripstore?.apiToken || '').trim();
+    const baseUrl = (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1').trim();
+    if (!token) return reject(new Error('API Token DripStore belum dikonfigurasi di Settings'));
+    let url;
+    try { url = new URL(baseUrl.replace(/\/+$/, '') + '/' + endpoint.replace(/^\/+/, '')); } catch (e) { return reject(new Error('Base URL DripStore tidak valid')); }
+    const isGet = method.toUpperCase() === 'GET';
+    let body = '';
+    const headers = { 'X-API-Token': token, 'Accept': 'application/json' };
+    if (isGet) {
+      const qs = new URLSearchParams(params).toString();
+      if (qs) url.search = qs;
+    } else {
+      body = new URLSearchParams(params).toString();
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      headers['Content-Length'] = Buffer.byteLength(body);
+    }
+    const req = https.request({
+      hostname: url.hostname, port: url.port || 443,
+      path: url.pathname + url.search, method: method.toUpperCase(),
+      headers, timeout: 30000
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', async () => {
+        let parsed;
+        try { parsed = JSON.parse(data); } catch (e) { return reject(new Error(`Respons DripStore bukan JSON valid (HTTP ${res.statusCode}): ${data.slice(0, 200)}`)); }
+        if (res.statusCode === 401) return reject(new Error(parsed.error || 'Token DripStore tidak valid / sudah dicabut'));
+        if (res.statusCode === 403) return reject(new Error(parsed.error || 'Akses ditolak DripStore (kemungkinan IP server kamu diblokir)'));
+        if (res.statusCode === 423) return reject(new Error(parsed.error || 'Batas reset key tercapai (maks 3x seumur hidup per key)'));
+        if (res.statusCode === 429) {
+          let wait = 60;
+          const ra = res.headers['retry-after'];
+          if (ra && /^\d+$/.test(ra)) wait = Math.min(120, Math.max(1, parseInt(ra, 10)));
+          if (!_retried) {
+            await new Promise(r => setTimeout(r, wait * 1000));
+            try { resolve(await dripstoreCall(settings, endpoint, params, method, true)); } catch (e) { reject(e); }
+            return;
+          }
+          return reject(new Error(`${parsed.error || 'Rate limit DripStore tercapai'} (retry-after ${wait}s)`));
+        }
+        if (res.statusCode >= 500) return reject(new Error(`DripStore server error ${res.statusCode}: ${parsed.error || 'coba lagi nanti'}`));
+        if (parsed.success === false) return reject(new Error(parsed.error || parsed.message || 'DripStore mengembalikan success:false tanpa pesan error'));
+        resolve(parsed);
+      });
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('DripStore timeout (30 detik)')); });
+    req.on('error', e => reject(new Error('Network error: ' + e.message)));
+    if (!isGet && body) req.write(body);
+    req.end();
+  });
+}
+
+// Coba beberapa bentuk response generate_key.php yang umum dipakai API
+// sejenis. Kalau gak ketemu satupun, lempar RAW response di error message
+// (jangan silent-fail) biar gampang disesuaikan begitu tau bentuk aslinya.
+function extractDripstoreKeys(resp) {
+  const candidates = [
+    resp?.data?.keys, resp?.keys, resp?.data?.key_list, resp?.key_list,
+    (typeof resp?.data?.key === 'string' ? [resp.data.key] : null),
+    (typeof resp?.key === 'string' ? [resp.key] : null),
+    (Array.isArray(resp?.data) ? resp.data : null),
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c) && c.length > 0) return c.map(k => (typeof k === 'string' ? k : (k?.key || k?.license_key || JSON.stringify(k))));
+  }
+  throw new Error('Key berhasil digenerate tapi bentuk response tidak dikenali, cek manual: ' + JSON.stringify(resp).slice(0, 300));
+}
+
+async function dripstoreGenerateKey(settings, variantId, quantity) {
+  // KETERBATASAN YANG DIKETAHUI (audit 16 Sep 2026): dokumentasi client
+  // Node.js resmi DripStore punya logic "Bala Mod aware" -- sebagian
+  // variant butuh android_id (device-bound, quantity harus 1) atau cuma
+  // boleh generate 1 key per call (Bala Mod). Fungsi ini BELUM ngecek itu,
+  // asal kirim {variant_id, quantity} apa adanya. Untuk variant BIASA ini
+  // aman; untuk variant yang butuh android_id, DripStore kemungkinan akan
+  // menolak dengan pesan error (bakal keliatan apa adanya di UI restock),
+  // BUKAN gagal diam-diam -- tapi restock variant jenis itu belum bisa
+  // otomatis lewat sini, harus manual dulu sampai logic ini ditambahkan.
+  const resp = await dripstoreCall(settings, 'generate_key.php', { variant_id: variantId, quantity }, 'POST');
+  return extractDripstoreKeys(resp);
+}
+
+// LOCK sederhana in-memory (per productId+days+unit) supaya kalau ada 2+
+// pembelian nyaris bersamaan sama-sama bikin stok jatuh ke bawah threshold,
+// restock DripStore CUMA jalan SEKALI, bukan double/triple sekaligus.
+// FIX bug (audit 16 Sep 2026): sebelumnya tiap penjualan yang bikin
+// remaining<=threshold langsung fire-and-forget generate_key sendiri-sendiri
+// tanpa saling tau -- kalau ada 5 pembelian beruntun pas stok lagi mepet,
+// bisa kepicu 5x restock sekaligus (5x restockQty ke-generate & motong
+// saldo DripStore, padahal cukup 1x). Ini in-memory (reset kalau server
+// redeploy/restart) -- cukup untuk skala toko ini, gak perlu Redis dkk.
+const _dripstoreRestockLocks = new Set();
+
+// Auto-restock: dipanggil (fire-and-forget, TIDAK di-await di alur
+// pembelian) tiap kali 1 key berhasil terjual. Kalau stok durasi itu
+// abis nyisa <= threshold, otomatis generate key baru dari DripStore
+// dan langsung tambahin ke stok produk. Sengaja dibungkus try/catch
+// total di sini + di titik pemanggilannya -- KEGAGALAN RESTOCK TIDAK
+// BOLEH PERNAH mengganggu transaksi pembeli yang sedang berjalan.
+async function maybeAutoRestockDripstore(productId, days, unit) {
+  const lockKey = `${productId}:${days}:${unit || 'd'}`;
+  if (_dripstoreRestockLocks.has(lockKey)) return; // udah ada restock jalan buat kombinasi produk+durasi ini, gak usah dobel
+  try {
+    const settings = await readFresh('settings.json');
+    const ds = settings.dripstore || {};
+    if (!ds.autoRestockEnabled || !ds.apiToken) return;
+
+    const products = await readFresh('products.json');
+    const product = products.find(p => p.id === productId);
+    if (!product) return;
+    const opt = (product.pricingOptions || []).find(o => o.days === days && (o.unit || 'd') === (unit || 'd'));
+    if (!opt || !opt.dripstoreVariantId) return; // produk/durasi ini belum di-mapping ke variant_id DripStore
+
+    const remaining = (product.keys || []).filter(k => keyMatchesDuration(k, days, unit)).length;
+    const threshold = Number.isFinite(ds.lowStockThreshold) ? ds.lowStockThreshold : 3;
+    if (remaining > threshold) return;
+
+    _dripstoreRestockLocks.add(lockKey);
+    const qty = Number.isFinite(ds.restockQty) && ds.restockQty > 0 ? ds.restockQty : 10;
+    const newKeys = await dripstoreGenerateKey(settings, opt.dripstoreVariantId, qty);
+    // FIX bug (audit 16 Sep 2026): dulu cek `k.includes('=')` dulu sebelum
+    // nambahin tag durasi -- niatnya jaga-jaga kalau key udah ada tag,
+    // tapi ini SALAH: kalau license key asli dari DripStore kebetulan
+    // mengandung karakter "=" (banyak format key/token base64-ish yang
+    // begitu), tag durasi jadi TIDAK PERNAH ditempel, bikin key itu
+    // gampang salah kepasang ke pembeli dengan durasi lain. Key yang baru
+    // digenerate dari SINI (khusus buat durasi `days`+`unit` ini) SELALU
+    // ditag, titik -- gak perlu dicek dulu.
+    const tag = `=${days}${unit || 'd'}`;
+    const taggedKeys = newKeys.map(k => `${k}${tag}`);
+
+    // Re-read products.json fresh sebelum nulis (hindari race condition
+    // nimpa perubahan stok lain yang mungkin terjadi selagi nunggu API DripStore).
+    const freshProducts = await readFresh('products.json');
+    const freshProduct = freshProducts.find(p => p.id === productId);
+    if (freshProduct) {
+      freshProduct.keys = [...(freshProduct.keys || []), ...taggedKeys];
+      await writeDB('products.json', freshProducts);
+      console.log(`✅ [auto-restock] ${freshProduct.name} (${days}${unit}): +${taggedKeys.length} key dari DripStore (variant_id=${opt.dripstoreVariantId})`);
+    }
+  } catch (e) {
+    console.error('❌ [auto-restock DripStore] gagal:', e.message);
+  } finally {
+    _dripstoreRestockLocks.delete(lockKey);
+  }
+}
 
 // ── Dispatcher gateway QRIS dinamis ──
 // settings.apiGateway: 'pakasir' (default) | 'genspay'
@@ -2595,6 +2770,10 @@ async function finalizeOrder(refId, settings) {
   if (key) {
     product.sold = (product.sold || 0) + 1;
     await writeDB('products.json', products);
+    // Fire-and-forget: cek auto-restock DripStore, TIDAK di-await supaya
+    // tidak memperlambat/menggagalkan response ke pembeli kalau API
+    // DripStore lambat/error (lihat maybeAutoRestockDripstore()).
+    if (transaction.selectedDays) maybeAutoRestockDripstore(product.id, transaction.selectedDays, transaction.selectedUnit || 'd');
   } else {
     outOfStock = true;
   }
@@ -3654,6 +3833,69 @@ app.post('/admin/settings/genspay', requireAdmin, async (req, res) => {
   }
 });
 
+// ── DripStore Settings (supplier stok key, BUKAN payment gateway) ──
+app.post('/admin/settings/dripstore', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const { apiToken, baseUrl, autoRestockEnabled, lowStockThreshold, restockQty } = req.body;
+    settings.dripstore = {
+      apiToken: apiToken !== undefined ? apiToken.trim() : (settings.dripstore?.apiToken || ''),
+      baseUrl: baseUrl !== undefined ? baseUrl.trim() : (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1'),
+      autoRestockEnabled: autoRestockEnabled === 'on' || autoRestockEnabled === true,
+      lowStockThreshold: Number.isFinite(parseInt(lowStockThreshold, 10)) ? Math.max(0, parseInt(lowStockThreshold, 10)) : (settings.dripstore?.lowStockThreshold ?? 3),
+      restockQty: Number.isFinite(parseInt(restockQty, 10)) && parseInt(restockQty, 10) > 0 ? parseInt(restockQty, 10) : (settings.dripstore?.restockQty ?? 10),
+    };
+    await writeDB('settings.json', settings);
+    res.json({ success: true });
+  } catch (error) {
+    res.json({ success: false, message: error.message });
+  }
+});
+
+// Cek saldo DripStore langsung dari admin (buat preview sebelum restock manual)
+app.get('/admin/dripstore/balance', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const resp = await dripstoreCall(settings, 'balance.php');
+    res.json({ success: true, data: resp.data || resp });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+// Restock MANUAL 1 baris harga tertentu dari DripStore (tombol di admin-product-edit).
+// Beda dari auto-restock: ini SELALU jalan kalau dipencet, gak peduli threshold stok.
+app.post('/admin/product/:id/restock-dripstore', requireAdmin, async (req, res) => {
+  const { days, unit, quantity } = req.body;
+  const d = parseInt(days, 10), qty = parseInt(quantity, 10) || 10;
+  const u = unit === 'h' ? 'h' : 'd';
+  if (!(d > 0)) return res.json({ success: false, message: 'Durasi tidak valid' });
+  const lockKey = `${req.params.id}:${d}:${u}`;
+  // Sama kayak auto-restock: cegah klik dobel/2 tab admin restock produk+durasi
+  // yang sama bersamaan, biar gak ke-generate 2x dari DripStore tanpa sadar.
+  if (_dripstoreRestockLocks.has(lockKey)) return res.json({ success: false, message: 'Restock buat durasi ini lagi diproses, tunggu sebentar' });
+  _dripstoreRestockLocks.add(lockKey);
+  try {
+    const products = await readFresh('products.json');
+    const product = products.find(p => p.id === req.params.id);
+    if (!product) return res.json({ success: false, message: 'Produk tidak ditemukan' });
+    const opt = (product.pricingOptions || []).find(o => o.days === d && (o.unit || 'd') === u);
+    if (!opt) return res.json({ success: false, message: 'Opsi harga durasi ini tidak ditemukan di produk' });
+    if (!opt.dripstoreVariantId) return res.json({ success: false, message: 'Durasi ini belum di-mapping ke Variant ID DripStore. Isi dulu di field "DripStore Variant ID" pada baris harga ini.' });
+
+    const settings = await readFresh('settings.json');
+    const newKeys = await dripstoreGenerateKey(settings, opt.dripstoreVariantId, qty);
+    const tag = `=${d}${u}`;
+    const taggedKeys = newKeys.map(k => `${k}${tag}`);
+
+    const freshProducts = await readFresh('products.json');
+    const freshProduct = freshProducts.find(p => p.id === req.params.id);
+    freshProduct.keys = [...(freshProduct.keys || []), ...taggedKeys];
+    await writeDB('products.json', freshProducts);
+
+    res.json({ success: true, keyCount: taggedKeys.length, keys: taggedKeys });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+  finally { _dripstoreRestockLocks.delete(lockKey); }
+});
+
 app.post('/admin/qris/test', requireAdmin, async (req, res) => {
   try {
     // gateway: 'pakasir' (default) atau 'genspay' — menentukan gateway mana yang dites
@@ -3867,6 +4109,7 @@ app.post('/admin/transaction/confirm/:id', requireAdmin, async (req, res) => {
       if (key) {
         product.sold = (product.sold || 0) + 1;
         await writeDB('products.json', products);
+        if (transaction.selectedDays) maybeAutoRestockDripstore(product.id, transaction.selectedDays, transaction.selectedUnit || 'd');
       } else {
         outOfStock = true;
       }
@@ -4449,7 +4692,7 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
           const sp = cleanNum(o.strike_price);
           if (!isNaN(sp) && sp > price) strikePriceVal = sp;
         }
-        validOpts.push({ days, unit, price, reseller_price: resellerPrice, strike_price: strikePriceVal });
+        validOpts.push({ days, unit, price, reseller_price: resellerPrice, strike_price: strikePriceVal, dripstoreVariantId: (o.dripstoreVariantId || '').toString().trim() || null });
       }
       // Kalau SEMUA baris yang dikirim gagal validasi (mis. semuanya kosong/0/duplikat),
       // JANGAN timpa harga lama — anggap tidak ada perubahan pada harga.
