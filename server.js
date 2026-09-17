@@ -1160,10 +1160,12 @@ function _dsNormalizeName(value) {
     .toLowerCase()
     .replace(/[_|/\\-]+/g, ' ')
     .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\b(1|3|6|7|14|15|30|60|90|365)\s*(hari|day|days|d|jam|hour|hours|h)\b/gi, ' ')
-    .replace(/\b\d+\s*(hari|day|days|d|jam|hour|hours|h)\b/gi, ' ')
-    .replace(/\b(1|7|30)d\b/gi, ' ')
-    .replace(/\b(1|12|24|72)h\b/gi, ' ')
+    // Buang label durasi agar nama produk tetap bisa dicocokkan. Tahun/thn
+    // juga dibuang supaya `Gbox 1 thn` == `Gbox 365 hari`.
+    .replace(/\b\d+\s*(hari|day|days|d|jam|hour|hours|h|thn|th|tahun|year|years|yr|yrs)\b/gi, ' ')
+    .replace(/\b(\d+)\s*(thn|th|tahun|year|years|yr|yrs)\b/gi, ' ')
+    .replace(/\b\d+d\b/gi, ' ')
+    .replace(/\b\d+h\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -1172,12 +1174,96 @@ function _dsDurationFromText(value) {
   const text = String(value || '').toLowerCase().trim();
   let m = text.match(/(^|\b)(\d+)\s*(hours?|hrs?|jam|h)\b/);
   if (m) return { days: parseInt(m[2], 10), unit: 'h' };
-  m = text.match(/(^|\b)(\d+)\s*(days?|hari|tahun|years?|yr|d)\b/);
+
+  // Provider bisa menulis durasi tahun sebagai `1 tahun`, `1 thn`, `1 th`,
+  // `1 year`, dst. Di sistem internal, satuan provider tetap dinormalisasi
+  // menjadi hari untuk menjaga schema pricingOptions tetap kompatibel.
+  m = text.match(/(^|\b)(\d+)\s*(tahun|thn|th|years?|yr|yrs|year)\b/);
+  if (m) return { days: parseInt(m[2], 10) * 365, unit: 'd', sourceUnit: 'y' };
+
+  m = text.match(/(^|\b)(\d+)\s*(days?|hari|d)\b/);
   if (m) return { days: parseInt(m[2], 10), unit: 'd' };
   m = text.match(/(?:^|[^0-9])(\d+)h(?:$|[^a-z0-9])/);
   if (m) return { days: parseInt(m[1], 10), unit: 'h' };
   m = text.match(/(?:^|[^0-9])(\d+)d(?:$|[^a-z0-9])/);
   if (m) return { days: parseInt(m[1], 10), unit: 'd' };
+  return null;
+}
+
+// Normalisasi satu item/option produk untuk halaman beli. `pricingOptions`
+// adalah sumber data durasi + harga, sedangkan `items` hanya representasi
+// tampilan lama. Kalau keduanya beda, jangan biarkan menu memakai items stale.
+function normalizeProductBuyOptions(product) {
+  const rawOptions = Array.isArray(product?.pricingOptions) ? product.pricingOptions : [];
+  const rawItems = Array.isArray(product?.items) ? product.items : [];
+  const outOptions = [];
+  const outItems = [];
+
+  if (rawOptions.length) {
+    rawOptions.forEach((raw, index) => {
+      const opt = { ...raw };
+      const item = rawItems[index] || null;
+      const parsedLabel = item?.l ? parseDurationLabel(item.l) : null;
+
+      // Legacy Gbox/produk tahun pernah tersimpan sebagai days=1 + label
+      // `1 THN`. Perbaiki nilai internal menjadi 365d agar provider mapping
+      // dan create-order menggunakan variant yang benar.
+      if (parsedLabel?.unit === 'y') {
+        opt.days = parsedLabel.value * 365;
+        opt.unit = 'd';
+      } else {
+        opt.days = Number(opt.days);
+        opt.unit = opt.unit === 'h' ? 'h' : 'd';
+      }
+      if (!Number.isFinite(opt.days) || opt.days <= 0) return;
+
+      const label = String(item?.l || `${product.name || 'PRODUK'} ${formatDurationLabel(opt.days, opt.unit)}`);
+      const price = Number(opt.price ?? item?.p ?? 0);
+      const resellerPrice = opt.reseller_price != null ? opt.reseller_price : (item?.reseller_price ?? null);
+      const strikePrice = opt.strike_price != null ? opt.strike_price : (item?.strike_price ?? null);
+
+      outOptions.push(opt);
+      outItems.push({
+        ...item,
+        l: label,
+        p: Number.isFinite(price) ? price : 0,
+        reseller_price: resellerPrice,
+        strike_price: strikePrice,
+        durationValue: opt.days,
+        durationUnit: opt.unit
+      });
+    });
+  } else if (rawItems.length) {
+    // Backward compatibility untuk produk lama yang hanya punya items.
+    rawItems.forEach(item => {
+      const parsed = parseDurationLabel(item?.l || '');
+      const days = parsed ? (parsed.unit === 'y' ? parsed.value * 365 : parsed.value) : null;
+      const unit = parsed?.unit === 'h' ? 'h' : 'd';
+      outItems.push({ ...item, durationValue: days, durationUnit: unit });
+      if (days) outOptions.push({
+        days, unit, price: Number(item?.p || 0),
+        reseller_price: item?.reseller_price ?? null,
+        strike_price: item?.strike_price ?? null,
+        dripstoreVariantId: null
+      });
+    });
+  }
+
+  return { ...product, pricingOptions: outOptions, items: outItems };
+}
+
+function parseDurationLabel(value) {
+  const text = String(value || '').trim();
+  let m = text.match(/(\d+)\s*(JAM|HOURS?|H)\b/i);
+  if (m) return { value: Number(m[1]), unit: 'h' };
+  m = text.match(/(\d+)\s*(THN|TH|TAHUN|YEARS?|YEAR|YR|YRS)\b/i);
+  if (m) return { value: Number(m[1]), unit: 'y' };
+  m = text.match(/(\d+)\s*(DAYS?|HARI|D)\b/i);
+  if (m) return { value: Number(m[1]), unit: 'd' };
+  m = text.match(/(?:^|[^0-9])(\d+)h(?:$|[^a-z0-9])/i);
+  if (m) return { value: Number(m[1]), unit: 'h' };
+  m = text.match(/(?:^|[^0-9])(\d+)d(?:$|[^a-z0-9])/i);
+  if (m) return { value: Number(m[1]), unit: 'd' };
   return null;
 }
 
@@ -1197,8 +1283,13 @@ function _dsExtractProductItems(resp) {
     const explicitHours = _dsFirst(node, ['hours', 'duration_hours', 'durationHours']);
     const explicitUnit = _dsFirst(node, ['unit', 'duration_unit', 'durationUnit']);
     let duration = null;
+    const unitText = String(explicitUnit || '').toLowerCase().trim();
+    const isYearUnit = /^(y|yr|yrs|year|years|th|thn|tahun)$/i.test(unitText);
     if (explicitHours !== null && Number(explicitHours) > 0) duration = { days: Number(explicitHours), unit: 'h' };
-    else if (explicitDays !== null && Number(explicitDays) > 0) duration = { days: Number(explicitDays), unit: explicitUnit === 'h' ? 'h' : 'd' };
+    else if (explicitDays !== null && Number(explicitDays) > 0) {
+      if (isYearUnit) duration = { days: Number(explicitDays) * 365, unit: 'd', sourceUnit: 'y' };
+      else duration = { days: Number(explicitDays), unit: unitText === 'h' ? 'h' : 'd' };
+    }
     if (!duration) duration = _dsDurationFromText(`${variantName || ''} ${productName || ''}`);
 
     if (variantId !== null && (productName || variantName) && duration && !seen.has(String(variantId))) {
@@ -1252,10 +1343,15 @@ async function autoMapDripstoreProducts({ restockLowStock = false } = {}) {
   const restockTargets = [];
 
   for (const product of products) {
-    if (!Array.isArray(product.pricingOptions)) continue;
+    if (!Array.isArray(product.pricingOptions) && !Array.isArray(product.items)) continue;
+    const normalized = normalizeProductBuyOptions(product);
+    product.pricingOptions = normalized.pricingOptions;
+    product.items = normalized.items;
     for (const opt of product.pricingOptions) {
+      const normalizedOptDays = Number(opt.days);
+      const normalizedOptUnit = opt.unit === 'h' ? 'h' : 'd';
       const candidates = supplierItems
-        .filter(s => Number(s.days) === Number(opt.days) && (s.unit || 'd') === (opt.unit || 'd') && _dsNameMatch(product.name, s.productName));
+        .filter(s => Number(s.days) === normalizedOptDays && (s.unit || 'd') === normalizedOptUnit && _dsNameMatch(product.name, s.productName));
       if (!candidates.length) {
         unmatched++;
         unmatchedList.push(`${product.name} — ${opt.days}${opt.unit === 'h' ? 'h' : 'd'}`);
@@ -1550,7 +1646,8 @@ async function fulfillProductFromDripstore(transaction, settings) {
   if (!Number.isFinite(days) || days <= 0) return null;
 
   const products = await readFresh('products.json');
-  const product = products.find(p => String(p.id) === String(transaction.productId));
+  const rawProduct = products.find(p => String(p.id) === String(transaction.productId));
+  const product = rawProduct ? normalizeProductBuyOptions(rawProduct) : null;
   if (!product) return null;
   const opt = (product.pricingOptions || []).find(o => Number(o.days) === days && (o.unit || 'd') === unit);
   const mode = settings.dripstore?.fulfillmentMode || 'live';
@@ -1911,7 +2008,8 @@ app.get('/', async (req, res) => {
   if ((homeDsMode === 'live' || homeDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     try { homeProviderSnapshot = await getDripstoreCatalogSnapshot(settings); } catch (_) { homeProviderSnapshot = null; }
   }
-  const homeProducts = products.map(p => {
+  const homeProducts = products.map(rawProduct => {
+    const p = normalizeProductBuyOptions(rawProduct);
     const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
     const localStock = Array.isArray(p.keys) ? p.keys.length : 0;
     const providerStocks = opts
@@ -2506,7 +2604,8 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     if (!user.is_reseller) return res.json({ success: false, message: 'Fitur beli pakai saldo khusus Reseller VIP' });
 
     const products = await readFresh('products.json');
-    const product = products.find(p => p.id === productId);
+    const rawProduct = products.find(p => p.id === productId);
+    const product = rawProduct ? normalizeProductBuyOptions(rawProduct) : null;
     if (!product || product.status !== 'active') return res.json({ success: false, message: 'Produk tidak ditemukan' });
 
     // Produk yang punya Variant ID DripStore akan mengambil 1 key live saat
@@ -2931,6 +3030,10 @@ app.get('/buy/:id', async (req, res) => {
 
   const isReseller = !!(user?.is_reseller);
   const resellerDiscount = settings.resellerDiscount || 20;
+  // Normalisasi dulu sumber durasi/harga. Ini membuat menu beli selalu
+  // konsisten dengan pricingOptions, termasuk produk lama yang items-nya stale.
+  product = normalizeProductBuyOptions(product);
+
   const allKeys = product.keys || [];
   const genericKeys = allKeys.filter(k => isGenericKey(k));
   let buyProviderSnapshot = null;
@@ -3069,7 +3172,8 @@ app.post('/create-order', async (req, res) => {
       return res.json({ success: false, message: 'Terlalu banyak permintaan, coba lagi sebentar.' });
     }
     const products = await readFresh('products.json');
-    const product = products.find(p => p.id === productId);
+    const rawProduct = products.find(p => p.id === productId);
+    const product = rawProduct ? normalizeProductBuyOptions(rawProduct) : null;
 
     if (!product || product.status !== 'active') return res.json({ success: false, message: 'Produk tidak ditemukan' });
 
