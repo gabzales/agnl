@@ -292,8 +292,8 @@ const popularProducts = products
   <div class="fz-subheading">Paling banyak terjual minggu ini</div>
   <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch;">
     <% popularProducts.forEach(product => {
-      const stock = product.keys ? product.keys.length : 0;
-      const isOut = stock === 0;
+      const stock = Number(product._catalogStock || 0);
+      const isOut = stock <= 0;
       const prodCategories = Array.isArray(product.categories) ? product.categories
         : (Array.isArray(product.platforms) ? product.platforms
         : (product.category ? [product.category] : []));
@@ -371,8 +371,8 @@ const popularProducts = products
   </div>
   <div class="fz-grid">
     <% products.forEach(product => {
-      const stock = product.keys ? product.keys.length : 0;
-      const isOut = stock === 0;
+      const stock = Number(product._catalogStock || 0);
+      const isOut = stock <= 0;
       // Backward-compat: produk lama mungkin masih punya `category` (string
       // tunggal) atau `platforms` (array lama) alih-alih `categories` array baru.
       const prodCategories = Array.isArray(product.categories) ? product.categories
@@ -771,7 +771,7 @@ function renderTurnstileWidgets(){
 <% } %>
 
 <script>
-const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: (keys||[]).length}))) %>;
+const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: Number(p._catalogStock || (keys||[]).length || 0)}))) %>;
 const CATEGORY_LABELS = <%- safeJson(categoryLabels || {}) %>;
 
 // ── Carousel (swipe/drag bebas kiri-kanan, diminta client 14 Sep 2026) ──

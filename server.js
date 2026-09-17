@@ -1160,8 +1160,8 @@ function _dsNormalizeName(value) {
     .toLowerCase()
     .replace(/[_|/\\-]+/g, ' ')
     .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\b(1|3|6|7|14|15|30|60|90|365)\s*(hari|day|days|d|jam|hour|hours|h)\b/gi, ' ')
-    .replace(/\b\d+\s*(hari|day|days|d|jam|hour|hours|h)\b/gi, ' ')
+    .replace(/\b(1|3|6|7|14|15|30|60|90|365)\s*(hari|day|days|d|jam|hour|hours|h|tahun|thn|year|years|yr|yrs|y)\b/gi, ' ')
+    .replace(/\b\d+\s*(hari|day|days|d|jam|hour|hours|h|tahun|thn|year|years|yr|yrs|y)\b/gi, ' ')
     .replace(/\b(1|7|30)d\b/gi, ' ')
     .replace(/\b(1|12|24|72)h\b/gi, ' ')
     .replace(/\s+/g, ' ')
@@ -1172,6 +1172,14 @@ function _dsDurationFromText(value) {
   const text = String(value || '').toLowerCase().trim();
   let m = text.match(/(^|\b)(\d+)\s*(hours?|hrs?|jam|h)\b/);
   if (m) return { days: parseInt(m[2], 10), unit: 'h' };
+
+  // Tahun harus diperlakukan sebagai 365 hari agar Gbox 1 thn / 1 tahun
+  // bisa dicocokkan dengan variant DripStore yang memakai days=365.
+  m = text.match(/(^|\b)(\d+)\s*(tahun|thn|years?|yrs?|yr|year|y)\b/);
+  if (m) return { days: parseInt(m[2], 10) * 365, unit: 'd' };
+  m = text.match(/(?:^|[^0-9])(\d+)(?:tahun|thn|years?|yrs?|yr|year|y)(?:$|[^a-z0-9])/);
+  if (m) return { days: parseInt(m[1], 10) * 365, unit: 'd' };
+
   m = text.match(/(^|\b)(\d+)\s*(days?|hari|d)\b/);
   if (m) return { days: parseInt(m[2], 10), unit: 'd' };
   m = text.match(/(?:^|[^0-9])(\d+)h(?:$|[^a-z0-9])/);
@@ -1436,6 +1444,65 @@ function _dsFindVariantCost(resp, variantId) {
   };
   walk(resp);
   return found;
+}
+
+let _dripstoreCatalogCache = null;
+let _dripstoreCatalogCacheAt = 0;
+const DRIPSTORE_CATALOG_CACHE_TTL = 30000;
+
+async function getDripstoreCatalogSnapshot(settings) {
+  const ds = settings.dripstore || {};
+  if (!ds.apiToken) return { balance: null, products: null };
+  const now = Date.now();
+  if (_dripstoreCatalogCache && (now - _dripstoreCatalogCacheAt) < DRIPSTORE_CATALOG_CACHE_TTL) {
+    return _dripstoreCatalogCache;
+  }
+  const [balance, products] = await Promise.all([
+    getDripstoreBalanceValue(settings),
+    dripstoreCall(settings, 'products.php')
+  ]);
+  _dripstoreCatalogCache = { balance, products };
+  _dripstoreCatalogCacheAt = now;
+  return _dripstoreCatalogCache;
+}
+
+function getDripstoreVirtualStock(snapshot, variantId) {
+  if (!snapshot || snapshot.balance === null || snapshot.balance === undefined) return null;
+  const cost = _dsFindVariantCost(snapshot.products, variantId);
+  if (cost === null || !Number.isFinite(Number(cost)) || Number(cost) <= 0) return null;
+  return Math.max(0, Math.floor((Number(snapshot.balance) + 1e-9) / Number(cost)));
+}
+
+// Resolve a provider variant even when the persisted mapping is stale/missing.
+// IMPORTANT: this never creates an AGHA product and never purchases anything.
+// It only reads the current provider catalog and uses product name + duration
+// as a fallback for availability calculation.
+function findDripstoreVariantForOption(snapshot, productName, opt) {
+  if (!snapshot?.products || !productName || !opt) return null;
+  if (opt.dripstoreVariantId) {
+    const direct = getDripstoreVirtualStock(snapshot, String(opt.dripstoreVariantId));
+    if (direct !== null) return { variantId: String(opt.dripstoreVariantId), stock: direct };
+  }
+  const items = _dsExtractProductItems(snapshot.products);
+  const matches = items.filter(item =>
+    Number(item.days) === Number(opt.days) &&
+    (item.unit || 'd') === (opt.unit || 'd') &&
+    _dsNameMatch(productName, item.productName)
+  );
+  if (!matches.length) return null;
+  matches.sort((a,b) => {
+    const ae = _dsNormalizeName(a.productName) === _dsNormalizeName(productName) ? 1 : 0;
+    const be = _dsNormalizeName(b.productName) === _dsNormalizeName(productName) ? 1 : 0;
+    return be - ae || String(b.productName).length - String(a.productName).length;
+  });
+  const chosen = matches[0];
+  const stock = getDripstoreVirtualStock(snapshot, chosen.variantId);
+  return stock === null ? null : { variantId: chosen.variantId, stock };
+}
+
+function getCombinedOptionStock(snapshot, productName, opt, localStock = 0) {
+  const resolved = findDripstoreVariantForOption(snapshot, productName, opt);
+  return Math.max(0, Number(localStock) || 0) + (resolved ? resolved.stock : 0);
 }
 
 async function checkDripstoreVariantAvailability(settings, variantId, quantity = 1) {
@@ -1843,8 +1910,37 @@ app.get('/', async (req, res) => {
   const settings = res.locals.settings || readDB('settings.json');
   const user = res.locals.user || getSessionUser(req);
 
+  // LIVE PROVIDER: stok katalog tidak boleh bergantung hanya pada jumlah key
+  // lokal. Produk dengan mapping DripStore tetap tersedia selama minimal satu
+  // key variant masih mampu dibeli dari saldo provider. Snapshot provider
+  // dicache singkat agar homepage tidak menembak API sekali per produk.
+  let homeProviderSnapshot = null;
+  const homeDsMode = settings.dripstore?.fulfillmentMode || 'live';
+  if ((homeDsMode === 'live' || homeDsMode === 'hybrid') && settings.dripstore?.apiToken) {
+    try { homeProviderSnapshot = await getDripstoreCatalogSnapshot(settings); } catch (_) { homeProviderSnapshot = null; }
+  }
+  const homeProducts = products.map(p => {
+    const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
+    const localStock = Array.isArray(p.keys) ? p.keys.length : 0;
+    const providerStocks = opts
+      .map(o => findDripstoreVariantForOption(homeProviderSnapshot, p.name, o))
+      .filter(Boolean)
+      .map(v => v.stock);
+    // Provider availability is resolved from the CURRENT catalog by mapping
+    // first, then by product-name + duration fallback. Local keys are always
+    // retained and never replaced by a provider refresh.
+    const providerStock = providerStocks.length ? Math.max(...providerStocks) : 0;
+    // DISPLAY STOCK = stok key lokal yang sudah ada + kapasitas provider.
+    // Jangan pernah membuat produk terlihat habis hanya karena stok lokal 0,
+    // dan jangan mengarang stok 1 saat snapshot provider gagal.
+    // Untuk kartu katalog, nilai ini adalah kapasitas maksimum yang terlihat
+    // untuk satu pilihan/durasi; detail /buy menghitung stok per durasi.
+    const catalogStock = localStock + providerStock;
+    return { ...p, _liveProviderStock: providerStock, _catalogStock: catalogStock };
+  });
+
   res.render('pages/home', {
-    products,
+    products: homeProducts,
     settings,
     user,
     categories: settings.categories || [],
@@ -2829,7 +2925,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
 // (harus register/login dulu) sebelum bisa lihat halaman produk & checkout.
 // Sekarang publik -- guest bisa checkout cukup isi nama+nomor WA (lihat
 // /create-order di bawah, yang sekarang auto-create akun kalau belum login).
-app.get('/buy/:id', (req, res) => {
+app.get('/buy/:id', async (req, res) => {
   const products = readDB('products.json');
   const product = products.find(p => p.id === req.params.id);
 
@@ -2845,6 +2941,11 @@ app.get('/buy/:id', (req, res) => {
   const resellerDiscount = settings.resellerDiscount || 20;
   const allKeys = product.keys || [];
   const genericKeys = allKeys.filter(k => isGenericKey(k));
+  let buyProviderSnapshot = null;
+  const buyDsMode = settings.dripstore?.fulfillmentMode || 'live';
+  if ((buyDsMode === 'live' || buyDsMode === 'hybrid') && settings.dripstore?.apiToken) {
+    try { buyProviderSnapshot = await getDripstoreCatalogSnapshot(settings); } catch (_) { buyProviderSnapshot = null; }
+  }
   if (product.items) {
     product.items = product.items.map(item => {
       // Label item sekarang bisa "... 30 HARI" atau "... 12 JAM" (lihat
@@ -2857,8 +2958,11 @@ app.get('/buy/:id', (req, res) => {
       const pOpt = (product.pricingOptions || []).find(o => Number(o.days) === Number(days) && (o.unit || 'd') === unit);
       const providerBacked = !!pOpt?.dripstoreVariantId;
       if (providerBacked) {
-        // Live provider: tampilkan tersedia walaupun stok key lokal 0.
-        stok = 1;
+        // Stok yang ditampilkan = key lokal durasi ini + kapasitas provider
+        // untuk variant yang sama. Snapshot provider yang gagal TIDAK boleh
+        // menghapus stok lokal yang memang sudah ada di web.
+        const localDurationStock = allKeys.filter(k => keyMatchesDuration(k, days, unit)).length;
+        stok = getCombinedOptionStock(buyProviderSnapshot, product.name, pOpt, localDurationStock);
       } else if (days) {
         const tagged = allKeys.filter(k => keyMatchesDuration(k, days, unit)).length;
         stok = tagged > 0 ? tagged : genericKeys.length;
@@ -2908,7 +3012,16 @@ app.get('/buy/:id', (req, res) => {
   // Public availability: mapped DripStore products remain purchasable even
   // when AGHA NL has zero locally cached keys. The actual provider purchase
   // happens only after payment confirmation.
-  productSafe.stockCount = (_rawKeys || []).length > 0 || hasLiveProvider ? 1 : 0;
+  // Public availability menggabungkan key lokal + kapasitas provider.
+  // Ini mencegah produk dengan stok lokal yang nyata (mis. XREG 49 key)
+  // berubah menjadi Habis hanya karena mapping/provider snapshot sementara
+  // tidak terbaca.
+  let publicProviderStock = 0;
+  if (hasLiveProvider && (settings.dripstore?.fulfillmentMode === 'live' || settings.dripstore?.fulfillmentMode === 'hybrid') && buyProviderSnapshot) {
+    publicProviderStock = Math.max(0, ...(product.pricingOptions || [])
+      .map(o => findDripstoreVariantForOption(buyProviderSnapshot, product.name, o)?.stock || 0));
+  }
+  productSafe.stockCount = (_rawKeys || []).length + publicProviderStock;
   productSafe.liveProvider = hasLiveProvider;
 
   res.render('pages/buy', { product: productSafe, settings, user, isReseller, hasPurchased, categoryLabels: settings.categoryLabels || {} });
