@@ -50,3 +50,22 @@ src/input.css           # source Tailwind, di-build ke public/css/tailwind.css s
 - **Jangan** commit `.env` — semua secret lewat environment variables.
 - Ganti password admin lewat Admin Panel setelah deploy pertama, jangan hardcode di kode.
 - File yang diupload lewat Admin Panel (banner, foto produk, avatar) otomatis disimpan ke Supabase Storage saat jalan di Vercel (filesystem Vercel read-only & tidak persistent), dan ke `public/uploads/...` lokal saat development.
+
+## Import produk client sekaligus
+
+Script `add-client-products.js` menambahkan 10 produk APK MOD NO ROOT dari daftar client.
+Script ini tidak menyentuh DripStore dan tidak membeli key.
+
+Contoh:
+
+```bash
+node add-client-products.js --price=50000 --days=30
+```
+
+Untuk simulasi tanpa menulis database:
+
+```bash
+node add-client-products.js --price=50000 --days=30 --dry-run
+```
+
+Setelah produk dibuat, lakukan Sync & Auto Map di Admin Panel untuk menghubungkan variant DripStore.

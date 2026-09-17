@@ -485,11 +485,11 @@ function renderPricingRows() {
       <div class="flex gap-2 items-center mt-2 pt-2" style="border-top:1px dashed var(--neon-purple-20);">
         <input type="text" value="${opt.dripstoreVariantId || ''}" placeholder="DripStore Variant ID (opsional)"
           class="hm-input text-xs flex-1" style="border-color:rgba(96,165,250,.25)"
-          title="Isi kalau durasi ini mau bisa di-restock otomatis/manual dari DripStore. Lihat variant_id di tabel 'Your Products' DripStore."
+          title="Jika diisi, durasi ini memakai DripStore LIVE: 1 key dibeli saat customer benar-benar selesai bayar. Tidak perlu pre-stock."
           oninput="pricingOptions[${i}].dripstoreVariantId=this.value.trim()||null;">
         <button type="button" onclick="restockFromDripstore(${i}, this)"
           class="shrink-0 px-2.5 py-2 rounded-lg text-[10px] font-bold text-blue-300 border border-blue-500/25 hover:bg-blue-500/10 transition-all flex items-center gap-1 whitespace-nowrap">
-          <iconify-icon icon="mdi:cloud-download-outline"></iconify-icon> Restock
+          <iconify-icon icon="mdi:cloud-download-outline"></iconify-icon> Preload (opsional)
         </button>
       </div>
     </div>
@@ -519,7 +519,7 @@ async function restockFromDripstore(i, btn) {
   // bersamaan buat durasi yang sama sebelum request pertama selesai.
   if (btn) { if (btn.dataset.busy === '1') return; btn.dataset.busy = '1'; btn.disabled = true; btn.style.opacity = '0.5'; }
 
-  showToast('Menghubungi DripStore, tunggu sebentar...', 'info');
+  showToast('Membuat proposal restock — saldo DripStore belum dipotong.', 'info');
   try {
     const r = await fetch(`/admin/product/${currentProduct.id}/restock-dripstore`, {
       method: 'POST',
@@ -528,8 +528,7 @@ async function restockFromDripstore(i, btn) {
     });
     const d = await r.json();
     if (d.success) {
-      showToast(`Berhasil! ${d.keyCount} key baru ditambahkan dari DripStore`, 'success');
-      loadProduct(); // refresh preview keys existing
+      showToast(`Proposal restock #${d.request?.id?.slice(0,8) || ''} dibuat. Approve dari Admin > Pending Restock.`, 'success');
     } else {
       showToast('Gagal restock: ' + (d.message || 'error tidak diketahui'), 'error');
     }
@@ -575,6 +574,13 @@ function renderKeyInfo() {
     const m = (item.l || '').match(/(\d+)\s+(DAYS?|HARI|JAM)/i);
     const days = m ? parseInt(m[1]) : null;
     const unit = m && /JAM/i.test(m[2]) ? 'h' : 'd';
+    const liveOpt = (p.pricingOptions || []).find(o => Number(o.days) === Number(days) && (o.unit || 'd') === unit && o.dripstoreVariantId);
+    if (liveOpt) {
+      return `<div class="flex items-center justify-between p-3 rounded-xl border text-cyan-300 border-cyan-500/30 bg-cyan-500/10">
+        <span class="text-xs font-bold text-white">${item.l}</span>
+        <span class="text-xs font-black">∞ · DripStore Live</span>
+      </div>`;
+    }
     let stok;
     if (days) {
       const tagged = keys.filter(k => { const t = parseKeyTag(k); return t.days === days && t.unit === unit; }).length;

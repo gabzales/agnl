@@ -665,7 +665,7 @@ const initDB = async () => {
     fonnteToken: '',
     pakasir: { apiKey: '', project: '', mode: 'production' },
     genspay: { apiKey: '', baseUrl: 'https://genspay.my.id/api/v1' },
-    dripstore: { apiToken: '', baseUrl: 'https://dripclientstore.shop/api/v1', autoRestockEnabled: false, lowStockThreshold: 3, restockQty: 10 },
+    dripstore: { apiToken: '', baseUrl: 'https://dripclientstore.shop/api/v1', fulfillmentMode: 'live', balanceGuardEnabled: true, autoRestockEnabled: false, lowStockThreshold: 3, restockQty: 10 },
     apiGateway: 'pakasir',
     adminUsername: fallbackUsername,
     adminPassword: bcrypt.hashSync(fallbackPassword, 12),
@@ -697,7 +697,7 @@ const initDB = async () => {
     banners: []
   };
 
-  const arrayFiles = ['users.json', 'products.json', 'transactions.json', 'testimonials.json', 'notifications.json', 'keyspool.json', 'vouchers.json'];
+  const arrayFiles = ['users.json', 'products.json', 'transactions.json', 'testimonials.json', 'notifications.json', 'keyspool.json', 'vouchers.json', 'dripstore_restock_requests.json'];
 
   // Seed arrays only if they don't exist at all
   for (const filename of arrayFiles) {
@@ -1279,51 +1279,243 @@ async function autoMapDripstoreProducts({ restockLowStock = false } = {}) {
 
   await writeDB('products.json', products);
 
-  let restocked = 0;
-  const restockErrors = [];
-  if (restockLowStock && settings.dripstore?.autoRestockEnabled) {
-    for (const target of restockTargets) {
-      try {
-        const freshProducts = await readFresh('products.json');
-        const product = freshProducts.find(p => p.id === target.productId);
-        const opt = product?.pricingOptions?.find(o => Number(o.days) === Number(target.days) && (o.unit || 'd') === target.unit);
-        if (!product || !opt || !opt.dripstoreVariantId) continue;
-        const remaining = (product.keys || []).filter(k => keyMatchesDuration(k, target.days, target.unit)).length;
-        const threshold = Number.isFinite(settings.dripstore.lowStockThreshold) ? settings.dripstore.lowStockThreshold : 3;
-        if (remaining > threshold) continue;
-        const qty = Number.isFinite(settings.dripstore.restockQty) && settings.dripstore.restockQty > 0 ? settings.dripstore.restockQty : 10;
-        const newKeys = await dripstoreGenerateKey(settings, opt.dripstoreVariantId, qty);
-        const tag = `=${target.days}${target.unit}`;
-        const fresh2 = await readFresh('products.json');
-        const p2 = fresh2.find(p => p.id === target.productId);
-        if (p2) {
-          const existing = new Set(p2.keys || []);
-          const tagged = newKeys.map(k => `${k}${tag}`).filter(k => !existing.has(k));
-          p2.keys = [...(p2.keys || []), ...tagged];
-          await writeDB('products.json', fresh2);
-          restocked += tagged.length;
-        }
-      } catch (e) {
-        restockErrors.push(`${target.days}${target.unit}: ${e.message}`);
-      }
-    }
-  }
+  // Jangan melakukan generate key di request mapping ini. Di Vercel/serverless,
+  // kalau ada banyak produk dengan stok <= threshold, generate dilakukan satu per
+  // satu dan request bisa timeout sehingga browser cuma menerima "Failed to fetch".
+  // Mapping sekarang hanya menyimpan variant_id dan mengembalikan target restock;
+  // frontend akan memanggil endpoint restock-one per durasi secara terpisah.
+  return {
+    supplierVariants: supplierItems.length,
+    mapped,
+    unchanged,
+    unmatched,
+    unmatchedList: unmatchedList.slice(0, 20),
+    restocked: 0,
+    restockErrors: [],
+    restockTargets: restockTargets.slice(0, 100)
+  };
+}
 
-  return { supplierVariants: supplierItems.length, mapped, unchanged, unmatched, unmatchedList: unmatchedList.slice(0, 20), restocked, restockErrors: restockErrors.slice(0, 10) };
+// Restock satu produk+durasi dalam request pendek. Dipanggil setelah auto-mapping
+// selesai supaya tidak membuat satu request panjang yang mudah timeout di Vercel.
+async function createDripstoreRestockRequest({ productId, days, unit = 'd', quantity, source = 'auto' }) {
+  const d = Number(days), qty = Number(quantity);
+  const u = unit === 'h' ? 'h' : 'd';
+  if (!productId || !Number.isInteger(d) || d <= 0) throw new Error('Target restock tidak valid');
+  if (!Number.isInteger(qty) || qty <= 0 || qty > 1000) throw new Error('Jumlah restock harus 1-1000 key');
+
+  const settings = await readFresh('settings.json');
+  if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
+  const products = await readFresh('products.json');
+  const product = products.find(p => String(p.id) === String(productId));
+  if (!product) throw new Error('Produk tidak ditemukan');
+  const opt = (product.pricingOptions || []).find(o => Number(o.days) === d && (o.unit || 'd') === u);
+  if (!opt) throw new Error('Opsi harga durasi ini tidak ditemukan di produk');
+  if (!opt.dripstoreVariantId) throw new Error('Durasi ini belum di-mapping ke Variant ID DripStore');
+
+  const requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
+  const duplicate = requests.find(r => r.status === 'pending' && String(r.productId) === String(productId) && Number(r.days) === d && (r.unit || 'd') === u);
+  if (duplicate) return duplicate;
+
+  const remaining = (product.keys || []).filter(k => keyMatchesDuration(k, d, u)).length;
+  const request = {
+    id: uuidv4(),
+    status: 'pending',
+    source,
+    productId: String(productId),
+    productName: product.name,
+    days: d,
+    unit: u,
+    quantity: qty,
+    remainingBefore: remaining,
+    variantId: String(opt.dripstoreVariantId),
+    createdAt: new Date().toISOString(),
+    approvedAt: null,
+    rejectedAt: null,
+    approvedBy: null,
+    transactionId: null,
+    added: 0,
+    error: null
+  };
+  requests.unshift(request);
+  await writeDB('dripstore_restock_requests.json', requests.slice(0, 500));
+  return request;
+}
+
+async function restockOneDripstoreTarget(target) {
+  const productId = String(target?.productId || '');
+  const days = Number(target?.days);
+  const unit = target?.unit === 'h' ? 'h' : 'd';
+  const settings = await readFresh('settings.json');
+  const ds = settings.dripstore || {};
+  const qty = Number.isInteger(Number(target?.quantity)) && Number(target.quantity) > 0
+    ? Number(target.quantity)
+    : (Number(ds.restockQty) > 0 ? Number(ds.restockQty) : 10);
+  return createDripstoreRestockRequest({ productId, days, unit, quantity: qty, source: target?.source || 'auto' });
+}
+
+async function approveDripstoreRestockRequest(requestId, adminName = 'admin') {
+  const lockKey = `request:${requestId}`;
+  if (_dripstoreRestockLocks.has(lockKey)) throw new Error('Restock request sedang diproses');
+  _dripstoreRestockLocks.add(lockKey);
+  try {
+    const requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
+    const request = requests.find(r => r.id === requestId);
+    if (!request) throw new Error('Restock request tidak ditemukan');
+    if (request.status !== 'pending') throw new Error(`Request sudah ${request.status}`);
+
+    const settings = await readFresh('settings.json');
+    if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
+    const products = await readFresh('products.json');
+    const product = products.find(p => String(p.id) === String(request.productId));
+    if (!product) throw new Error('Produk tidak ditemukan');
+    const opt = (product.pricingOptions || []).find(o => Number(o.days) === Number(request.days) && (o.unit || 'd') === request.unit);
+    if (!opt?.dripstoreVariantId) throw new Error('Variant DripStore sudah tidak tersedia pada produk ini');
+
+    // IMPORTANT: satu-satunya jalur purchase ada setelah admin approve.
+    const purchase = await dripstoreGenerateKey(settings, opt.dripstoreVariantId, Number(request.quantity));
+    const newKeys = purchase.keys;
+    const tag = `=${request.days}${request.unit}`;
+    const taggedKeys = newKeys.map(k => `${k}${tag}`);
+    const freshProducts = await readFresh('products.json');
+    const freshProduct = freshProducts.find(p => String(p.id) === String(request.productId));
+    if (!freshProduct) throw new Error('Produk hilang saat menyimpan key');
+    const existing = new Set(freshProduct.keys || []);
+    const unique = taggedKeys.filter(k => !existing.has(k));
+    freshProduct.keys = [...(freshProduct.keys || []), ...unique];
+    await writeDB('products.json', freshProducts);
+
+    request.status = 'approved';
+    request.approvedAt = new Date().toISOString();
+    request.approvedBy = adminName;
+    request.added = unique.length;
+    request.variantId = String(opt.dripstoreVariantId);
+    request.error = null;
+    request.transactionId = purchase.transactionId || null;
+    const idx = requests.findIndex(r => r.id === requestId);
+    if (idx !== -1) requests[idx] = request;
+    await writeDB('dripstore_restock_requests.json', requests.slice(0, 500));
+    console.log(`DRIPSTORE PURCHASE APPROVED ${request.id}: ${request.productName} ${request.days}${request.unit} +${unique.length}`);
+    return request;
+  } catch (e) {
+    const requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
+    const idx = requests.findIndex(r => r.id === requestId);
+    if (idx !== -1 && requests[idx].status === 'pending') {
+      requests[idx].error = e.message;
+      await writeDB('dripstore_restock_requests.json', requests.slice(0, 500));
+    }
+    throw e;
+  } finally {
+    _dripstoreRestockLocks.delete(lockKey);
+  }
+}
+
+async function getDripstoreBalanceValue(settings) {
+  const resp = await dripstoreCall(settings, 'balance.php');
+  const raw = resp?.data?.balance ?? resp?.balance ?? resp?.data?.credits ?? resp?.credits ?? resp?.data?.saldo ?? resp?.saldo;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function _dsFindVariantCost(resp, variantId) {
+  const target = String(variantId);
+  let found = null;
+  const walk = (node, inheritedProduct='') => {
+    if (found !== null || node == null) return;
+    if (Array.isArray(node)) { for (const x of node) walk(x, inheritedProduct); return; }
+    if (typeof node !== 'object') return;
+    const id = _dsFirst(node, ['variant_id','variantId','id']);
+    const name = _dsFirst(node, ['variant_name','variantName','name','title']);
+    const product = _dsFirst(node, ['product_name','productName','product_title','productTitle','product']) || inheritedProduct;
+    if (id != null && String(id) === target) {
+      const raw = _dsFirst(node, ['unit_price','unitPrice','price','cost','reseller_price','resellerPrice','selling_price','sellingPrice']);
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) found = n;
+    }
+    for (const k of ['variants','options','plans','items','products','data','result']) if (node[k] !== undefined) walk(node[k], product || inheritedProduct);
+  };
+  walk(resp);
+  return found;
+}
+
+async function checkDripstoreVariantAvailability(settings, variantId, quantity = 1) {
+  const ds = settings.dripstore || {};
+  if (!ds.apiToken) return { ok: false, reason: 'API Token DripStore belum dikonfigurasi' };
+  const balance = await getDripstoreBalanceValue(settings);
+  const productsResp = await dripstoreCall(settings, 'products.php');
+  const unitCost = _dsFindVariantCost(productsResp, variantId);
+  if (balance === null) return { ok: true, guarded: false, balance: null, unitCost, reason: 'Saldo provider tidak dapat dibaca; provider menjadi pemeriksaan terakhir' };
+  if (unitCost === null) return { ok: true, guarded: false, balance, unitCost: null, reason: 'Harga variant provider tidak tersedia di products.php; provider menjadi pemeriksaan terakhir' };
+  const required = unitCost * Math.max(1, Number(quantity) || 1);
+  return { ok: balance + 1e-9 >= required, guarded: true, balance, unitCost, required, shortfall: Math.max(0, required - balance) };
+}
+
+// Serialize provider purchases so two paid orders cannot both pass the
+// balance pre-check against the same saldo snapshot and then race each other.
+// The lock is process-local; the provider's own API remains the final authority.
+let _dripstorePurchaseQueue = Promise.resolve();
+
+function withDripstorePurchaseLock(task) {
+  const run = _dripstorePurchaseQueue.then(task, task);
+  _dripstorePurchaseQueue = run.catch(() => undefined);
+  return run;
 }
 
 async function dripstoreGenerateKey(settings, variantId, quantity) {
-  // KETERBATASAN YANG DIKETAHUI (audit 16 Sep 2026): dokumentasi client
-  // Node.js resmi DripStore punya logic "Bala Mod aware" -- sebagian
-  // variant butuh android_id (device-bound, quantity harus 1) atau cuma
-  // boleh generate 1 key per call (Bala Mod). Fungsi ini BELUM ngecek itu,
-  // asal kirim {variant_id, quantity} apa adanya. Untuk variant BIASA ini
-  // aman; untuk variant yang butuh android_id, DripStore kemungkinan akan
-  // menolak dengan pesan error (bakal keliatan apa adanya di UI restock),
-  // BUKAN gagal diam-diam -- tapi restock variant jenis itu belum bisa
-  // otomatis lewat sini, harus manual dulu sampai logic ini ditambahkan.
-  const resp = await dripstoreCall(settings, 'generate_key.php', { variant_id: variantId, quantity }, 'POST');
-  return extractDripstoreKeys(resp);
+  return withDripstorePurchaseLock(async () => {
+    const guard = settings.dripstore?.balanceGuardEnabled !== false;
+    if (guard) {
+      const availability = await checkDripstoreVariantAvailability(settings, variantId, quantity);
+      if (!availability.ok) {
+        throw new Error(`Saldo DripStore tidak cukup untuk variant ini. Saldo $${Number(availability.balance).toFixed(2)}, kebutuhan minimal $${Number(availability.required).toFixed(2)}.`);
+      }
+    }
+    const resp = await dripstoreCall(settings, 'generate_key.php', { variant_id: variantId, quantity }, 'POST');
+    const keys = extractDripstoreKeys(resp);
+    const transactionId = resp?.data?.transaction_id || resp?.data?.transactionId || resp?.transaction_id || resp?.transactionId || resp?.data?.purchase_id || resp?.purchase_id || null;
+    return { keys, transactionId };
+  });
+}
+
+// LIVE PROVIDER FULFILLMENT:
+// Kalau suatu durasi sudah di-map ke Variant ID DripStore, produk tersebut
+// TIDAK memakai stok lokal sebagai persediaan utama. Setiap customer yang
+// benar-benar selesai membayar memicu purchase 1 key ke DripStore. Dengan
+// begitu saldo reseller provider baru berkurang saat ada penjualan nyata,
+// bukan saat sync/auto-restock.
+const _dripstoreLiveLocks = new Set();
+
+async function fulfillProductFromDripstore(transaction, settings) {
+  const days = Number(transaction?.selectedDays);
+  const unit = transaction?.selectedUnit === 'h' ? 'h' : 'd';
+  if (!Number.isFinite(days) || days <= 0) return null;
+
+  const products = await readFresh('products.json');
+  const product = products.find(p => String(p.id) === String(transaction.productId));
+  if (!product) return null;
+  const opt = (product.pricingOptions || []).find(o => Number(o.days) === days && (o.unit || 'd') === unit);
+  const mode = settings.dripstore?.fulfillmentMode || 'live';
+  if (mode === 'local') return null;
+  if (!opt?.dripstoreVariantId) return null;
+
+  const lockKey = `live:${transaction.id}`;
+  if (_dripstoreLiveLocks.has(lockKey)) {
+    throw new Error('Pesanan sedang mengambil key dari DripStore, tunggu sebentar.');
+  }
+  _dripstoreLiveLocks.add(lockKey);
+  try {
+    const purchase = await dripstoreGenerateKey(settings, String(opt.dripstoreVariantId), 1);
+    const key = purchase.keys?.[0];
+    if (!key) throw new Error('DripStore berhasil merespons tetapi tidak mengembalikan key.');
+    return {
+      key,
+      source: 'dripstore_live',
+      variantId: String(opt.dripstoreVariantId),
+      providerTransactionId: purchase.transactionId || null
+    };
+  } finally {
+    _dripstoreLiveLocks.delete(lockKey);
+  }
 }
 
 // LOCK sederhana in-memory (per productId+days+unit) supaya kalau ada 2+
@@ -1344,50 +1536,26 @@ const _dripstoreRestockLocks = new Set();
 // total di sini + di titik pemanggilannya -- KEGAGALAN RESTOCK TIDAK
 // BOLEH PERNAH mengganggu transaksi pembeli yang sedang berjalan.
 async function maybeAutoRestockDripstore(productId, days, unit) {
-  const lockKey = `${productId}:${days}:${unit || 'd'}`;
-  if (_dripstoreRestockLocks.has(lockKey)) return; // udah ada restock jalan buat kombinasi produk+durasi ini, gak usah dobel
+  // AUTO-RESTOCK TIDAK BOLEH PURCHASE. Hanya membuat proposal pending.
   try {
     const settings = await readFresh('settings.json');
     const ds = settings.dripstore || {};
     if (!ds.autoRestockEnabled || !ds.apiToken) return;
-
     const products = await readFresh('products.json');
-    const product = products.find(p => p.id === productId);
+    const product = products.find(p => String(p.id) === String(productId));
     if (!product) return;
-    const opt = (product.pricingOptions || []).find(o => o.days === days && (o.unit || 'd') === (unit || 'd'));
-    if (!opt || !opt.dripstoreVariantId) return; // produk/durasi ini belum di-mapping ke variant_id DripStore
-
-    const remaining = (product.keys || []).filter(k => keyMatchesDuration(k, days, unit)).length;
-    const threshold = Number.isFinite(ds.lowStockThreshold) ? ds.lowStockThreshold : 3;
+    const opt = (product.pricingOptions || []).find(o => Number(o.days) === Number(days) && (o.unit || 'd') === (unit || 'd'));
+    if (!opt?.dripstoreVariantId) return;
+    const remaining = (product.keys || []).filter(k => keyMatchesDuration(k, Number(days), unit)).length;
+    const threshold = Number.isFinite(Number(ds.lowStockThreshold)) ? Number(ds.lowStockThreshold) : 3;
     if (remaining > threshold) return;
-
-    _dripstoreRestockLocks.add(lockKey);
-    const qty = Number.isFinite(ds.restockQty) && ds.restockQty > 0 ? ds.restockQty : 10;
-    const newKeys = await dripstoreGenerateKey(settings, opt.dripstoreVariantId, qty);
-    // FIX bug (audit 16 Sep 2026): dulu cek `k.includes('=')` dulu sebelum
-    // nambahin tag durasi -- niatnya jaga-jaga kalau key udah ada tag,
-    // tapi ini SALAH: kalau license key asli dari DripStore kebetulan
-    // mengandung karakter "=" (banyak format key/token base64-ish yang
-    // begitu), tag durasi jadi TIDAK PERNAH ditempel, bikin key itu
-    // gampang salah kepasang ke pembeli dengan durasi lain. Key yang baru
-    // digenerate dari SINI (khusus buat durasi `days`+`unit` ini) SELALU
-    // ditag, titik -- gak perlu dicek dulu.
-    const tag = `=${days}${unit || 'd'}`;
-    const taggedKeys = newKeys.map(k => `${k}${tag}`);
-
-    // Re-read products.json fresh sebelum nulis (hindari race condition
-    // nimpa perubahan stok lain yang mungkin terjadi selagi nunggu API DripStore).
-    const freshProducts = await readFresh('products.json');
-    const freshProduct = freshProducts.find(p => p.id === productId);
-    if (freshProduct) {
-      freshProduct.keys = [...(freshProduct.keys || []), ...taggedKeys];
-      await writeDB('products.json', freshProducts);
-      console.log(`✅ [auto-restock] ${freshProduct.name} (${days}${unit}): +${taggedKeys.length} key dari DripStore (variant_id=${opt.dripstoreVariantId})`);
-    }
+    await createDripstoreRestockRequest({
+      productId, days: Number(days), unit: unit || 'd',
+      quantity: Number(ds.restockQty) > 0 ? Number(ds.restockQty) : 10,
+      source: 'auto'
+    });
   } catch (e) {
-    console.error('❌ [auto-restock DripStore] gagal:', e.message);
-  } finally {
-    _dripstoreRestockLocks.delete(lockKey);
+    console.error('❌ [auto-restock proposal] gagal:', e.message);
   }
 }
 
@@ -2088,6 +2256,38 @@ app.post('/reseller/join', requireAuth, async (req, res) => {
     const orderId = `RES-${Date.now()}`;
     const refId = uuidv4();
     const orderCode = generateOrderCode();
+    // Balance guard: jangan izinkan buyer membuat order baru jika saldo provider
+    // sudah pasti tidak cukup untuk variant yang akan dipakai. Ini mencegah
+    // contoh saldo $0.30: variant $0.50 ditolak, variant $0.20 tetap bisa checkout.
+    const dsMode = settings.dripstore?.fulfillmentMode || 'live';
+    const selectedOpt = product.pricingOptions?.find(o => Number(o.days) === Number(selectedDays) && (o.unit || 'd') === selectedUnit);
+    const mappedVariant = selectedOpt?.dripstoreVariantId || null;
+
+    // HYBRID: kalau stok lokal untuk durasi yang dipilih masih ada, buyer
+    // tidak perlu diblokir hanya karena saldo provider kurang. Provider baru
+    // dibutuhkan kalau stok lokal ternyata habis saat fulfillment.
+    let hybridHasLocalStock = false;
+    if (dsMode === 'hybrid' && selectedDays) {
+      const localKeys = Array.isArray(product.keys) ? product.keys : [];
+      hybridHasLocalStock = localKeys.some(k => keyMatchesDuration(k, Number(selectedDays), selectedUnit));
+    }
+
+    if (dsMode === 'live' && mappedVariant && settings.dripstore?.balanceGuardEnabled !== false) {
+      try {
+        const av = await checkDripstoreVariantAvailability(settings, String(mappedVariant), 1);
+        if (!av.ok) return res.json({ success: false, message: `Stok provider untuk durasi ini tidak tersedia saat ini. Saldo provider $${Number(av.balance).toFixed(2)}, kebutuhan $${Number(av.required).toFixed(2)}.` });
+      } catch (e) {
+        return res.json({ success: false, message: 'Tidak bisa memverifikasi ketersediaan provider sebelum checkout: ' + e.message });
+      }
+    } else if (dsMode === 'hybrid' && mappedVariant && !hybridHasLocalStock && settings.dripstore?.balanceGuardEnabled !== false) {
+      try {
+        const av = await checkDripstoreVariantAvailability(settings, String(mappedVariant), 1);
+        if (!av.ok) return res.json({ success: false, message: `Stok lokal durasi ini habis dan saldo provider tidak cukup. Saldo provider $${Number(av.balance).toFixed(2)}, kebutuhan $${Number(av.required).toFixed(2)}.` });
+      } catch (e) {
+        return res.json({ success: false, message: 'Tidak bisa memverifikasi ketersediaan provider sebelum checkout: ' + e.message });
+      }
+    }
+
     const qrisMode = settings.qrisMode || 'static';
 
     let qrString = null, isStatic = false;
@@ -2220,7 +2420,11 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     const products = await readFresh('products.json');
     const product = products.find(p => p.id === productId);
     if (!product || product.status !== 'active') return res.json({ success: false, message: 'Produk tidak ditemukan' });
-    if (!product.keys || product.keys.length === 0) return res.json({ success: false, message: 'Stok habis' });
+
+    // Produk yang punya Variant ID DripStore akan mengambil 1 key live saat
+    // order selesai. Jadi stok lokal boleh 0. Produk tanpa mapping tetap
+    // memakai stok lokal seperti biasa.
+    const hasDripstoreMappedOption = (product.pricingOptions || []).some(o => o?.dripstoreVariantId);
 
     // Resolusi harga paket — logika sama seperti /create-order (unit-aware, lihat komentar di sana)
     const selectedUnit = (durationUnit === 'h') ? 'h' : 'd';
@@ -2301,14 +2505,53 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     // parseKeyDuration, dan separator "=" (bukan ":", lihat definisi helper
     // di atas untuk alasan lengkapnya).
     let key = null;
-    const allKeys = product.keys;
-    if (selectedDays) {
-      const idx = allKeys.findIndex(k => keyMatchesDuration(k, selectedDays, selectedUnit));
-      if (idx !== -1) key = parseKeyDuration(allKeys.splice(idx, 1)[0]).raw;
-      else return res.json({ success: false, message: `Stok key durasi ${formatDurationLabel(selectedDays, selectedUnit)} sedang habis. Silakan pilih durasi lain atau tunggu admin restock.` });
+    let keySource = 'local_stock';
+    let providerTransactionId = null;
+    let providerVariantId = null;
+
+    const matchedLiveOpt = selectedDays
+      ? product.pricingOptions?.find(o => Number(o.days) === Number(selectedDays) && (o.unit || 'd') === selectedUnit)
+      : null;
+
+    const dsFulfillmentMode = settings.dripstore?.fulfillmentMode || 'live';
+    const useLiveProvider = !!matchedLiveOpt?.dripstoreVariantId && (dsFulfillmentMode === 'live' || dsFulfillmentMode === 'hybrid');
+    if (useLiveProvider && dsFulfillmentMode === 'live') {
+      try {
+        const live = await fulfillProductFromDripstore({
+          id: 'wallet-' + Date.now() + '-' + req.session.userId,
+          productId: product.id, selectedDays, selectedUnit
+        }, settings);
+        key = live?.key || null;
+        keySource = live?.source || keySource;
+        providerTransactionId = live?.providerTransactionId || null;
+        providerVariantId = live?.variantId || String(matchedLiveOpt.dripstoreVariantId);
+      } catch (e) {
+        return res.json({ success: false, message: 'Gagal mengambil key dari DripStore: ' + e.message });
+      }
     } else {
-      const idx = allKeys.findIndex(k => isGenericKey(k));
-      if (idx !== -1) key = allKeys.splice(idx, 1)[0];
+      const allKeys = product.keys || [];
+      if (selectedDays) {
+        const idx = allKeys.findIndex(k => keyMatchesDuration(k, selectedDays, selectedUnit));
+        if (idx !== -1) key = parseKeyDuration(allKeys.splice(idx, 1)[0]).raw;
+        else return res.json({ success: false, message: `Stok key durasi ${formatDurationLabel(selectedDays, selectedUnit)} sedang habis. Silakan pilih durasi lain atau tunggu admin restock.` });
+      } else {
+        const idx = allKeys.findIndex(k => isGenericKey(k));
+        if (idx !== -1) key = allKeys.splice(idx, 1)[0];
+      }
+    }
+    if (!key && useLiveProvider && dsFulfillmentMode === 'hybrid') {
+      try {
+        const live = await fulfillProductFromDripstore({
+          id: 'wallet-' + Date.now() + '-' + req.session.userId,
+          productId: product.id, selectedDays, selectedUnit
+        }, settings);
+        key = live?.key || null;
+        keySource = live?.source || keySource;
+        providerTransactionId = live?.providerTransactionId || null;
+        providerVariantId = live?.variantId || String(matchedLiveOpt.dripstoreVariantId);
+      } catch (e) {
+        return res.json({ success: false, message: 'Stok lokal habis dan saldo/provider tidak cukup: ' + e.message });
+      }
     }
     if (!key) return res.json({ success: false, message: 'Stok habis' });
 
@@ -2330,7 +2573,10 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
       voucherDiscount: voucherDiscount > 0 ? voucherDiscount : undefined,
       price, totalPayment: price, paymentMethod: 'wallet',
       customerName: customerName || user.username, wa: wa || user.wa,
-      status: 'done', key, paidAt: new Date().toISOString(),
+      status: 'done', key, keySource,
+      providerVariantId: providerVariantId || undefined,
+      providerTransactionId: providerTransactionId || undefined,
+      paidAt: new Date().toISOString(),
       createdAt: new Date().toISOString(), time: formatDate()
     });
     await writeDB('transactions.json', transactions);
@@ -2608,7 +2854,12 @@ app.get('/buy/:id', (req, res) => {
       const days = m ? parseInt(m[1]) : null;
       const unit = m && /JAM/i.test(m[2]) ? 'h' : 'd';
       let stok;
-      if (days) {
+      const pOpt = (product.pricingOptions || []).find(o => Number(o.days) === Number(days) && (o.unit || 'd') === unit);
+      const providerBacked = !!pOpt?.dripstoreVariantId;
+      if (providerBacked) {
+        // Live provider: tampilkan tersedia walaupun stok key lokal 0.
+        stok = 1;
+      } else if (days) {
         const tagged = allKeys.filter(k => keyMatchesDuration(k, days, unit)).length;
         stok = tagged > 0 ? tagged : genericKeys.length;
       } else {
@@ -2630,7 +2881,7 @@ app.get('/buy/:id', (req, res) => {
           }
         }
       }
-      return { ...item, stok, reseller_price: computedResellerPrice, durationValue: days, durationUnit: unit };
+      return { ...item, stok, providerBacked, reseller_price: computedResellerPrice, durationValue: days, durationUnit: unit };
     });
   }
 
@@ -2653,7 +2904,12 @@ app.get('/buy/:id', (req, res) => {
   // Strip di sini, di level backend -- defense-in-depth, bukan bergantung
   // pada disiplin "jangan pernah pakai field ini di template nanti".
   const { keys: _rawKeys, ...productSafe } = product;
-  productSafe.stockCount = (_rawKeys || []).length;
+  const hasLiveProvider = (product.pricingOptions || []).some(o => o?.dripstoreVariantId);
+  // Public availability: mapped DripStore products remain purchasable even
+  // when AGHA NL has zero locally cached keys. The actual provider purchase
+  // happens only after payment confirmation.
+  productSafe.stockCount = (_rawKeys || []).length > 0 || hasLiveProvider ? 1 : 0;
+  productSafe.liveProvider = hasLiveProvider;
 
   res.render('pages/buy', { product: productSafe, settings, user, isReseller, hasPurchased, categoryLabels: settings.categoryLabels || {} });
 });
@@ -2706,7 +2962,10 @@ app.post('/create-order', async (req, res) => {
     const product = products.find(p => p.id === productId);
 
     if (!product || product.status !== 'active') return res.json({ success: false, message: 'Produk tidak ditemukan' });
-    if (!product.keys || product.keys.length === 0) return res.json({ success: false, message: 'Stok habis' });
+
+    // Stok lokal tidak wajib untuk durasi yang sudah di-map ke DripStore:
+    // key dibeli live dari provider setelah pembayaran dikonfirmasi.
+    const hasDripstoreMappedOption = (product.pricingOptions || []).some(o => o?.dripstoreVariantId);
 
     // Support pricingOptions (deem style: {days,unit,price}) dan items (lama: {l,p})
     //
@@ -2860,12 +3119,52 @@ app.post('/create-order', async (req, res) => {
 // pun -- transaction.status === 'done' di sini artinya sudah diproses
 // instance lain / caller lain, jadi tidak diproses ulang (idempotent).
 // ══════════════════════════════════════════════════════════════════
+// Persistent per-order fulfillment claim. `processingOrders` di memory saja
+// tidak cukup di Vercel karena webhook dan polling bisa masuk ke instance berbeda.
+// keyvalue_store punya UNIQUE(key), jadi INSERT atomik menjadi pagar lintas-instance:
+// hanya satu request yang boleh mengklaim order sebelum menyentuh stok/provider.
+const _localFulfillmentClaims = new Set();
+
+async function claimProductFulfillment(refId) {
+  const claimKey = `fulfillment-claim:${String(refId)}`;
+  const client = db.getClient();
+
+  // Local fallback: tetap mencegah race dalam satu process bila Supabase tidak tersedia.
+  if (!client) {
+    if (_localFulfillmentClaims.has(claimKey)) return false;
+    _localFulfillmentClaims.add(claimKey);
+    return true;
+  }
+
+  try {
+    const { error } = await client.from('keyvalue_store').insert({
+      key: claimKey,
+      value: { refId: String(refId), claimedAt: new Date().toISOString() }
+    });
+    if (!error) return true;
+    const duplicate = error.code === '23505' || /duplicate key|unique constraint/i.test(error.message || '');
+    if (duplicate) return false;
+    throw new Error(error.message || 'Gagal membuat fulfillment claim');
+  } catch (e) {
+    if (e?.code === '23505' || /duplicate key|unique constraint/i.test(e?.message || '')) return false;
+    throw e;
+  }
+}
+
 async function finalizeOrder(refId, settings) {
   const freshTransactions = await readFresh('transactions.json');
   const transaction = freshTransactions.find(t => t.id === refId);
   if (!transaction) return { status: 'not_found' };
   if (transaction.status === 'done') {
     return { status: 'already_done', type: transaction.type, key: transaction.key, code: transaction.code, outOfStock: transaction.outOfStock };
+  }
+
+  // Klaim hanya transaksi produk. Reseller/deposit tidak menyentuh provider key.
+  // Bila request lain sudah mengklaim order ini (termasuk instance Vercel lain),
+  // jangan pernah menjalankan fulfillment kedua kali.
+  if (!transaction.type || transaction.type === 'product') {
+    const claimed = await claimProductFulfillment(refId);
+    if (!claimed) return { status: 'already_processing', type: 'product', code: transaction.code };
   }
 
   // Jika transaksi reseller, upgrade status user
@@ -2905,11 +3204,32 @@ async function finalizeOrder(refId, settings) {
     return { status: 'done', type: 'deposit', balance: u?.balance || 0 };
   }
 
-  // Produk biasa: potong stok key
-  const products = await readFresh('products.json');
-  const product = products.find(p => p.id === transaction.productId);
+  // Produk biasa: kalau durasi punya Variant ID DripStore, fulfillment
+  // dilakukan LIVE dari provider. Ini sengaja dikerjakan SETELAH pembayaran
+  // dikonfirmasi, sehingga saldo DripStore hanya berkurang untuk customer nyata.
   let key = null;
   let outOfStock = false;
+  let keySource = 'local_stock';
+  let providerTransactionId = null;
+  let providerVariantId = null;
+
+  const fulfillmentMode = settings.dripstore?.fulfillmentMode || 'live';
+  const shouldTryLiveFirst = fulfillmentMode === 'live';
+  const shouldTryLocalFirst = fulfillmentMode === 'local' || fulfillmentMode === 'hybrid';
+
+  if (shouldTryLiveFirst) {
+    const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
+    if (liveProvider && !liveProvider.error) {
+      key = liveProvider.key; keySource = liveProvider.source;
+      providerTransactionId = liveProvider.providerTransactionId; providerVariantId = liveProvider.variantId;
+    } else if (liveProvider?.error) {
+      console.error('[DripStore live fulfillment]', transaction.code, liveProvider.error.message);
+      outOfStock = true;
+    }
+  }
+
+  const products = await readFresh('products.json');
+  const product = products.find(p => p.id === transaction.productId);
 
   // FIX BUG KRITIS (dilaporkan client 21 Agu 2026): sebelumnya kalau stok
   // durasi yang dipesan (misal 1-day) habis, kode fallback ke key generic,
@@ -2922,32 +3242,45 @@ async function finalizeOrder(refId, settings) {
   // Memakai helper parseKeyDuration/keyMatchesDuration (separator "=", lihat
   // definisi di atas) dan sekarang unit-aware (hari 'd' / jam 'h') untuk
   // dukung fitur key per-jam.
-  if (product?.keys?.length > 0) {
+  // Hanya gunakan stok lokal bila durasi TIDAK punya mapping DripStore.
+  // Untuk live-provider, key sudah diambil dari provider di atas dan stok lokal
+  // tidak disentuh. Tidak ada auto-restock setelah penjualan live.
+  if (!key && !outOfStock && shouldTryLocalFirst && product?.keys?.length > 0) {
     const days = transaction.selectedDays;
     const unit = transaction.selectedUnit || 'd';
     if (days) {
       const idx = product.keys.findIndex(k => keyMatchesDuration(k, days, unit));
       if (idx !== -1) key = parseKeyDuration(product.keys.splice(idx, 1)[0]).raw;
-      // else: stok durasi ini kosong -- JANGAN fallback ke durasi lain, biarkan key null (outOfStock).
     } else {
       const idx = product.keys.findIndex(k => isGenericKey(k));
       if (idx !== -1) key = product.keys.splice(idx, 1)[0];
     }
   }
 
+  if (!key && !outOfStock && fulfillmentMode === 'hybrid') {
+    const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
+    if (liveProvider && !liveProvider.error) {
+      key = liveProvider.key; keySource = liveProvider.source;
+      providerTransactionId = liveProvider.providerTransactionId; providerVariantId = liveProvider.variantId;
+    } else if (liveProvider?.error) {
+      console.error('[DripStore hybrid fulfillment]', transaction.code, liveProvider.error.message);
+      outOfStock = true;
+    }
+  }
+
   if (key) {
     product.sold = (product.sold || 0) + 1;
-    await writeDB('products.json', products);
-    // Fire-and-forget: cek auto-restock DripStore, TIDAK di-await supaya
-    // tidak memperlambat/menggagalkan response ke pembeli kalau API
-    // DripStore lambat/error (lihat maybeAutoRestockDripstore()).
-    if (transaction.selectedDays) maybeAutoRestockDripstore(product.id, transaction.selectedDays, transaction.selectedUnit || 'd');
+    // Hanya simpan products.json bila memang mengambil key lokal.
+    if (keySource === 'local_stock') await writeDB('products.json', products);
   } else {
     outOfStock = true;
   }
 
   transaction.status = 'done';
   transaction.key = key;
+  transaction.keySource = keySource;
+  transaction.providerVariantId = providerVariantId || undefined;
+  transaction.providerTransactionId = providerTransactionId || undefined;
   transaction.outOfStock = outOfStock;
   transaction.paidAt = new Date().toISOString();
   const txListFinal = await readFresh('transactions.json');
@@ -3377,6 +3710,164 @@ app.post('/admin/fix-categories-agha', requireAdmin, async (req, res) => {
     if (plan.productUpdates.length > 0) await writeDB('products.json', plan.products);
     res.send(aghaCategoryFixHtml({ ...plan, applied: true }));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// IMPORT PRODUK CLIENT VIA URL ADMIN-ONLY
+// Login admin -> buka URL khusus dengan price/days -> daftar produk client
+// dibuat otomatis. Operasi idempotent: nama yang sudah ada dilewati.
+const AGHA_CLIENT_PRODUCT_IMPORT_LIST = [
+  'DRIP CLINT APK MOD',
+  'ABCD PANEL',
+  'DRIP WIRE',
+  'AIM HACK',
+  'SILENT CHEATS',
+  'HG APK MOD',
+  'XREG APK MOD',
+  'PATO ORANGE',
+  'PATO GREEN',
+  'PATO BLUE'
+];
+const AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY = 'APK MOD NO ROOT';
+
+const importProductsNormalizeName = (value) => String(value || '')
+  .normalize('NFKC')
+  .toLowerCase()
+  .replace(/[._|/\\-]+/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const importProductsSlugify = (label) => importProductsNormalizeName(label).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
+const importProductsParseMoney = (value) => {
+  if (value === undefined || value === null || value === '') return NaN;
+  const digits = String(value).replace(/[^\d]/g, '');
+  return digits ? Number(digits) : NaN;
+};
+
+async function importAghaClientProducts({ price, days, unit = 'd' }) {
+  const safePrice = importProductsParseMoney(price);
+  const safeDays = Number(String(days ?? '').replace(/[^\d]/g, ''));
+  const safeUnit = String(unit).toLowerCase() === 'h' ? 'h' : 'd';
+
+  if (!Number.isFinite(safePrice) || safePrice < 1) {
+    throw new Error('Harga wajib diisi. Gunakan ?price=50000');
+  }
+  if (!Number.isInteger(safeDays) || safeDays < 1) {
+    throw new Error('Durasi wajib diisi. Gunakan ?days=30');
+  }
+
+  const [productsRaw, settingsRaw] = await Promise.all([
+    readFresh('products.json'),
+    readFresh('settings.json')
+  ]);
+  const products = Array.isArray(productsRaw) ? productsRaw : [];
+  const settings = settingsRaw && typeof settingsRaw === 'object' ? settingsRaw : {};
+
+  settings.categories = Array.isArray(settings.categories) ? settings.categories : [];
+  settings.categoryLabels = settings.categoryLabels && typeof settings.categoryLabels === 'object'
+    ? settings.categoryLabels
+    : {};
+
+  let categorySlug = settings.categories.find(slug =>
+    importProductsNormalizeName(settings.categoryLabels[slug]) === importProductsNormalizeName(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY)
+  );
+  if (!categorySlug) categorySlug = importProductsSlugify(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
+  if (!settings.categories.includes(categorySlug)) settings.categories.unshift(categorySlug);
+  settings.categoryLabels[categorySlug] = AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY;
+
+  const existing = new Set(products.map(p => importProductsNormalizeName(p?.name)));
+  const added = [];
+  const skipped = [];
+
+  for (const name of AGHA_CLIENT_PRODUCT_IMPORT_LIST) {
+    const normalized = importProductsNormalizeName(name);
+    if (existing.has(normalized)) {
+      skipped.push(name);
+      continue;
+    }
+
+    const pricingOption = {
+      days: safeDays,
+      unit: safeUnit,
+      price: safePrice,
+      reseller_price: null,
+      strike_price: null
+    };
+
+    const durationLabel = safeUnit === 'h' ? `${safeDays} JAM` : `${safeDays} HARI`;
+    const product = {
+      id: uuidv4(),
+      name,
+      categories: [categorySlug],
+      description: '',
+      image: '/images/placeholder.jpg',
+      pricingOptions: [pricingOption],
+      items: [{
+        l: `${name.toUpperCase()} ${durationLabel}`,
+        p: safePrice,
+        reseller_price: null,
+        strike_price: null
+      }],
+      status: 'active',
+      keys: [],
+      channelUrl: '',
+      downloadUrl: '',
+      fakeSold: null,
+      sold: 0,
+      createdAt: new Date().toISOString()
+    };
+
+    products.push(product);
+    existing.add(normalized);
+    added.push(product);
+  }
+
+  // Satu write per sumber data agar perubahan kategori dan produk konsisten.
+  await writeDB('settings.json', settings);
+  await writeDB('products.json', products);
+
+  return {
+    category: AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY,
+    categorySlug,
+    price: safePrice,
+    days: safeDays,
+    unit: safeUnit,
+    added: added.map(p => ({ id: p.id, name: p.name })),
+    skipped,
+    totalRequested: AGHA_CLIENT_PRODUCT_IMPORT_LIST.length
+  };
+}
+
+// URL AUTO-IMPORT:
+// /admin/tools/import-client-apk?price=50000&days=30&unit=d
+// WAJIB sedang login sebagai admin karena dilindungi requireAdmin.
+// Refresh aman: produk yang sudah ada otomatis dilewati.
+app.get('/admin/tools/import-client-apk', requireAdmin, async (req, res) => {
+  try {
+    const result = await importAghaClientProducts({
+      price: req.query.price,
+      days: req.query.days,
+      unit: req.query.unit || 'd'
+    });
+
+    const addedHtml = result.added.length
+      ? result.added.map(p => `<li>${p.name}</li>`).join('')
+      : '<li>Tidak ada produk baru.</li>';
+    const skippedHtml = result.skipped.length
+      ? `<p style="color:#facc15;">Dilewati karena sudah ada: ${result.skipped.length} produk.</p>`
+      : '';
+
+    res.send(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Import Produk Client</title>
+      <style>body{margin:0;background:#09090b;color:#f4f4f5;font-family:Arial,sans-serif}.wrap{max-width:720px;margin:48px auto;padding:24px}.card{border:1px solid #27272a;border-radius:14px;padding:22px;background:#111113}h1{font-size:22px;margin:0 0 8px;color:#4ade80}p{color:#a1a1aa}.meta{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}.meta div{padding:12px;border:1px solid #27272a;border-radius:10px}.label{font-size:11px;color:#71717a;text-transform:uppercase}.value{margin-top:4px;font-weight:700}li{padding:4px 0}a{color:#60a5fa;text-decoration:none}</style></head>
+      <body><main class="wrap"><section class="card"><h1>✅ Import produk berhasil</h1>
+      <p>Endpoint ini hanya bisa dibuka setelah login admin.</p>
+      <div class="meta"><div><div class="label">Kategori</div><div class="value">${result.category}</div></div><div><div class="label">Paket default</div><div class="value">${result.days}${result.unit === 'h' ? ' jam' : ' hari'} — Rp${result.price.toLocaleString('id-ID')}</div></div></div>
+      <h3>Ditambahkan (${result.added.length})</h3><ul>${addedHtml}</ul>${skippedHtml}
+      <p style="margin-top:22px;"><a href="/admin">← Kembali ke Admin</a></p></section></main></body></html>`);
+  } catch (e) {
+    res.status(400).send(`<!doctype html><html><body style="font-family:Arial;background:#09090b;color:#f4f4f5;padding:40px"><h2 style="color:#f87171">❌ Import gagal</h2><p>${String(e?.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</p><p>Contoh URL: <code>/admin/tools/import-client-apk?price=50000&amp;days=30&amp;unit=d</code></p><p><a style="color:#60a5fa" href="/admin">← Kembali ke Admin</a></p></body></html>`);
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -4006,23 +4497,25 @@ app.post('/admin/settings/genspay', requireAdmin, async (req, res) => {
 app.post('/admin/settings/dripstore', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
-    const { apiToken, baseUrl, autoRestockEnabled, lowStockThreshold, restockQty } = req.body;
+    const { apiToken, baseUrl, fulfillmentMode, balanceGuardEnabled, autoRestockEnabled, lowStockThreshold, restockQty } = req.body;
     settings.dripstore = {
       apiToken: apiToken !== undefined ? apiToken.trim() : (settings.dripstore?.apiToken || ''),
       baseUrl: baseUrl !== undefined ? baseUrl.trim() : (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1'),
+      fulfillmentMode: ['live','local','hybrid'].includes(fulfillmentMode) ? fulfillmentMode : (settings.dripstore?.fulfillmentMode || 'live'),
+      balanceGuardEnabled: balanceGuardEnabled === undefined ? (settings.dripstore?.balanceGuardEnabled !== false) : (balanceGuardEnabled === 'on' || balanceGuardEnabled === true),
       autoRestockEnabled: autoRestockEnabled === 'on' || autoRestockEnabled === true,
       lowStockThreshold: Number.isFinite(parseInt(lowStockThreshold, 10)) ? Math.max(0, parseInt(lowStockThreshold, 10)) : (settings.dripstore?.lowStockThreshold ?? 3),
       restockQty: Number.isFinite(parseInt(restockQty, 10)) && parseInt(restockQty, 10) > 0 ? parseInt(restockQty, 10) : (settings.dripstore?.restockQty ?? 10),
     };
     await writeDB('settings.json', settings);
 
-    // Saat Auto-Restock diaktifkan + token tersedia, langsung sinkronkan
-    // product -> variant DripStore dan isi stok yang masih <= threshold.
+    // Saat Auto-Restock diaktifkan + token tersedia, sinkronkan
+    // product -> variant DripStore. Stok rendah hanya membuat proposal pending.
     // Pengaturan provider tetap tersimpan walaupun API mapping sedang error.
     let autoMap = null;
     if (settings.dripstore.apiToken && settings.dripstore.autoRestockEnabled) {
       try {
-        autoMap = await autoMapDripstoreProducts({ restockLowStock: true });
+        autoMap = await autoMapDripstoreProducts({ restockLowStock: false });
       } catch (e) {
         autoMap = { warning: e.message };
       }
@@ -4037,10 +4530,24 @@ app.post('/admin/settings/dripstore', requireAdmin, async (req, res) => {
 // Endpoint ini juga bisa dipanggil manual dari Settings kapan saja.
 app.post('/admin/dripstore/auto-map', requireAdmin, async (req, res) => {
   try {
-    const restockLowStock = req.body?.restockLowStock !== false;
-    const result = await autoMapDripstoreProducts({ restockLowStock });
+    // Mapping sengaja dipisah dari generate key agar request ini cepat dan aman
+    // untuk Vercel/serverless. Restock dilakukan lewat /restock-one di bawah.
+    const result = await autoMapDripstoreProducts({ restockLowStock: false });
     res.json({ success: true, ...result });
   } catch (e) {
+    console.error('[dripstore auto-map]', e);
+    res.json({ success: false, message: e.message });
+  }
+});
+
+// Generate key untuk SATU target saja. Ini mencegah timeout kalau toko punya
+// banyak produk/durasi yang stoknya sama-sama di bawah threshold.
+app.post('/admin/dripstore/restock-one', requireAdmin, async (req, res) => {
+  try {
+    const result = await restockOneDripstoreTarget(req.body || {});
+    res.json({ success: true, ...result });
+  } catch (e) {
+    console.error('[dripstore restock-one]', e);
     res.json({ success: false, message: e.message });
   }
 });
@@ -4054,39 +4561,75 @@ app.get('/admin/dripstore/balance', requireAdmin, async (req, res) => {
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
+app.get('/admin/dripstore/availability', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const balance = await getDripstoreBalanceValue(settings);
+    const supplier = await dripstoreCall(settings, 'products.php');
+    const products = await readFresh('products.json');
+    const rows = [];
+    for (const p of products) {
+      for (const o of (p.pricingOptions || [])) {
+        if (!o?.dripstoreVariantId) continue;
+        const cost = _dsFindVariantCost(supplier, o.dripstoreVariantId);
+        const required = cost == null ? null : Number(cost);
+        rows.push({ productId: p.id, productName: p.name, days: Number(o.days), unit: o.unit || 'd', variantId: String(o.dripstoreVariantId), cost: required, available: balance != null && required != null ? balance + 1e-9 >= required : null });
+      }
+    }
+    res.json({ success: true, balance, rows });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
 // Restock MANUAL 1 baris harga tertentu dari DripStore (tombol di admin-product-edit).
 // Beda dari auto-restock: ini SELALU jalan kalau dipencet, gak peduli threshold stok.
 app.post('/admin/product/:id/restock-dripstore', requireAdmin, async (req, res) => {
-  const { days, unit, quantity } = req.body;
-  const d = parseInt(days, 10), qty = parseInt(quantity, 10) || 10;
-  const u = unit === 'h' ? 'h' : 'd';
-  if (!(d > 0)) return res.json({ success: false, message: 'Durasi tidak valid' });
-  const lockKey = `${req.params.id}:${d}:${u}`;
-  // Sama kayak auto-restock: cegah klik dobel/2 tab admin restock produk+durasi
-  // yang sama bersamaan, biar gak ke-generate 2x dari DripStore tanpa sadar.
-  if (_dripstoreRestockLocks.has(lockKey)) return res.json({ success: false, message: 'Restock buat durasi ini lagi diproses, tunggu sebentar' });
-  _dripstoreRestockLocks.add(lockKey);
   try {
-    const products = await readFresh('products.json');
-    const product = products.find(p => p.id === req.params.id);
-    if (!product) return res.json({ success: false, message: 'Produk tidak ditemukan' });
-    const opt = (product.pricingOptions || []).find(o => o.days === d && (o.unit || 'd') === u);
-    if (!opt) return res.json({ success: false, message: 'Opsi harga durasi ini tidak ditemukan di produk' });
-    if (!opt.dripstoreVariantId) return res.json({ success: false, message: 'Durasi ini belum di-mapping ke Variant ID DripStore. Isi dulu di field "DripStore Variant ID" pada baris harga ini.' });
-
-    const settings = await readFresh('settings.json');
-    const newKeys = await dripstoreGenerateKey(settings, opt.dripstoreVariantId, qty);
-    const tag = `=${d}${u}`;
-    const taggedKeys = newKeys.map(k => `${k}${tag}`);
-
-    const freshProducts = await readFresh('products.json');
-    const freshProduct = freshProducts.find(p => p.id === req.params.id);
-    freshProduct.keys = [...(freshProduct.keys || []), ...taggedKeys];
-    await writeDB('products.json', freshProducts);
-
-    res.json({ success: true, keyCount: taggedKeys.length, keys: taggedKeys });
+    const { days, unit, quantity } = req.body || {};
+    const request = await createDripstoreRestockRequest({
+      productId: req.params.id,
+      days: Number(days),
+      unit: unit === 'h' ? 'h' : 'd',
+      quantity: Number(quantity),
+      source: 'manual'
+    });
+    res.json({ success: true, request, requiresApproval: true });
   } catch (e) { res.json({ success: false, message: e.message }); }
-  finally { _dripstoreRestockLocks.delete(lockKey); }
+});
+
+// Daftar proposal restock. Tidak ada purchase di endpoint ini.
+app.get('/admin/dripstore/restock-requests', requireAdmin, async (req, res) => {
+  try {
+    const all = await readFresh('dripstore_restock_requests.json').catch(() => []);
+    const status = String(req.query.status || 'pending');
+    const requests = status === 'all' ? all : all.filter(r => r.status === status);
+    res.json({ success: true, requests: requests.slice(0, 100) });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+// Purchase DripStore HANYA boleh terjadi lewat endpoint approval ini.
+app.post('/admin/dripstore/restock-requests/:id/approve', requireAdmin, async (req, res) => {
+  try {
+    const adminName = req.session?.username || req.session?.userId || 'admin';
+    const request = await approveDripstoreRestockRequest(String(req.params.id), adminName);
+    res.json({ success: true, request });
+  } catch (e) {
+    console.error('[dripstore restock approve]', e);
+    res.json({ success: false, message: e.message });
+  }
+});
+
+app.post('/admin/dripstore/restock-requests/:id/reject', requireAdmin, async (req, res) => {
+  try {
+    const requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
+    const idx = requests.findIndex(r => r.id === String(req.params.id));
+    if (idx === -1) return res.json({ success: false, message: 'Restock request tidak ditemukan' });
+    if (requests[idx].status !== 'pending') return res.json({ success: false, message: `Request sudah ${requests[idx].status}` });
+    requests[idx].status = 'rejected';
+    requests[idx].rejectedAt = new Date().toISOString();
+    requests[idx].rejectedBy = req.session?.username || req.session?.userId || 'admin';
+    await writeDB('dripstore_restock_requests.json', requests.slice(0, 500));
+    res.json({ success: true, request: requests[idx] });
+  } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
 app.post('/admin/qris/test', requireAdmin, async (req, res) => {
@@ -4279,6 +4822,24 @@ app.post('/admin/transaction/confirm/:id', requireAdmin, async (req, res) => {
       return res.json({ success: true, type: 'deposit', balance: u?.balance || 0 });
     }
 
+    // Transaksi produk biasa: untuk durasi yang sudah di-map ke DripStore,
+    // ambil 1 key LIVE dari provider setelah admin mengonfirmasi pembayaran.
+    const liveProvider = await fulfillProductFromDripstore(transaction, await readFresh('settings.json')).catch(e => ({ error: e }));
+    if (liveProvider && !liveProvider.error) {
+      transaction.status = 'done';
+      transaction.key = liveProvider.key;
+      transaction.keySource = liveProvider.source;
+      transaction.providerVariantId = liveProvider.variantId;
+      transaction.providerTransactionId = liveProvider.providerTransactionId || undefined;
+      transaction.outOfStock = false;
+      transaction.paidAt = new Date().toISOString();
+      transaction.confirmedBy = 'admin';
+      await writeDB('transactions.json', transactions);
+      return res.json({ success: true, key: transaction.key });
+    } else if (liveProvider?.error) {
+      return res.json({ success: false, message: 'Gagal mengambil key dari DripStore: ' + liveProvider.error.message });
+    }
+
     // Transaksi produk biasa: ambil key
     // FIX BUG KRITIS (sama seperti finalizeOrder & /wallet/buy): kalau stok
     // durasi yang dipesan habis, JANGAN fallback ke durasi lain (dulu
@@ -4302,7 +4863,7 @@ app.post('/admin/transaction/confirm/:id', requireAdmin, async (req, res) => {
       if (key) {
         product.sold = (product.sold || 0) + 1;
         await writeDB('products.json', products);
-        if (transaction.selectedDays) maybeAutoRestockDripstore(product.id, transaction.selectedDays, transaction.selectedUnit || 'd');
+        // Tidak auto-purchase setelah penjualan. Auto-restock hanya membuat proposal.
       } else {
         outOfStock = true;
       }
@@ -4312,6 +4873,7 @@ app.post('/admin/transaction/confirm/:id', requireAdmin, async (req, res) => {
 
     transaction.status = 'done';
     transaction.key = key;
+    transaction.keySource = 'local_stock';
     transaction.outOfStock = outOfStock;
     transaction.paidAt = new Date().toISOString();
     transaction.confirmedBy = 'admin';
