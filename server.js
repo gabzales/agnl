@@ -1160,8 +1160,8 @@ function _dsNormalizeName(value) {
     .toLowerCase()
     .replace(/[_|/\\-]+/g, ' ')
     .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\b(1|3|6|7|14|15|30|60|90|365)\s*(hari|day|days|d|jam|hour|hours|h|tahun|thn|year|years|yr|yrs|y)\b/gi, ' ')
-    .replace(/\b\d+\s*(hari|day|days|d|jam|hour|hours|h|tahun|thn|year|years|yr|yrs|y)\b/gi, ' ')
+    .replace(/\b(1|3|6|7|14|15|30|60|90|365)\s*(hari|day|days|d|jam|hour|hours|h)\b/gi, ' ')
+    .replace(/\b\d+\s*(hari|day|days|d|jam|hour|hours|h)\b/gi, ' ')
     .replace(/\b(1|7|30)d\b/gi, ' ')
     .replace(/\b(1|12|24|72)h\b/gi, ' ')
     .replace(/\s+/g, ' ')
@@ -1172,15 +1172,7 @@ function _dsDurationFromText(value) {
   const text = String(value || '').toLowerCase().trim();
   let m = text.match(/(^|\b)(\d+)\s*(hours?|hrs?|jam|h)\b/);
   if (m) return { days: parseInt(m[2], 10), unit: 'h' };
-
-  // Tahun harus diperlakukan sebagai 365 hari agar Gbox 1 thn / 1 tahun
-  // bisa dicocokkan dengan variant DripStore yang memakai days=365.
-  m = text.match(/(^|\b)(\d+)\s*(tahun|thn|years?|yrs?|yr|year|y)\b/);
-  if (m) return { days: parseInt(m[2], 10) * 365, unit: 'd' };
-  m = text.match(/(?:^|[^0-9])(\d+)(?:tahun|thn|years?|yrs?|yr|year|y)(?:$|[^a-z0-9])/);
-  if (m) return { days: parseInt(m[1], 10) * 365, unit: 'd' };
-
-  m = text.match(/(^|\b)(\d+)\s*(days?|hari|d)\b/);
+  m = text.match(/(^|\b)(\d+)\s*(days?|hari|tahun|years?|yr|d)\b/);
   if (m) return { days: parseInt(m[2], 10), unit: 'd' };
   m = text.match(/(?:^|[^0-9])(\d+)h(?:$|[^a-z0-9])/);
   if (m) return { days: parseInt(m[1], 10), unit: 'h' };
@@ -2951,9 +2943,14 @@ app.get('/buy/:id', async (req, res) => {
       // Label item sekarang bisa "... 30 HARI" atau "... 12 JAM" (lihat
       // formatDurationLabel) -- regex ini menangkap keduanya. Item lama
       // (format lawas "30 DAYS") tetap dikenali via alternasi DAYS|HARI.
-      const m = (item.l || '').match(/(\d+)\s+(DAYS|HARI|JAM)/i);
-      const days = m ? parseInt(m[1]) : null;
-      const unit = m && /JAM/i.test(m[2]) ? 'h' : 'd';
+      // Support semua label durasi yang bisa muncul di produk lama maupun baru:
+      // 1 THN / 1 TAHUN / 1 YEAR harus dibaca sebagai 365 hari.
+      // Tanpa ini item Gbox 1 thn masuk ke branch days=null -> stok generic=0.
+      const m = (item.l || '').match(/(\d+)\s*(DAYS?|HARI|JAM|HOURS?|THN|TH|TAHUN|YEAR|YEARS|YR|YRS)/i);
+      let days = m ? parseInt(m[1], 10) : null;
+      const rawUnit = m ? String(m[2]).toUpperCase() : '';
+      const unit = m && /^(JAM|HOUR|HOURS)$/i.test(rawUnit) ? 'h' : 'd';
+      if (m && /^(THN|TH|TAHUN|YEAR|YEARS|YR|YRS)$/i.test(rawUnit)) days *= 365;
       let stok;
       const pOpt = (product.pricingOptions || []).find(o => Number(o.days) === Number(days) && (o.unit || 'd') === unit);
       const providerBacked = !!pOpt?.dripstoreVariantId;
