@@ -3904,6 +3904,29 @@ async function importAghaClientProducts({ price, days, unit = 'd' }) {
   await writeDB('settings.json', settings);
   await writeDB('products.json', products);
 
+  // Verifikasi source-of-truth setelah write. Jangan kasih status sukses
+  // kalau data yang dibaca ulang belum benar-benar memuat kategori target.
+  const [verifiedSettings, verifiedProductsRaw] = await Promise.all([
+    readFresh('settings.json'),
+    readFresh('products.json')
+  ]);
+  const verifiedProducts = Array.isArray(verifiedProductsRaw) ? verifiedProductsRaw : [];
+  const verifiedCategorySlug = (verifiedSettings?.categories || []).find(slug =>
+    importProductsNormalizeName(verifiedSettings?.categoryLabels?.[slug]) === targetNorm
+    || String(slug) === String(categorySlug)
+  );
+  if (!verifiedCategorySlug) {
+    throw new Error('Kategori APK MOD NO ROOT tidak terverifikasi setelah penyimpanan.');
+  }
+  const verifyMissing = AGHA_CLIENT_PRODUCT_IMPORT_LIST.filter(name => {
+    const p = verifiedProducts.find(x => importProductsNormalizeName(x?.name) === importProductsNormalizeName(name));
+    const cats = Array.isArray(p?.categories) ? p.categories : (p?.category ? [p.category] : []);
+    return !p || !cats.includes(verifiedCategorySlug);
+  });
+  if (verifyMissing.length) {
+    throw new Error('Verifikasi kategori gagal untuk: ' + verifyMissing.join(', '));
+  }
+
   return {
     category: AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY,
     categorySlug,
@@ -3949,6 +3972,106 @@ app.get('/admin/tools/import-client-apk', requireAdmin, async (req, res) => {
       <p style="margin-top:22px;"><a href="/admin">← Kembali ke Admin</a></p></section></main></body></html>`);
   } catch (e) {
     res.status(400).send(`<!doctype html><html><body style="font-family:Arial;background:#09090b;color:#f4f4f5;padding:40px"><h2 style="color:#f87171">❌ Import gagal</h2><p>${String(e?.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</p><p>Contoh URL: <code>/admin/tools/import-client-apk?price=50000&amp;days=30&amp;unit=d</code></p><p><a style="color:#60a5fa" href="/admin">← Kembali ke Admin</a></p></body></html>`);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// REPAIR KATEGORI APK MOD NO ROOT (admin-only)
+// Tidak membuat produk baru dan tidak mengubah harga/stok/mapping.
+// Ini khusus memperbaiki membership kategori untuk 10 produk client yang
+// sudah ada di database, lalu memverifikasi ulang hasilnya dari source of truth.
+app.get('/admin/tools/repair-apk-no-root', requireAdmin, async (req, res) => {
+  try {
+    const [productsRaw, settingsRaw] = await Promise.all([
+      readFresh('products.json'),
+      readFresh('settings.json')
+    ]);
+    const products = Array.isArray(productsRaw) ? productsRaw : [];
+    const settings = settingsRaw && typeof settingsRaw === 'object' ? settingsRaw : {};
+    settings.categories = Array.isArray(settings.categories) ? [...settings.categories] : [];
+    settings.categoryLabels = settings.categoryLabels && typeof settings.categoryLabels === 'object'
+      ? { ...settings.categoryLabels } : {};
+
+    const targetNorm = importProductsNormalizeName(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
+    const targetCompact = 'apkmodnoroot';
+    let categorySlug = settings.categories.find(slug =>
+      importProductsNormalizeName(settings.categoryLabels[slug]) === targetNorm
+    );
+    if (!categorySlug) {
+      categorySlug = settings.categories.find(slug =>
+        importProductsNormalizeName(slug).replace(/[^a-z0-9]+/g, '') === targetCompact
+      );
+    }
+    if (!categorySlug) {
+      throw new Error('Kategori existing "APK MOD NO ROOT" tidak ditemukan di Settings.');
+    }
+    settings.categoryLabels[categorySlug] = AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY;
+
+    const changed = [];
+    const notFound = [];
+    for (const name of AGHA_CLIENT_PRODUCT_IMPORT_LIST) {
+      const product = products.find(p => importProductsNormalizeName(p?.name) === importProductsNormalizeName(name));
+      if (!product) { notFound.push(name); continue; }
+      const current = Array.isArray(product.categories)
+        ? [...product.categories]
+        : (product.category ? [product.category] : []);
+      const next = [];
+      let foundTarget = false;
+      for (const cat of current) {
+        const compact = importProductsNormalizeName(cat).replace(/[^a-z0-9]+/g, '');
+        const isTarget = String(cat) === String(categorySlug)
+          || importProductsNormalizeName(settings.categoryLabels[cat]) === targetNorm
+          || compact === targetCompact;
+        if (isTarget) {
+          foundTarget = true;
+          if (!next.includes(categorySlug)) next.push(categorySlug);
+        } else if (!next.includes(cat)) {
+          next.push(cat);
+        }
+      }
+      if (!foundTarget) next.push(categorySlug);
+      const altered = JSON.stringify(current) !== JSON.stringify(next)
+        || Object.prototype.hasOwnProperty.call(product, 'category');
+      if (altered) {
+        product.categories = next;
+        if (Object.prototype.hasOwnProperty.call(product, 'category')) delete product.category;
+        changed.push(name);
+      }
+    }
+
+    const idx = settings.categories.indexOf(categorySlug);
+    if (idx > 0) {
+      settings.categories.splice(idx, 1);
+      settings.categories.unshift(categorySlug);
+    }
+    await writeDB('settings.json', settings);
+    await writeDB('products.json', products);
+
+    const [verifiedSettings, verifiedProductsRaw] = await Promise.all([
+      readFresh('settings.json'),
+      readFresh('products.json')
+    ]);
+    const verifiedProducts = Array.isArray(verifiedProductsRaw) ? verifiedProductsRaw : [];
+    const verifiedSlug = (verifiedSettings?.categories || []).find(slug =>
+      String(slug) === String(categorySlug)
+      && importProductsNormalizeName(verifiedSettings?.categoryLabels?.[slug]) === targetNorm
+    );
+    if (!verifiedSlug) throw new Error('Kategori target gagal diverifikasi setelah repair.');
+    const verifyMissing = AGHA_CLIENT_PRODUCT_IMPORT_LIST.filter(name => {
+      const p = verifiedProducts.find(x => importProductsNormalizeName(x?.name) === importProductsNormalizeName(name));
+      const cats = Array.isArray(p?.categories) ? p.categories : [];
+      return !p || !cats.includes(verifiedSlug);
+    });
+    if (verifyMissing.length) {
+      throw new Error('Repair gagal diverifikasi untuk: ' + verifyMissing.join(', '));
+    }
+
+    const missingHtml = notFound.length
+      ? `<p style="color:#facc15;">Tidak ditemukan di database: ${notFound.join(', ')}</p>`
+      : '<p>Semua 10 nama client ditemukan di database.</p>';
+    res.send(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Repair APK MOD NO ROOT</title><style>body{margin:0;background:#09090b;color:#f4f4f5;font-family:Arial,sans-serif}.wrap{max-width:720px;margin:48px auto;padding:24px}.card{border:1px solid #27272a;border-radius:14px;padding:22px;background:#111113}h1{font-size:22px;color:#4ade80}li{padding:4px 0}a{color:#60a5fa;text-decoration:none}</style></head><body><main class="wrap"><section class="card"><h1>✅ Kategori berhasil diperbaiki</h1><p>Target: <b>${AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY}</b></p><p>Slug: <b>${categorySlug}</b></p><p>Produk yang diperbaiki: <b>${changed.length}</b></p>${missingHtml}<ul>${AGHA_CLIENT_PRODUCT_IMPORT_LIST.map(n => `<li>${n} — OK</li>`).join('')}</ul><p><a href="/admin">← Kembali ke Admin</a> &nbsp; <a href="/">Lihat Store</a></p></section></main></body></html>`);
+  } catch (e) {
+    res.status(400).send(`<!doctype html><html><body style="font-family:Arial;background:#09090b;color:#f4f4f5;padding:40px"><h2 style="color:#f87171">❌ Repair gagal</h2><p>${String(e?.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</p><p><a style="color:#60a5fa" href="/admin">← Kembali ke Admin</a></p></body></html>`);
   }
 });
 

@@ -387,7 +387,7 @@ const popularProducts = products
       const minPrice   = priceList.length ? Math.min(...priceList) : (product.price||0);
       const displaySold = (product.fakeSold != null) ? product.fakeSold : (product.sold || 0);
     %>
-    <div class="fz-card" data-categories="<%= prodCategories.join(' ') %>">
+    <div class="fz-card" data-categories='<%- safeJson(prodCategories).replace(/'/g, '&#39;') %>'>
       <div class="fz-card-img" onclick="location.href='/buy/<%= product.id %>'" style="cursor:pointer;">
         <% if (product.image) { %>
         <img src="<%= product.image %>" alt="<%= product.name %>" loading="lazy"
@@ -865,7 +865,8 @@ function filterProducts(cat){
   // cek "apakah kategori yang dipilih ADA di dalam list", bukan exact match
   // seperti sebelumnya (yang cuma cocok kalau produk persis 1 kategori saja).
   document.querySelectorAll('[data-categories]').forEach(c=>{
-    const cats = (c.dataset.categories || '').split(' ').filter(Boolean);
+    let cats = [];
+    try { cats = JSON.parse(c.dataset.categories || '[]'); } catch { cats = []; }
     const match = cat === 'all' || cats.includes(cat);
     c.style.display = match ? '' : 'none';
   });
