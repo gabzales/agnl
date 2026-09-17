@@ -155,14 +155,50 @@ async function main() {
   if (!categories.includes(categorySlug)) categories.push(categorySlug);
   categoryLabels[categorySlug] = CATEGORY_LABEL;
 
-  const existing = new Set(safeProducts.map(p => normalizeName(p?.name)));
+  const existingByName = new Map();
+  for (const product of safeProducts) {
+    const key = normalizeName(product?.name);
+    if (key && !existingByName.has(key)) existingByName.set(key, product);
+  }
   const added = [];
+  const updated = [];
   const skipped = [];
 
   for (const name of CLIENT_PRODUCTS) {
     const key = normalizeName(name);
-    if (existing.has(key)) {
-      skipped.push({ name, reason: 'sudah ada' });
+    const existingProduct = existingByName.get(key);
+
+    if (existingProduct) {
+      const currentCategories = Array.isArray(existingProduct.categories)
+        ? [...existingProduct.categories]
+        : (existingProduct.category ? [existingProduct.category] : []);
+      const normalizedCategories = [];
+      let targetFound = false;
+
+      for (const category of currentCategories) {
+        const text = normalizeName(category);
+        const label = normalizeName(categoryLabels[category]);
+        const isTarget = text === normalizeName(categorySlug)
+          || label === normalizeName(CATEGORY_LABEL)
+          || text.replace(/[^a-z0-9]+/g, '') === 'apkmodnoroot';
+        if (isTarget) {
+          targetFound = true;
+          if (!normalizedCategories.includes(categorySlug)) normalizedCategories.push(categorySlug);
+        } else if (!normalizedCategories.includes(category)) {
+          normalizedCategories.push(category);
+        }
+      }
+      if (!targetFound) normalizedCategories.push(categorySlug);
+
+      const changed = JSON.stringify(currentCategories) !== JSON.stringify(normalizedCategories)
+        || Object.prototype.hasOwnProperty.call(existingProduct, 'category');
+      if (changed) {
+        existingProduct.categories = normalizedCategories;
+        if (Object.prototype.hasOwnProperty.call(existingProduct, 'category')) delete existingProduct.category;
+        updated.push({ name, reason: targetFound ? 'kategori dinormalisasi' : 'kategori ditambahkan' });
+      } else {
+        skipped.push({ name, reason: 'sudah benar di kategori' });
+      }
       continue;
     }
 
@@ -176,15 +212,19 @@ async function main() {
     });
 
     safeProducts.push(product);
-    existing.add(key);
+    existingByName.set(key, product);
     added.push(product);
   }
 
   console.log(`Kategori: ${CATEGORY_LABEL} (${categorySlug})`);
   console.log(`Paket default: ${days} ${unit === 'h' ? 'jam' : 'hari'} | Rp${price.toLocaleString('id-ID')}`);
   console.log(`Akan ditambah: ${added.length}`);
-  console.log(`Dilewati karena sudah ada: ${skipped.length}`);
+  console.log(`Kategori existing diperbaiki: ${updated.length}`);
+  console.log(`Sudah benar di kategori: ${skipped.length}`);
 
+  if (updated.length) {
+    updated.forEach(p => console.log(`  ~ ${p.name} (${p.reason})`));
+  }
   if (added.length) {
     added.forEach(p => console.log(`  + ${p.name}`));
   }

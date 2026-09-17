@@ -3764,26 +3764,96 @@ async function importAghaClientProducts({ price, days, unit = 'd' }) {
   const products = Array.isArray(productsRaw) ? productsRaw : [];
   const settings = settingsRaw && typeof settingsRaw === 'object' ? settingsRaw : {};
 
-  settings.categories = Array.isArray(settings.categories) ? settings.categories : [];
+  settings.categories = Array.isArray(settings.categories) ? [...settings.categories] : [];
   settings.categoryLabels = settings.categoryLabels && typeof settings.categoryLabels === 'object'
-    ? settings.categoryLabels
+    ? { ...settings.categoryLabels }
     : {};
 
+  // PENTING: cari KATEGORI EXISTING berdasarkan label ATAU slug.
+  // Jangan bikin kategori kedua hanya karena label/slug di data lama tidak persis sama.
+  const targetNorm = importProductsNormalizeName(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
+  const targetSlugCandidates = new Set([
+    importProductsSlugify(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY),
+    'apk-mod-no-root',
+    'apkmodnoroot'
+  ]);
+
   let categorySlug = settings.categories.find(slug =>
-    importProductsNormalizeName(settings.categoryLabels[slug]) === importProductsNormalizeName(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY)
+    importProductsNormalizeName(settings.categoryLabels[slug]) === targetNorm
   );
-  if (!categorySlug) categorySlug = importProductsSlugify(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
+  if (!categorySlug) {
+    categorySlug = settings.categories.find(slug =>
+      targetSlugCandidates.has(importProductsNormalizeName(slug).replace(/\s+/g, '-'))
+      || importProductsNormalizeName(slug).replace(/[^a-z0-9]+/g, '') === 'apkmodnoroot'
+    );
+  }
+  // Fallback hanya kalau kategori memang benar-benar belum ada.
+  if (!categorySlug) {
+    categorySlug = importProductsSlugify(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
+    settings.categories.unshift(categorySlug);
+  }
   if (!settings.categories.includes(categorySlug)) settings.categories.unshift(categorySlug);
   settings.categoryLabels[categorySlug] = AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY;
 
-  const existing = new Set(products.map(p => importProductsNormalizeName(p?.name)));
+  const existingByName = new Map();
+  for (const product of products) {
+    const key = importProductsNormalizeName(product?.name);
+    if (key && !existingByName.has(key)) existingByName.set(key, product);
+  }
+
   const added = [];
+  const updated = [];
   const skipped = [];
 
   for (const name of AGHA_CLIENT_PRODUCT_IMPORT_LIST) {
     const normalized = importProductsNormalizeName(name);
-    if (existing.has(normalized)) {
-      skipped.push(name);
+    const existing = existingByName.get(normalized);
+
+    // BUG FIX UTAMA:
+    // Produk yang SUDAH ADA tidak boleh sekadar di-skip. Pastikan produk
+    // tersebut benar-benar punya kategori target. Kategori lain tetap dipertahankan.
+    if (existing) {
+      const currentCategories = Array.isArray(existing.categories)
+        ? [...existing.categories]
+        : (existing.category ? [existing.category] : []);
+
+      // Normalisasi kategori target ke SLUG CANONICAL yang dipakai tombol filter
+      // di home.ejs. Ini penting untuk produk lama yang menyimpan label
+      // "APK MOD NO ROOT" langsung di field categories.
+      const normalizedCategories = [];
+      let targetFound = false;
+      for (const category of currentCategories) {
+        const categoryText = importProductsNormalizeName(category);
+        const categoryLabel = importProductsNormalizeName(settings.categoryLabels[category]);
+        const isTarget = categoryText === importProductsNormalizeName(categorySlug)
+          || categoryLabel === targetNorm
+          || categoryText.replace(/[^a-z0-9]+/g, '') === 'apkmodnoroot';
+
+        if (isTarget) {
+          targetFound = true;
+          if (!normalizedCategories.includes(categorySlug)) normalizedCategories.push(categorySlug);
+        } else if (!normalizedCategories.includes(category)) {
+          normalizedCategories.push(category);
+        }
+      }
+
+      // Selalu canonicalize kategori produk. Kategori lain tidak dihapus.
+      if (!targetFound) normalizedCategories.push(categorySlug);
+      const changed = JSON.stringify(currentCategories) !== JSON.stringify(normalizedCategories)
+        || Object.prototype.hasOwnProperty.call(existing, 'category');
+
+      if (changed) {
+        existing.categories = normalizedCategories;
+        // Field singular lama dapat membuat fallback frontend membaca nilai yang salah.
+        if (Object.prototype.hasOwnProperty.call(existing, 'category')) delete existing.category;
+        updated.push({
+          id: existing.id,
+          name: existing.name,
+          action: targetFound ? 'kategori dinormalisasi' : 'kategori ditambahkan'
+        });
+      } else {
+        skipped.push({ name, reason: 'sudah benar di kategori' });
+      }
       continue;
     }
 
@@ -3819,11 +3889,18 @@ async function importAghaClientProducts({ price, days, unit = 'd' }) {
     };
 
     products.push(product);
-    existing.add(normalized);
+    existingByName.set(normalized, product);
     added.push(product);
   }
 
-  // Satu write per sumber data agar perubahan kategori dan produk konsisten.
+  // Pastikan kategori target berada paling awal setelah SEMUA.
+  const categoryIndex = settings.categories.indexOf(categorySlug);
+  if (categoryIndex > 0) {
+    settings.categories.splice(categoryIndex, 1);
+    settings.categories.unshift(categorySlug);
+  }
+
+  // Satu write per sumber data.
   await writeDB('settings.json', settings);
   await writeDB('products.json', products);
 
@@ -3834,8 +3911,10 @@ async function importAghaClientProducts({ price, days, unit = 'd' }) {
     days: safeDays,
     unit: safeUnit,
     added: added.map(p => ({ id: p.id, name: p.name })),
+    updated,
     skipped,
-    totalRequested: AGHA_CLIENT_PRODUCT_IMPORT_LIST.length
+    totalRequested: AGHA_CLIENT_PRODUCT_IMPORT_LIST.length,
+    totalChanged: added.length + updated.length
   };
 }
 
@@ -3854,8 +3933,11 @@ app.get('/admin/tools/import-client-apk', requireAdmin, async (req, res) => {
     const addedHtml = result.added.length
       ? result.added.map(p => `<li>${p.name}</li>`).join('')
       : '<li>Tidak ada produk baru.</li>';
+    const updatedHtml = result.updated.length
+      ? `<h3>Produk existing yang diperbaiki kategorinya (${result.updated.length})</h3><ul>${result.updated.map(p => `<li>${p.name} — kategori ditambahkan</li>`).join('')}</ul>`
+      : '';
     const skippedHtml = result.skipped.length
-      ? `<p style="color:#facc15;">Dilewati karena sudah ada: ${result.skipped.length} produk.</p>`
+      ? `<p style="color:#a1a1aa;">Sudah benar di kategori: ${result.skipped.length} produk.</p>`
       : '';
 
     res.send(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Import Produk Client</title>
@@ -3863,7 +3945,7 @@ app.get('/admin/tools/import-client-apk', requireAdmin, async (req, res) => {
       <body><main class="wrap"><section class="card"><h1>✅ Import produk berhasil</h1>
       <p>Endpoint ini hanya bisa dibuka setelah login admin.</p>
       <div class="meta"><div><div class="label">Kategori</div><div class="value">${result.category}</div></div><div><div class="label">Paket default</div><div class="value">${result.days}${result.unit === 'h' ? ' jam' : ' hari'} — Rp${result.price.toLocaleString('id-ID')}</div></div></div>
-      <h3>Ditambahkan (${result.added.length})</h3><ul>${addedHtml}</ul>${skippedHtml}
+      <h3>Produk baru (${result.added.length})</h3><ul>${addedHtml}</ul>${updatedHtml}${skippedHtml}
       <p style="margin-top:22px;"><a href="/admin">← Kembali ke Admin</a></p></section></main></body></html>`);
   } catch (e) {
     res.status(400).send(`<!doctype html><html><body style="font-family:Arial;background:#09090b;color:#f4f4f5;padding:40px"><h2 style="color:#f87171">❌ Import gagal</h2><p>${String(e?.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</p><p>Contoh URL: <code>/admin/tools/import-client-apk?price=50000&amp;days=30&amp;unit=d</code></p><p><a style="color:#60a5fa" href="/admin">← Kembali ke Admin</a></p></body></html>`);
