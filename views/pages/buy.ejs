@@ -285,14 +285,15 @@ const schemaProduct = {
         </div>
         <div class="grid grid-cols-2 gap-2" id="pkg-grid">
             <% if (product.items && product.items.length > 0) { %>
+                <% const firstAvailableIndex = product.items.findIndex(it => Number(it.stok || 0) > 0); %>
                 <% product.items.forEach((item, idx) => { %>
-                <% const itemStock = (item.stok || 0); %>
-                <% const isOutOfStock = itemStock === 0; %>
+                <% const itemStock = Math.max(0, Number(item.stok || 0)); %>
+                <% const isOutOfStock = itemStock <= 0; %>
                 <% const displayPrice = (isReseller && item.reseller_price) ? item.reseller_price : item.p; %>
                 <label class="pkg-option-label" style="<%= isOutOfStock ? 'opacity:0.5;cursor:not-allowed;' : '' %>">
                     <input type="radio" name="pkg" value="<%= idx %>"
                            onchange="selectPkg('<%= item.l %>', <%= displayPrice %>, <%= itemStock %>, <%= item.durationValue||'null' %>, '<%= item.durationUnit||'d' %>')"
-                           <%= idx===0 && !isOutOfStock ? 'checked' : '' %>
+                           <%= idx===firstAvailableIndex ? 'checked' : '' %>
                            <%= isOutOfStock ? 'disabled' : '' %>>
                     <div class="pkg-card rounded-2xl p-3">
                         <div class="text-xs font-semibold text-white/70 mb-0.5">
@@ -300,6 +301,9 @@ const schemaProduct = {
                         </div>
                         <div class="text-sm font-black <%= isReseller && item.reseller_price ? 'text-yellow-400' : 'text-white' %>">
                             Rp <%= displayPrice.toLocaleString('id-ID') %>
+                        </div>
+                        <div class="text-[10px] font-semibold mt-1 <%= isOutOfStock ? 'text-zinc-500' : 'text-emerald-400' %>">
+                            <%= isOutOfStock ? 'Habis' : `${itemStock} stok` %>
                         </div>
                         <% if (isReseller && item.reseller_price) { %>
                             <div class="text-[9px] text-zinc-500 line-through">Rp <%= item.p.toLocaleString('id-ID') %></div>
@@ -577,7 +581,15 @@ const schemaProduct = {
 </div>
 
 <script>
-    let selPkg = { label:'<%= (product.items?.[0]?.l||"") %>', price:<%= (isReseller && product.items?.[0]?.reseller_price) ? product.items[0].reseller_price : (product.items?.[0]?.p||0) %>, durationValue: <%= product.items?.[0]?.durationValue||'null' %>, durationUnit: '<%= product.items?.[0]?.durationUnit||'d' %>' };
+    const INITIAL_PKG_INDEX = <%= Math.max(0, (product.items || []).findIndex(it => Number(it.stok || 0) > 0)) %>;
+    const INITIAL_PKG = (product.items || [])[INITIAL_PKG_INDEX] || (product.items || [])[0] || {};
+    let selPkg = {
+        label: <%- JSON.stringify(INITIAL_PKG.l || '') %>,
+        price: <%= (isReseller && (INITIAL_PKG.reseller_price != null)) ? Number(INITIAL_PKG.reseller_price || 0) : Number(INITIAL_PKG.p || 0) %>,
+        stock: <%= Number(INITIAL_PKG.stok || 0) %>,
+        durationValue: <%= INITIAL_PKG.durationValue != null ? Number(INITIAL_PKG.durationValue) : 'null' %>,
+        durationUnit: <%- JSON.stringify(INITIAL_PKG.durationUnit || 'd') %>
+    };
     let myRating = 0;
     let payInterval = null;
     let currentRefId = null;
@@ -735,7 +747,7 @@ const schemaProduct = {
     }
 
     function showPaymentModal(data) {
-        const { qrString, orderCode, refId, isStatic, qrisStaticImage, totalPayment, expiredAt } = data;
+        const { qrString, orderCode, refId, isStatic, qrisStaticImage, totalPayment, expiredAt, paymentGateway } = data;
         currentRefId = refId;
 
         // Tampilkan modal
@@ -775,7 +787,7 @@ const schemaProduct = {
                          style="display:block;width:210px;height:210px;border-radius:4px;"
                          onerror="qrFallback('${encodeURIComponent(qrString)}')">
                 </div>`;
-            document.getElementById('recheckBtn').classList.remove('hidden');
+            if (paymentGateway !== 'genspay') document.getElementById('recheckBtn').classList.remove('hidden');
         } else {
             wrap.innerHTML = `
                 <div class="text-center py-4">
@@ -790,9 +802,15 @@ const schemaProduct = {
             startTimer(expiredAt);
         }
 
-        // --- Auto polling status ---
-        if (refId && !isStatic) {
+        // GensPay: status diterima server lewat webhook, TANPA polling.
+        // Pakasir: polling lama tetap dipakai karena gateway ini masih mendukungnya.
+        if (refId && !isStatic && paymentGateway !== 'genspay') {
             payInterval = setInterval(() => checkPay(refId), 4000);
+        }
+        if (paymentGateway === 'genspay') {
+            document.getElementById('payStatusRow').innerHTML =
+                '<div class="w-2 h-2 rounded-full bg-yellow-400"></div>' +
+                '<span class="text-xs text-zinc-400">Menunggu pembayaran — status diproses otomatis via webhook.</span>';
         }
     }
 

@@ -927,7 +927,7 @@
     // ─── INIT ───
     document.addEventListener('DOMContentLoaded', () => {
         updateCartBadge();
-        setTimeout(() => { loadPurchaseNotifs(); setInterval(loadPurchaseNotifs, 30000); }, 2000);
+        setTimeout(loadPurchaseNotifs, 2000);
     });
     document.addEventListener('keydown', e => { if (e.key==='Escape') closeAll(); });
     document.addEventListener('click', e => {

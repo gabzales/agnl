@@ -49,6 +49,7 @@ const LOGIN_MAX_FAIL = 5;
 const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 menit
 
 const checkLoginBlocked = (ip) => {
+  cleanupRateMap(loginFailMap, Date.now());
   const rec = loginFailMap.get(ip);
   if (!rec) return { blocked: false };
   if (Date.now() > rec.resetAt) { loginFailMap.delete(ip); return { blocked: false }; }
@@ -111,6 +112,7 @@ const INVOICE_RATE_LIMIT = 10;
 const INVOICE_RATE_WINDOW = 5 * 60 * 1000;
 
 const checkInvoiceRateLimit = (ip) => {
+  cleanupRateMap(invoiceRateMap, Date.now());
   const now = Date.now();
   const rec = invoiceRateMap.get(ip);
   if (!rec || now > rec.resetAt) {
@@ -144,6 +146,7 @@ function validatePasswordStrength(password) {
 // API rate limiting untuk endpoint publik
 const apiRateMap = new Map();
 const checkApiRateLimit = (ip, limit = 60, windowMs = 60000) => {
+  cleanupRateMap(apiRateMap, Date.now());
   const now = Date.now();
   const rec = apiRateMap.get(ip);
   if (!rec || now > rec.resetAt) {
@@ -166,6 +169,7 @@ const paymentRateMap = new Map();
 const PAYMENT_RATE_LIMIT = 30;
 const PAYMENT_RATE_WINDOW = 3 * 60 * 1000;
 const checkPaymentRateLimit = (userId) => {
+  cleanupRateMap(paymentRateMap, Date.now());
   const now = Date.now();
   const rec = paymentRateMap.get(userId);
   if (!rec || now > rec.resetAt) {
@@ -176,11 +180,15 @@ const checkPaymentRateLimit = (userId) => {
   rec.count++;
   return true;
 };
-// Bersihkan entry basi tiap 10 menit supaya Map tidak numpuk terus di memory.
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of paymentRateMap) if (now > v.resetAt) paymentRateMap.delete(k);
-}, 10 * 60 * 1000);
+// Vercel-friendly housekeeping: cleanup hanya saat limiter dipakai.
+// Tidak perlu setInterval global yang bisa mempertahankan instance serverless.
+const cleanupRateMap = (map, now, maxEntries = 5000) => {
+  if (map.size <= maxEntries) return;
+  for (const [k, v] of map) {
+    if (!v || now > v.resetAt) map.delete(k);
+    if (map.size <= Math.floor(maxEntries * 0.8)) break;
+  }
+};
 
 // ══════════════════════════════════════════════════════════════════
 // SISTEM KEY DENGAN DURASI (per-hari & per-jam)
@@ -215,8 +223,17 @@ function parseKeyDuration(keyStr) {
 }
 
 // isGenericKey: true kalau key tidak punya durasi sama sekali (tanpa "=").
+function isUsableLocalKey(keyStr) {
+  const s = String(keyStr || '').trim();
+  if (!s) return false;
+  // Ignore legacy placeholder entries that describe missing stock rather than
+  // a real key. These used to be counted as generic local stock.
+  if (/^(?:stok|stock|produk)\s+(?:tidak\s+tersedia|unavailable)\s*:/i.test(s)) return false;
+  return true;
+}
+
 function isGenericKey(keyStr) {
-  return parseKeyDuration(keyStr).value === null;
+  return isUsableLocalKey(keyStr) && parseKeyDuration(keyStr).value === null;
 }
 
 // keyMatchesDuration: cocokkan key stok dengan durasi+unit yang dipesan
@@ -248,6 +265,7 @@ function logWebhook(gateway, entry) {
 }
 
 const checkQrRateLimit = (ip) => {
+  cleanupRateMap(qrRateLimit, Date.now());
   const now = Date.now();
   const record = qrRateLimit.get(ip);
   if (record) {
@@ -275,7 +293,7 @@ app.use(expressLayouts);
 // karena signature dihitung dari string JSON MENTAH persis seperti yang
 // dikirim GensPay, bukan dari object hasil re-serialize (urutan key bisa
 // beda kalau di-JSON.stringify ulang dari object yang sudah di-parse).
-app.use(express.json({
+app.use(express.json({ limit: '256kb',
   verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); }
 }));
 app.use(express.urlencoded({ extended: true }));
@@ -283,9 +301,9 @@ app.use(express.urlencoded({ extended: true }));
 // otomatis diserve lewat CDN Vercel (lihat vercel.json untuk header cache-nya).
 // maxAge di sini cuma berlaku untuk local dev / VPS non-Vercel, supaya
 // behavior-nya konsisten dengan yang di production.
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'), { maxAge: '1h' }));
-app.use('/uploads/avatars', express.static(path.join(__dirname, 'public/uploads/avatars'), { maxAge: '1h' }));
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '7d', immutable: true }));
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'), { maxAge: '7d', immutable: true }));
+app.use('/uploads/avatars', express.static(path.join(__dirname, 'public/uploads/avatars'), { maxAge: '7d', immutable: true }));
 
 // Vercel: file di /uploads tidak persistent - redirect ke Supabase Storage
 if (process.env.VERCEL === '1' || process.env.NOW_REGION) {
@@ -411,7 +429,12 @@ app.use(async (req, res, next) => {
   // Kalau cache settings kosong, fetch dari Supabase dulu
   let settings = readDB('settings.json');
   if (!settings || Object.keys(settings).length === 0) {
-    settings = await db.readFresh('settings.json').catch(() => ({}));
+    try {
+      settings = await Promise.race([
+        db.readFresh('settings.json'),
+        new Promise(resolve => setTimeout(() => resolve({}), 1500))
+      ]);
+    } catch { settings = {}; }
   }
   res.locals.settings = settings || {};
   res.locals.isAdmin = !!(req.session?.isAdmin || req.session?.userId === 'admin');
@@ -777,17 +800,12 @@ if (isVercel) {
     await dbInitPromise;
   };
 
-  // Middleware: block request sampai DB siap (max 8 detik)
-  app.use(async (req, res, next) => {
-    try {
-      await Promise.race([
-        ensureDBReady(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('DB init timeout')), 8000))
-      ]);
-    } catch (e) {
-      console.error('[DB] Init failed or timeout:', e.message);
-      // Lanjut saja, pakai local fallback
-    }
+  // Vercel: jangan menahan request sampai initializeDB() selesai. Cold-start
+  // initialization sebelumnya bisa menunggu Supabase + seed/migration lalu
+  // membuat halaman terlihat stuck. Jalankan warm-up sekali di background;
+  // route publik memakai readSmart/readFresh sendiri bila cache belum siap.
+  app.use((req, res, next) => {
+    ensureDBReady().catch(e => console.error('[DB] Background init failed:', e.message));
     next();
   });
 
@@ -1095,7 +1113,7 @@ function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _retried
     const req = https.request({
       hostname: url.hostname, port: url.port || 443,
       path: url.pathname + url.search, method: method.toUpperCase(),
-      headers, timeout: 30000
+      headers, timeout: 5000
     }, (res) => {
       let data = '';
       res.on('data', c => data += c);
@@ -1109,7 +1127,11 @@ function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _retried
           let wait = 60;
           const ra = res.headers['retry-after'];
           if (ra && /^\d+$/.test(ra)) wait = Math.min(120, Math.max(1, parseInt(ra, 10)));
-          if (!_retried) {
+          // Jangan pernah menahan request HTTP sampai 60-120 detik hanya karena 429.
+          // Di Vercel ini bisa membuat user merasa website hang dan membakar waktu
+          // function. Kalau provider minta retry > 2 detik, fail-fast; caller memakai
+          // cache/last-known-good atau menampilkan status sementara.
+          if (!_retried && wait <= 2) {
             await new Promise(r => setTimeout(r, wait * 1000));
             try { resolve(await dripstoreCall(settings, endpoint, params, method, true)); } catch (e) { reject(e); }
             return;
@@ -1121,7 +1143,7 @@ function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _retried
         resolve(parsed);
       });
     });
-    req.on('timeout', () => { req.destroy(); reject(new Error('DripStore timeout (30 detik)')); });
+    req.on('timeout', () => { req.destroy(); reject(new Error('DripStore timeout (5 detik)')); });
     req.on('error', e => reject(new Error('Network error: ' + e.message)));
     if (!isGet && body) req.write(body);
     req.end();
@@ -1312,6 +1334,21 @@ function _dsExtractProductItems(resp) {
   return out;
 }
 
+const DRIPSTORE_PRODUCT_ALIASES = {
+  // XREG on AGHA NL is fulfilled from the provider's AIM HACK catalog.
+  'xreg apk mod': ['aim hack', 'aim hack android+ ios', 'aim hack android ios']
+};
+
+function _dsProviderNameCandidates(localName) {
+  const normalized = _dsNormalizeName(localName);
+  const aliases = DRIPSTORE_PRODUCT_ALIASES[normalized] || [];
+  return [String(localName || ''), ...aliases];
+}
+
+function _dsNameMatchWithAliases(localName, supplierName) {
+  return _dsProviderNameCandidates(localName).some(candidate => _dsNameMatch(candidate, supplierName));
+}
+
 function _dsNameMatch(localName, supplierName) {
   const a = _dsNormalizeName(localName);
   const b = _dsNormalizeName(supplierName);
@@ -1351,7 +1388,7 @@ async function autoMapDripstoreProducts({ restockLowStock = false } = {}) {
       const normalizedOptDays = Number(opt.days);
       const normalizedOptUnit = opt.unit === 'h' ? 'h' : 'd';
       const candidates = supplierItems
-        .filter(s => Number(s.days) === normalizedOptDays && (s.unit || 'd') === normalizedOptUnit && _dsNameMatch(product.name, s.productName));
+        .filter(s => Number(s.days) === normalizedOptDays && (s.unit || 'd') === normalizedOptUnit && _dsNameMatchWithAliases(product.name, s.productName));
       if (!candidates.length) {
         unmatched++;
         unmatchedList.push(`${product.name} — ${opt.days}${opt.unit === 'h' ? 'h' : 'd'}`);
@@ -1506,11 +1543,33 @@ async function approveDripstoreRestockRequest(requestId, adminName = 'admin') {
   }
 }
 
+function _dsParseMoney(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  // DripStore responses can expose USD amounts as `$1.40`, `USD 1.40`,
+  // `1,40`, or plain numeric strings. Normalize the display formatting before
+  // doing balance/price math; Number('$1.40') otherwise becomes NaN and makes
+  // every provider variant look unavailable.
+  let text = String(value).trim().replace(/[^0-9,.-]/g, '');
+  if (!text) return null;
+  if (text.includes(',') && text.includes('.')) {
+    if (text.lastIndexOf(',') > text.lastIndexOf('.')) {
+      text = text.replace(/\./g, '').replace(',', '.');
+    } else {
+      text = text.replace(/,/g, '');
+    }
+  } else if (text.includes(',')) {
+    const parts = text.split(',');
+    text = parts.length === 2 && parts[1].length <= 2 ? parts[0] + '.' + parts[1] : parts.join('');
+  }
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function getDripstoreBalanceValue(settings) {
   const resp = await dripstoreCall(settings, 'balance.php');
   const raw = resp?.data?.balance ?? resp?.balance ?? resp?.data?.credits ?? resp?.credits ?? resp?.data?.saldo ?? resp?.saldo;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
+  return _dsParseMoney(raw);
 }
 
 function _dsFindVariantCost(resp, variantId) {
@@ -1524,9 +1583,9 @@ function _dsFindVariantCost(resp, variantId) {
     const name = _dsFirst(node, ['variant_name','variantName','name','title']);
     const product = _dsFirst(node, ['product_name','productName','product_title','productTitle','product']) || inheritedProduct;
     if (id != null && String(id) === target) {
-      const raw = _dsFirst(node, ['unit_price','unitPrice','price','cost','reseller_price','resellerPrice','selling_price','sellingPrice']);
-      const n = Number(raw);
-      if (Number.isFinite(n) && n >= 0) found = n;
+      const raw = _dsFirst(node, ['unit_price','unitPrice','price','cost','cost_price','costPrice','price_usd','priceUsd','unit_cost','unitCost','reseller_price','resellerPrice','selling_price','sellingPrice']);
+      const n = _dsParseMoney(raw);
+      if (n !== null && n >= 0) found = n;
     }
     for (const k of ['variants','options','plans','items','products','data','result']) if (node[k] !== undefined) walk(node[k], product || inheritedProduct);
   };
@@ -1536,29 +1595,95 @@ function _dsFindVariantCost(resp, variantId) {
 
 let _dripstoreCatalogCache = null;
 let _dripstoreCatalogCacheAt = 0;
-const DRIPSTORE_CATALOG_CACHE_TTL = 30000;
+let _dripstoreCatalogInflight = null;
+const DRIPSTORE_CATALOG_CACHE_TTL = 120000;
+const DRIPSTORE_CATALOG_TIMEOUT_MS = 4500;
 
 async function getDripstoreCatalogSnapshot(settings) {
   const ds = settings.dripstore || {};
   if (!ds.apiToken) return { balance: null, products: null };
   const now = Date.now();
-  if (_dripstoreCatalogCache && (now - _dripstoreCatalogCacheAt) < DRIPSTORE_CATALOG_CACHE_TTL) {
-    return _dripstoreCatalogCache;
+  if (_dripstoreCatalogCache && (now - _dripstoreCatalogCacheAt) < DRIPSTORE_CATALOG_CACHE_TTL) return _dripstoreCatalogCache;
+
+  if (_dripstoreCatalogInflight) {
+    return Promise.race([
+      _dripstoreCatalogInflight,
+      new Promise(resolve => setTimeout(() => resolve(_dripstoreCatalogCache || { balance: null, products: null }), DRIPSTORE_CATALOG_TIMEOUT_MS))
+    ]);
   }
-  const [balance, products] = await Promise.all([
-    getDripstoreBalanceValue(settings),
-    dripstoreCall(settings, 'products.php')
+
+  const refresh = (async () => {
+    try {
+      const results = await Promise.allSettled([
+        getDripstoreBalanceValue(settings),
+        dripstoreCall(settings, 'products.php')
+      ]);
+      const balance = results[0].status === 'fulfilled' ? results[0].value : null;
+      const products = results[1].status === 'fulfilled' ? results[1].value : null;
+      // Keep the last known good snapshot during transient provider failures;
+      // otherwise one timeout could make every card suddenly show "Habis".
+      if (balance !== null && products) {
+        _dripstoreCatalogCache = { balance, products };
+        _dripstoreCatalogCacheAt = Date.now();
+      }
+      return _dripstoreCatalogCache || { balance: null, products: null };
+    } finally {
+      _dripstoreCatalogInflight = null;
+    }
+  })();
+  _dripstoreCatalogInflight = refresh;
+  return Promise.race([
+    refresh,
+    new Promise(resolve => setTimeout(() => resolve(_dripstoreCatalogCache || { balance: null, products: null }), DRIPSTORE_CATALOG_TIMEOUT_MS))
   ]);
-  _dripstoreCatalogCache = { balance, products };
-  _dripstoreCatalogCacheAt = now;
+}
+
+// Fast path untuk halaman publik: jangan menunggu API supplier. Kalau cache belum
+// tersedia, halaman tetap dirender memakai stok lokal; refresh provider dijalankan
+// di background untuk request berikutnya. Checkout tetap melakukan guard live.
+function getCachedDripstoreCatalogSnapshot(settings) {
+  const ds = settings?.dripstore || {};
+  if (!ds.apiToken || !_dripstoreCatalogCache) return null;
   return _dripstoreCatalogCache;
+}
+function warmDripstoreCatalog(settings) {
+  if (!settings?.dripstore?.apiToken) return;
+  if (_dripstoreCatalogInflight) return;
+  getDripstoreCatalogSnapshot(settings).catch(() => {});
+}
+
+function _dsFindVariantExplicitStock(resp, variantId) {
+  const target = String(variantId);
+  let found = null;
+  const walk = (node) => {
+    if (found !== null || node == null) return;
+    if (Array.isArray(node)) { for (const x of node) walk(x); return; }
+    if (typeof node !== 'object') return;
+    const id = _dsFirst(node, ['variant_id','variantId','id']);
+    if (id != null && String(id) === target) {
+      const raw = _dsFirst(node, ['available_stock','availableStock','stock','quantity_available','quantityAvailable','qty']);
+      const n = Number(raw);
+      if (Number.isFinite(n) && n >= 0) { found = Math.floor(n); return; }
+    }
+    for (const k of ['variants','options','plans','items','products','data','result']) if (node[k] !== undefined) walk(node[k]);
+  };
+  walk(resp);
+  return found;
 }
 
 function getDripstoreVirtualStock(snapshot, variantId) {
-  if (!snapshot || snapshot.balance === null || snapshot.balance === undefined) return null;
+  if (!snapshot?.products) return null;
+  // IMPORTANT: untuk mode LIVE/HYBRID, stok publik dihitung dari kemampuan
+  // saldo provider untuk VARIANT INI, bukan dari field `stock` katalog.
+  // Field `stock` di supplier bisa berarti stok internal/supplier inventory
+  // dan nilainya 0 pada variant mahal walaupun saldo akun masih cukup untuk
+  // variant yang lebih murah. Kalau kita return `stock` mentah di sini,
+  // satu variant mahal bisa ikut membuat produk terlihat Habis.
+  if (snapshot.balance === null || snapshot.balance === undefined) return null;
   const cost = _dsFindVariantCost(snapshot.products, variantId);
   if (cost === null || !Number.isFinite(Number(cost)) || Number(cost) <= 0) return null;
-  return Math.max(0, Math.floor((Number(snapshot.balance) + 1e-9) / Number(cost)));
+  const balance = Number(snapshot.balance);
+  return Math.max(0, Math.floor((balance + 1e-9) / Number(cost)));
 }
 
 // Resolve a provider variant even when the persisted mapping is stale/missing.
@@ -1567,30 +1692,48 @@ function getDripstoreVirtualStock(snapshot, variantId) {
 // as a fallback for availability calculation.
 function findDripstoreVariantForOption(snapshot, productName, opt) {
   if (!snapshot?.products || !productName || !opt) return null;
-  if (opt.dripstoreVariantId) {
-    const direct = getDripstoreVirtualStock(snapshot, String(opt.dripstoreVariantId));
-    if (direct !== null) return { variantId: String(opt.dripstoreVariantId), stock: direct };
-  }
+
+  // Prefer a CURRENT provider catalog match by product name + duration. This
+  // avoids stale/wrong saved variant IDs masking a valid cheaper/same-duration
+  // provider option. XREG is explicitly aliased to AIM HACK below.
   const items = _dsExtractProductItems(snapshot.products);
   const matches = items.filter(item =>
     Number(item.days) === Number(opt.days) &&
     (item.unit || 'd') === (opt.unit || 'd') &&
-    _dsNameMatch(productName, item.productName)
+    _dsNameMatchWithAliases(productName, item.productName)
   );
-  if (!matches.length) return null;
-  matches.sort((a,b) => {
-    const ae = _dsNormalizeName(a.productName) === _dsNormalizeName(productName) ? 1 : 0;
-    const be = _dsNormalizeName(b.productName) === _dsNormalizeName(productName) ? 1 : 0;
-    return be - ae || String(b.productName).length - String(a.productName).length;
-  });
-  const chosen = matches[0];
-  const stock = getDripstoreVirtualStock(snapshot, chosen.variantId);
-  return stock === null ? null : { variantId: chosen.variantId, stock };
+
+  if (matches.length) {
+    matches.sort((a,b) => {
+      const ae = _dsNormalizeName(a.productName) === _dsNormalizeName(productName) ? 1 : 0;
+      const be = _dsNormalizeName(b.productName) === _dsNormalizeName(productName) ? 1 : 0;
+      return be - ae || String(b.productName).length - String(a.productName).length;
+    });
+    const chosen = matches[0];
+    const stock = getDripstoreVirtualStock(snapshot, chosen.variantId);
+    if (stock !== null) return { variantId: chosen.variantId, stock };
+  }
+
+  // Fallback for provider catalogs whose labels are not consistently exposed.
+  // This is only a read/lookup path; it never purchases anything.
+  if (opt.dripstoreVariantId) {
+    const direct = getDripstoreVirtualStock(snapshot, String(opt.dripstoreVariantId));
+    if (direct !== null) return { variantId: String(opt.dripstoreVariantId), stock: direct };
+  }
+  return null;
 }
 
 function getCombinedOptionStock(snapshot, productName, opt, localStock = 0) {
   const resolved = findDripstoreVariantForOption(snapshot, productName, opt);
   return Math.max(0, Number(localStock) || 0) + (resolved ? resolved.stock : 0);
+}
+
+function countUsableLocalKeys(keys) {
+  return (Array.isArray(keys) ? keys : []).filter(isUsableLocalKey);
+}
+
+function countLocalDurationStock(keys, days, unit) {
+  return countUsableLocalKeys(keys).filter(k => keyMatchesDuration(k, days, unit)).length;
 }
 
 async function checkDripstoreVariantAvailability(settings, variantId, quantity = 1) {
@@ -2006,12 +2149,13 @@ app.get('/', async (req, res) => {
   let homeProviderSnapshot = null;
   const homeDsMode = settings.dripstore?.fulfillmentMode || 'live';
   if ((homeDsMode === 'live' || homeDsMode === 'hybrid') && settings.dripstore?.apiToken) {
-    try { homeProviderSnapshot = await getDripstoreCatalogSnapshot(settings); } catch (_) { homeProviderSnapshot = null; }
+    homeProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    warmDripstoreCatalog(settings);
   }
   const homeProducts = products.map(rawProduct => {
     const p = normalizeProductBuyOptions(rawProduct);
     const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
-    const localStock = Array.isArray(p.keys) ? p.keys.length : 0;
+    const localStock = countUsableLocalKeys(p.keys).length;
     const providerStocks = opts
       .map(o => findDripstoreVariantForOption(homeProviderSnapshot, p.name, o))
       .filter(Boolean)
@@ -2504,7 +2648,7 @@ app.post('/reseller/join', requireAuth, async (req, res) => {
     });
     await writeDB('transactions.json', transactions);
 
-    res.json({ success: true, refId, orderId, qrString, orderCode, isStatic,
+    res.json({ success: true, refId, orderId, qrString, orderCode, isStatic, paymentGateway: settings.apiGateway || 'pakasir',
       qrisStaticImage: isStatic ? settings.qrisStaticImage : null });
   } catch (e) {
     res.json({ success: false, message: e.message });
@@ -2577,7 +2721,7 @@ app.post('/wallet/topup', requireAuth, async (req, res) => {
     });
     await writeDB('transactions.json', transactions);
 
-    res.json({ success: true, refId, orderId, qrString, orderCode, isStatic, totalPayment, expiredAt,
+    res.json({ success: true, refId, orderId, qrString, orderCode, isStatic, totalPayment, expiredAt, paymentGateway: settings.apiGateway || 'pakasir',
       qrisStaticImage: isStatic ? settings.qrisStaticImage : null });
   } catch (e) {
     res.json({ success: false, message: e.message });
@@ -3018,7 +3162,7 @@ app.get('/dashboard', requireAuth, (req, res) => {
 // /create-order di bawah, yang sekarang auto-create akun kalau belum login).
 app.get('/buy/:id', async (req, res) => {
   const products = readDB('products.json');
-  const product = products.find(p => p.id === req.params.id);
+  let product = products.find(p => p.id === req.params.id);
 
   if (!product || product.status !== 'active') {
     return res.redirect('/');
@@ -3035,11 +3179,23 @@ app.get('/buy/:id', async (req, res) => {
   product = normalizeProductBuyOptions(product);
 
   const allKeys = product.keys || [];
-  const genericKeys = allKeys.filter(k => isGenericKey(k));
+  const usableLocalKeys = countUsableLocalKeys(allKeys);
+  const genericKeys = usableLocalKeys.filter(k => isGenericKey(k));
   let buyProviderSnapshot = null;
   const buyDsMode = settings.dripstore?.fulfillmentMode || 'live';
   if ((buyDsMode === 'live' || buyDsMode === 'hybrid') && settings.dripstore?.apiToken) {
-    try { buyProviderSnapshot = await getDripstoreCatalogSnapshot(settings); } catch (_) { buyProviderSnapshot = null; }
+    // Jangan membuat halaman /buy bergantung pada cache provider yang belum
+    // pernah terisi. Coba ambil snapshot singkat saat cold-start; kalau provider
+    // lambat, lanjut render tanpa provider dan refresh berjalan di background.
+    // Ini mencegah menu durasi kosong sekaligus mencegah request menggantung.
+    buyProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    if (!buyProviderSnapshot) {
+      buyProviderSnapshot = await Promise.race([
+        getDripstoreCatalogSnapshot(settings),
+        new Promise(resolve => setTimeout(() => resolve(null), 1800))
+      ]).catch(() => null);
+    }
+    warmDripstoreCatalog(settings);
   }
   if (product.items) {
     product.items = product.items.map(item => {
@@ -3058,13 +3214,18 @@ app.get('/buy/:id', async (req, res) => {
       const pOpt = (product.pricingOptions || []).find(o => Number(o.days) === Number(days) && (o.unit || 'd') === unit);
       const providerBacked = !!pOpt?.dripstoreVariantId;
       if (providerBacked) {
-        // Stok yang ditampilkan = key lokal durasi ini + kapasitas provider
-        // untuk variant yang sama. Snapshot provider yang gagal TIDAK boleh
-        // menghapus stok lokal yang memang sudah ada di web.
-        const localDurationStock = allKeys.filter(k => keyMatchesDuration(k, days, unit)).length;
-        stok = getCombinedOptionStock(buyProviderSnapshot, product.name, pOpt, localDurationStock);
+        // Stok yang ditampilkan = key lokal durasi ini + kapasitas provider.
+        // Kalau katalog provider belum berhasil diambil saat cold-start,
+        // JANGAN mengubah variant mapped menjadi Habis. Checkout tetap
+        // melakukan balance/price guard langsung sebelum generate key.
+        const localDurationStock = countLocalDurationStock(allKeys, days, unit);
+        if (buyProviderSnapshot) {
+          stok = getCombinedOptionStock(buyProviderSnapshot, product.name, pOpt, localDurationStock);
+        } else {
+          stok = Math.max(localDurationStock, 1);
+        }
       } else if (days) {
-        const tagged = allKeys.filter(k => keyMatchesDuration(k, days, unit)).length;
+        const tagged = countLocalDurationStock(allKeys, days, unit);
         stok = tagged > 0 ? tagged : genericKeys.length;
       } else {
         stok = genericKeys.length;
@@ -3117,11 +3278,17 @@ app.get('/buy/:id', async (req, res) => {
   // berubah menjadi Habis hanya karena mapping/provider snapshot sementara
   // tidak terbaca.
   let publicProviderStock = 0;
-  if (hasLiveProvider && (settings.dripstore?.fulfillmentMode === 'live' || settings.dripstore?.fulfillmentMode === 'hybrid') && buyProviderSnapshot) {
-    publicProviderStock = Math.max(0, ...(product.pricingOptions || [])
-      .map(o => findDripstoreVariantForOption(buyProviderSnapshot, product.name, o)?.stock || 0));
+  if (hasLiveProvider && (settings.dripstore?.fulfillmentMode === 'live' || settings.dripstore?.fulfillmentMode === 'hybrid')) {
+    if (buyProviderSnapshot) {
+      publicProviderStock = Math.max(0, ...(product.pricingOptions || [])
+        .map(o => findDripstoreVariantForOption(buyProviderSnapshot, product.name, o)?.stock || 0));
+    } else {
+      // Tanpa snapshot provider, jangan mengarang stok provider. Gunakan stok
+      // lokal saja sampai cache/provider berhasil dibaca lagi.
+      publicProviderStock = 0;
+    }
   }
-  productSafe.stockCount = (_rawKeys || []).length + publicProviderStock;
+  productSafe.stockCount = usableLocalKeys.length + publicProviderStock;
   productSafe.liveProvider = hasLiveProvider;
 
   res.render('pages/buy', { product: productSafe, settings, user, isReseller, hasPurchased, categoryLabels: settings.categoryLabels || {} });
@@ -3654,7 +3821,7 @@ app.get('/check-payment/:refId', requireAuth, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════
 app.post('/webhook/genspay', async (req, res) => {
   try {
-    const settings = readDB('settings.json');
+    const settings = await readFresh('settings.json');
     const apiKey = (settings.genspay?.apiKey || process.env.GENSPAY_API_KEY || '').trim();
     const signatureHeader = req.headers['x-genspay-signature'];
     if (!apiKey || !signatureHeader) { logWebhook('genspay', { result: 'no_apikey_or_signature' }); return res.status(401).send('Unauthorized'); }
@@ -3686,13 +3853,24 @@ app.post('/webhook/genspay', async (req, res) => {
     if (event !== 'transaction.updated' || !data?.order_id) { logWebhook('genspay', { result: 'event_not_matched', event, orderId: data?.order_id || null }); return res.status(200).send('OK'); }
 
     const orderId = data.order_id;
-    const transactions = readDB('transactions.json');
+    const transactions = await readFresh('transactions.json');
     const transaction = transactions.find(t => t.orderId === orderId);
     if (!transaction) { logWebhook('genspay', { result: 'transaction_not_found', orderId }); return res.status(200).send('OK'); }
     if (transaction.status === 'done') { logWebhook('genspay', { result: 'already_done', orderId }); return res.status(200).send('OK'); }
 
     const status = (data.status || '').toUpperCase();
     const paid = status === 'SUCCESS';
+    if (status === 'EXPIRED' || status === 'FAILED') {
+      transaction.status = status.toLowerCase();
+      transaction.gatewayStatus = status;
+      transaction.gatewayUpdatedAt = new Date().toISOString();
+      const freshList = await readFresh('transactions.json');
+      const txIndex = freshList.findIndex(t => t.id === transaction.id);
+      if (txIndex !== -1) freshList[txIndex] = transaction; else freshList.push(transaction);
+      await writeDB('transactions.json', freshList);
+      logWebhook('genspay', { result: 'transaction_closed', orderId, statusFromWebhook: status });
+      return res.status(200).send('OK');
+    }
     if (!paid) { logWebhook('genspay', { result: 'not_paid', orderId, statusFromWebhook: status || '(kosong)' }); return res.status(200).send('OK'); }
 
     if (processingOrders.has(transaction.id)) { logWebhook('genspay', { result: 'already_processing', orderId }); return res.status(200).send('OK'); }
@@ -5347,6 +5525,7 @@ app.get('/leaderboard', (req, res) => {
 
 // API endpoints
 app.get('/api/products', async (req, res) => {
+  res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   if (!checkApiRateLimit(req.ip)) return res.status(429).json({ success: false, message: 'Terlalu banyak permintaan. Coba lagi nanti.' });
   // FIX (egress): endpoint publik paling sering dipanggil frontend -- ini
   // penyumbang terbesar cached egress karena dulu readFresh() menarik ulang
@@ -5388,6 +5567,7 @@ const validateVoucher = async (code, price, userId) => {
 };
 
 app.get('/api/stats', async (req, res) => {
+  res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   const products = await readSmart('products.json');
   const testimonials = await readSmart('testimonials.json');
   const users = await readSmart('users.json');
@@ -5434,6 +5614,7 @@ app.get('/api/transactions', requireAdmin, (req, res) => {
 });
 
 app.get('/api/testimonials', async (req, res) => {
+  res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   if (!checkApiRateLimit(req.ip)) return res.status(429).json({ success: false, message: 'Terlalu banyak permintaan.' });
   const testimonials = await readSmart('testimonials.json');
   const users = await readSmart('users.json');
@@ -5700,6 +5881,7 @@ app.post('/admin/leaderboard/delete/:id', requireAdmin, async (req, res) => {
 });
 
 app.get('/api/notifications', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
   if (!checkApiRateLimit(req.ip)) return res.status(429).json({ success: false, message: 'Terlalu banyak permintaan.' });
   const notifs = readDB('notifications.json').slice(0, 20);
   // SECURITY: anonimkan nama pembeli — hanya tampilkan initial agar tidak bocor daftar username asli
