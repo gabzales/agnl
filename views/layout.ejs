@@ -60,6 +60,25 @@
            pakai var(--bg-main) dst otomatis ikut berubah tanpa perlu
            di-cari-ganti satu-satu di setiap file.
            ═══════════════════════════════ */
+        /* SOCIAL ICONS — local SVG masks, independent from Iconify/CDN.
+           WhatsApp + Telegram must never disappear just because the external
+           Iconify runtime/API is blocked, slow, or unavailable on mobile. */
+        .agha-social-icon {
+            display:inline-block;
+            width:1.25em; height:1.25em;
+            flex:0 0 auto;
+            background:currentColor;
+            -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat;
+            -webkit-mask-position:center; mask-position:center;
+            -webkit-mask-size:contain; mask-size:contain;
+        }
+        .agha-social-icon.agha-wa {
+            -webkit-mask-image:url('/icons/whatsapp.svg'); mask-image:url('/icons/whatsapp.svg');
+        }
+        .agha-social-icon.agha-tg {
+            -webkit-mask-image:url('/icons/telegram.svg'); mask-image:url('/icons/telegram.svg');
+        }
+
         :root {
             --bg-main:    #ffffff;
             --bg-section: #f8f8f9;
@@ -674,7 +693,7 @@
                 <div class="my-1" style="border-top:1px solid var(--border);"></div>
                 <% if (settings?.contact?.whatsapp) { %>
                 <a href="https://wa.me/<%= (settings.contact.whatsapp||'').replace(/\D/g,'') %>" target="_blank" onclick="closeMenu()" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm" style="color:var(--text-2);" onmouseover="this.style.color='var(--text-1)';this.style.background='var(--bg-hover)'" onmouseout="this.style.color='var(--text-2)';this.style.background='transparent'">
-                    <iconify-icon icon="mdi:whatsapp" style="color:var(--brand-wa);font-size:18px;"></iconify-icon> Hubungi CS (WA)
+                    <span class="agha-social-icon agha-wa" style="color:var(--brand-wa);font-size:18px;" aria-hidden="true"></span> Hubungi CS (WA)
                 </a>
                 <% } %>
                 <% if (settings?.contact?.waChannel) { %>
@@ -684,7 +703,7 @@
                 <% } %>
                 <% if (settings?.contact?.telegram) { %>
                 <a href="https://t.me/<%= settings.contact.telegram %>" target="_blank" onclick="closeMenu()" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm" style="color:var(--text-2);" onmouseover="this.style.color='var(--text-1)';this.style.background='var(--bg-hover)'" onmouseout="this.style.color='var(--text-2)';this.style.background='transparent'">
-                    <iconify-icon icon="mdi:telegram" style="color:#f87171;font-size:18px;"></iconify-icon> Telegram
+                    <span class="agha-social-icon agha-tg" style="color:#f87171;font-size:18px;" aria-hidden="true"></span> Telegram
                 </a>
                 <% } %>
             </div>
@@ -927,7 +946,7 @@
     // ─── INIT ───
     document.addEventListener('DOMContentLoaded', () => {
         updateCartBadge();
-        setTimeout(loadPurchaseNotifs, 2000);
+        setTimeout(() => { loadPurchaseNotifs(); setInterval(loadPurchaseNotifs, 30000); }, 2000);
     });
     document.addEventListener('keydown', e => { if (e.key==='Escape') closeAll(); });
     document.addEventListener('click', e => {

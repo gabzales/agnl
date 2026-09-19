@@ -150,49 +150,12 @@ const pageTitle = settings?.siteName || 'AGHA NL';
   }
   .fz-pay-logo-box img { height: 100%; width: auto; max-width: 160px; object-fit: contain; }
   .fz-social {
-    width: 40px; height: 40px; min-width:40px; min-height:40px; box-sizing:border-box;
-    border-radius:50%; display:inline-flex; align-items:center; justify-content:center;
-    color:#fff; text-decoration:none; flex:0 0 40px; line-height:0;
-    overflow:hidden; vertical-align:middle;
+    width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    color: #fff; text-decoration: none; flex-shrink: 0; line-height: 1;
   }
-  .fz-social iconify-icon {
-    display:flex !important; align-items:center !important; justify-content:center !important;
-    width:20px !important; height:20px !important; min-width:20px !important; min-height:20px !important;
-    flex:0 0 20px !important; flex-shrink:0 !important;
-    margin:0 !important; padding:0 !important;
-    font-size:20px !important; line-height:20px !important;
-    vertical-align:middle !important; position:relative !important; top:0 !important; transform:none !important;
-  }
-  /* Semua tombol kontak memakai box icon tetap agar glyph tidak naik ke kiri atas. */
-  .fz-social > iconify-icon,
-  .fz-telegram-btn > iconify-icon {
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
-    flex:0 0 auto !important;
-    width:20px !important; height:20px !important;
-    min-width:20px !important; min-height:20px !important;
-    margin:0 !important; padding:0 !important;
-    line-height:20px !important;
-    vertical-align:middle !important;
-    position:static !important;
-    transform:none !important;
-  }
-  .fz-telegram-btn {
-    display:flex !important;
-    align-items:center !important;
-    justify-content:center !important;
-    gap:8px !important;
-    line-height:20px !important;
-    box-sizing:border-box !important;
-  }
-  /* FIX (bug 25 Agu 2026, direvisi 26 Agu 2026): percobaan sebelumnya
-     mengunci width/height iconify-icon lewat CSS supaya nggak "collapse"
-     saat script CDN belum load -- ternyata itu malah bikin icon gepeng/
-     distorsi (bentrok dengan font-size inline yang mengontrol ukuran
-     icon secara default). iconify-icon paling stabil dikontrol lewat
-     font-size saja (lihat dokumentasi resmi), jadi width/height paksa
-     di CSS dihapus. display:block ditambahkan supaya tetap center rapi. */
+  /* SOCIAL ICONS: WhatsApp + Telegram sekarang memakai SVG lokal, jadi
+     tidak ikut bergantung pada runtime Iconify/CDN yang bisa gagal load. */
+  .fz-social .agha-social-icon { display: block; }
 
   @media (min-width: 640px) {
     .fz-grid { grid-template-columns: repeat(4, 1fr); }
@@ -286,8 +249,8 @@ const pageTitle = settings?.siteName || 'AGHA NL';
 <% if (settings?.contact?.telegram) { %>
 <div class="max-w-6xl mx-auto px-4 pt-4">
   <a href="https://t.me/<%= settings.contact.telegram.replace('@','') %>" target="_blank"
-     class="fz-telegram-btn" style="width:100%;padding:11px 0;border-radius:4px;background:#229ED9;color:#fff;text-decoration:none;font-size:12px;font-weight:800;">
-    <iconify-icon icon="mdi:telegram" style="font-size:16px;"></iconify-icon>
+     style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:11px 0;border-radius:4px;background:#229ED9;color:#fff;text-decoration:none;font-size:12px;font-weight:800;">
+    <span class="agha-social-icon agha-tg" style="font-size:16px;" aria-hidden="true"></span>
     Gabung Grup Telegram
   </a>
 </div>
@@ -326,7 +289,6 @@ const popularProducts = products
     <% popularProducts.forEach(product => {
       const stock = Number(product._catalogStock || 0);
       const isOut = stock <= 0;
-      const stockUnknown = !!product._providerStockUnknown;
       const prodCategories = Array.isArray(product.categories) ? product.categories
         : (Array.isArray(product.platforms) ? product.platforms
         : (product.category ? [product.category] : []));
@@ -335,7 +297,7 @@ const popularProducts = products
       const priceList  = pricingArr.map(x=>(typeof x==='object'?(x.price??x.p):x)).filter(v=>typeof v==='number');
       const minPrice   = priceList.length ? Math.min(...priceList) : (product.price||0);
     %>
-    <div class="fz-card" data-stock-product-id="<%= product.id %>" style="flex:0 0 140px;" data-categories="<%= prodCategories.join(' ') %>">
+    <div class="fz-card" style="flex:0 0 140px;" data-categories="<%= prodCategories.join(' ') %>">
       <div class="fz-card-img" onclick="location.href='/buy/<%= product.id %>'" style="cursor:pointer;">
         <% if (product.image) { %>
         <img src="<%= product.image %>" alt="<%= product.name %>" loading="lazy" onerror="this.style.display='none'">
@@ -369,11 +331,11 @@ const popularProducts = products
             <iconify-icon icon="mdi:download" style="font-size:12px;"></iconify-icon> Download
           </button>
           <% } else if (!isOut) { %>
-          <button class="fz-btn-buy fz-stock-btn" data-stock-buy="1" onclick="location.href='/buy/<%= product.id %>'">
+          <button class="fz-btn-buy" onclick="location.href='/buy/<%= product.id %>'">
             <iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli
           </button>
           <% } else { %>
-          <button class="fz-btn-buy fz-stock-btn" data-stock-buy="1" onclick="location.href='/buy/<%= product.id %>'"><iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli</button>
+          <button class="fz-btn-buy" disabled>Habis</button>
           <% } %>
         </div>
       </div>
@@ -406,7 +368,6 @@ const popularProducts = products
     <% products.forEach(product => {
       const stock = Number(product._catalogStock || 0);
       const isOut = stock <= 0;
-      const stockUnknown = !!product._providerStockUnknown;
       // Backward-compat: produk lama mungkin masih punya `category` (string
       // tunggal) atau `platforms` (array lama) alih-alih `categories` array baru.
       const prodCategories = Array.isArray(product.categories) ? product.categories
@@ -421,7 +382,7 @@ const popularProducts = products
       const minPrice   = priceList.length ? Math.min(...priceList) : (product.price||0);
       const displaySold = (product.fakeSold != null) ? product.fakeSold : (product.sold || 0);
     %>
-    <div class="fz-card" data-stock-product-id="<%= product.id %>" data-categories='<%- safeJson(prodCategories).replace(/'/g, '&#39;') %>'>
+    <div class="fz-card" data-categories='<%- safeJson(prodCategories).replace(/'/g, '&#39;') %>'>
       <div class="fz-card-img" onclick="location.href='/buy/<%= product.id %>'" style="cursor:pointer;">
         <% if (product.image) { %>
         <img src="<%= product.image %>" alt="<%= product.name %>" loading="lazy"
@@ -471,11 +432,11 @@ const popularProducts = products
             <iconify-icon icon="mdi:download" style="font-size:12px;"></iconify-icon> Download
           </button>
           <% } else if (!isOut) { %>
-          <button class="fz-btn-buy fz-stock-btn" data-stock-buy="1" onclick="location.href='/buy/<%= product.id %>'">
+          <button class="fz-btn-buy" onclick="location.href='/buy/<%= product.id %>'">
             <iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli
           </button>
           <% } else { %>
-          <button class="fz-btn-buy fz-stock-btn" data-stock-buy="1" onclick="location.href='/buy/<%= product.id %>'"><iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli</button>
+          <button class="fz-btn-buy" disabled>Habis</button>
           <% } %>
         </div>
       </div>
@@ -600,15 +561,15 @@ const popularProducts = products
           <%- include('../partials/logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '15px' }) %>
         </div>
         <p style="font-size:12px;color:var(--fz-text-muted);line-height:1.5;margin-bottom:12px;max-width:320px;"><%= settings?.about || 'Toko mod menu & cheat game terpercaya dengan harga termurah dan proses instan.' %></p>
-        <div style="display:flex;gap:8px;justify-content:flex-start;align-items:center;">
+        <div style="display:flex;gap:8px;justify-content:center;">
           <% if (settings?.contact?.whatsapp) { %>
           <a href="https://wa.me/<%= (settings.contact.whatsapp||'').replace(/\D/g,'') %>" target="_blank" rel="noopener" class="fz-social" style="background:#25D366;" title="WhatsApp">
-            <iconify-icon icon="mdi:whatsapp" style="font-size:20px;color:#fff;"></iconify-icon>
+            <span class="agha-social-icon agha-wa" style="font-size:20px;color:#fff;" aria-hidden="true"></span>
           </a>
           <% } %>
           <% if (settings?.contact?.telegram) { %>
           <a href="https://t.me/<%= (settings.contact.telegram||'').replace('@','') %>" target="_blank" rel="noopener" class="fz-social" style="background:#229ED9;" title="Telegram">
-            <iconify-icon icon="mdi:telegram" style="font-size:20px;color:#fff;"></iconify-icon>
+            <span class="agha-social-icon agha-tg" style="font-size:20px;color:#fff;" aria-hidden="true"></span>
           </a>
           <% } %>
         </div>
@@ -805,41 +766,7 @@ function renderTurnstileWidgets(){
 <% } %>
 
 <script>
-// Refresh stok katalog sekali setelah render. Server-side render tetap dipakai
-// untuk first paint, sedangkan endpoint bulk memperbaiki cold-start/cache miss
-// tanpa N request provider untuk setiap produk.
-(async function refreshCatalogStock(){
-  try {
-    const r = await fetch('/api/catalog/stock', { cache: 'no-store' });
-    if (!r.ok) return;
-    const d = await r.json();
-    if (!d?.success || !Array.isArray(d.items)) return;
-    const byId = new Map(d.items.map(x => [String(x.productId), x]));
-    document.querySelectorAll('[data-stock-product-id]').forEach(card => {
-      const id = String(card.getAttribute('data-stock-product-id') || '');
-      const item = byId.get(id);
-      if (!item) return;
-      const btn = card.querySelector('.fz-stock-btn');
-      if (!btn) return;
-      // Produk download-only tidak punya fz-stock-btn dan tidak disentuh.
-      const stock = Math.max(0, Number(item.stockCount || 0));
-      const unknown = !!item.providerStockUnknown;
-      if (stock > 0) {
-        btn.disabled = false;
-        btn.dataset.stockDisabled = '0';
-        btn.innerHTML = '<iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli';
-        btn.onclick = () => { window.location.href = '/buy/' + encodeURIComponent(id); };
-      } else {
-        btn.disabled = false;
-        btn.dataset.stockDisabled = '0';
-        btn.innerHTML = '<iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli';
-        btn.onclick = () => { window.location.href = '/buy/' + encodeURIComponent(id); };
-      }
-    });
-  } catch (_) {}
-})();
-
-const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: Number(p._catalogStock || 0), stockUnknown: !!p._providerStockUnknown}))) %>;
+const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: Number(p._catalogStock || (keys||[]).length || 0)}))) %>;
 const CATEGORY_LABELS = <%- safeJson(categoryLabels || {}) %>;
 
 // ── Carousel (swipe/drag bebas kiri-kanan, diminta client 14 Sep 2026) ──
