@@ -349,18 +349,15 @@ async function loadProduct() {
       unit: o.unit === 'h' ? 'h' : 'd',
       price: o.price,
       reseller_price: (o.reseller_price !== undefined && o.reseller_price !== null) ? o.reseller_price : null,
-      strike_price: (o.strike_price !== undefined && o.strike_price !== null) ? o.strike_price : null,
-      dripstoreVariantId: o.dripstoreVariantId || null
+      strike_price: (o.strike_price !== undefined && o.strike_price !== null) ? o.strike_price : null
     }));
   } else if (currentProduct.items && currentProduct.items.length > 0) {
     // Fallback untuk produk lama yang cuma punya 'items' tanpa 'pricingOptions'.
     // Regex diperlonggar: terima "30 DAYS", "30 HARI", "12 JAM", "30D", dst — asal ada angka di label.
     pricingOptions = currentProduct.items.map((item, idx) => {
-      const label = String(item.l || '');
-      const m = label.match(/(\d+)\s*(DAYS?|HARI|JAM|THN|TH|TAHUN|YEARS?|YEAR|YR|YRS|D|H)\b/i) || label.match(/(\d+)/);
-      let days = m ? parseInt(m[1], 10) : 0;
-      const unit = /JAM|\bH\b/i.test(m?.[2] || label) ? 'h' : 'd';
-      if (m && /^(THN|TH|TAHUN|YEARS?|YEAR|YR|YRS)$/i.test(m[2] || '')) days *= 365;
+      const m = (item.l || '').match(/(\d+)\s*(?:DAYS?|HARI|JAM|D)\b/i) || (item.l || '').match(/(\d+)/);
+      const days = m ? parseInt(m[1]) : 0;
+      const unit = /JAM/i.test(item.l || '') ? 'h' : 'd';
       return {
         days: days > 0 ? days : (idx + 1), // kalau tetap gak ketemu, kasih angka dummy biar gak ke-drop & admin bisa perbaiki manual
         unit,
@@ -374,23 +371,9 @@ async function loadProduct() {
   }
   renderPricingRows();
 
-  // Keys + authoritative live stock (provider/local).
-  liveStockInfo = null;
+  // Keys
   renderKeyInfo();
   setKeysMode('append');
-  refreshLiveStockInfo();
-}
-
-async function refreshLiveStockInfo() {
-  if (!currentProduct?.id) return;
-  try {
-    const r = await fetch('/api/products/' + encodeURIComponent(currentProduct.id) + '/stock', { cache: 'no-store' });
-    if (!r.ok) return;
-    const d = await r.json();
-    if (!d?.success || !Array.isArray(d.items)) return;
-    liveStockInfo = d;
-    renderKeyInfo();
-  } catch (_) { /* local stock info tetap tampil */ }
 }
 
 function previewImg(url) {
@@ -570,17 +553,10 @@ function setKeysMode(mode) {
 }
 
 // ─── Render info keys/stok ───
-let liveStockInfo = null;
-
 function renderKeyInfo() {
   const p = currentProduct;
-  const keys = Array.isArray(p.keys) ? p.keys : [];
-  const seenKeys = new Set();
-  const usableKeys = keys.map(k => String(k || '').trim()).filter(s => {
-    if (!s || /^(?:stok|stock|produk)\s+(?:tidak\s+tersedia|unavailable)\s*:/i.test(s) || seenKeys.has(s)) return false;
-    seenKeys.add(s); return true;
-  });
-  const totalKeys = usableKeys.length;
+  const keys = p.keys || [];
+  const totalKeys = keys.length;
 
   // Parsing key format "KEY=7d" / "KEY=12h" (lihat parseKeyDuration di server).
   // Separator "=" (bukan ":") karena key silent cheat ada yang isinya sendiri
@@ -593,44 +569,30 @@ function renderKeyInfo() {
     return { days: parseInt(m[1]), unit: m[2] || 'd' };
   }
 
-  // Stok per item: satu baris = satu durasi. Sumber authoritative jika tersedia
-  // adalah /api/products/:id/stock (local + provider), bukan simbol "Live" tanpa angka.
-  const stockHtml = (p.items || []).map((item, itemIdx) => {
-    const m = (item.l || '').match(/(\d+)\s+(DAYS?|HARI|JAM|THN|TH|TAHUN|YEARS?|YEAR|YR|YRS)/i);
-    let days = m ? parseInt(m[1]) : null;
-    let unit = m && /JAM/i.test(m[2]) ? 'h' : 'd';
-    if (m && /^(THN|TH|TAHUN|YEARS?|YEAR|YR|YRS)$/i.test(m[2])) days *= 365;
-    const remote = Array.isArray(liveStockInfo?.items) ? liveStockInfo.items[itemIdx] : null;
-    let localStok = remote ? Number(remote.localStock || 0) : 0;
-    let providerStok = remote ? Number(remote.providerStock || 0) : 0;
-    let totalStok = remote ? Number(remote.stock || 0) : null;
-    let providerKnown = remote ? !!remote.providerKnown : false;
-    let providerBacked = remote ? !!remote.providerBacked : false;
-
-    if (!remote) {
-      const tagged = usableKeys.filter(k => {
-        const t = parseKeyTag(k); return days != null ? t.days === days && t.unit === unit : t.days === null;
-      }).length;
-      localStok = tagged;
-      totalStok = tagged;
-      const opt = (p.pricingOptions || [])[itemIdx];
-      providerBacked = !!opt?.dripstoreVariantId;
+  // Stok per item — cocokkan berdasar (days, unit) label item vs tag key.
+  const stockHtml = (p.items || []).map(item => {
+    const m = (item.l || '').match(/(\d+)\s+(DAYS?|HARI|JAM)/i);
+    const days = m ? parseInt(m[1]) : null;
+    const unit = m && /JAM/i.test(m[2]) ? 'h' : 'd';
+    const liveOpt = (p.pricingOptions || []).find(o => Number(o.days) === Number(days) && (o.unit || 'd') === unit && o.dripstoreVariantId);
+    if (liveOpt) {
+      return `<div class="flex items-center justify-between p-3 rounded-xl border text-cyan-300 border-cyan-500/30 bg-cyan-500/10">
+        <span class="text-xs font-bold text-white">${item.l}</span>
+        <span class="text-xs font-black">∞ · DripStore Live</span>
+      </div>`;
     }
-
-    let right;
-    if (providerBacked && providerKnown) {
-      right = `Lokal ${localStok} + Provider ${providerStok} = ${Math.max(0,totalStok)} stok`;
-    } else if (providerBacked && !providerKnown) {
-      right = `Lokal ${localStok} + Provider cek stok`;
+    let stok;
+    if (days) {
+      const tagged = keys.filter(k => { const t = parseKeyTag(k); return t.days === days && t.unit === unit; }).length;
+      const generic = keys.filter(k => parseKeyTag(k).days === null).length;
+      stok = tagged > 0 ? tagged : generic;
     } else {
-      right = `${Math.max(0, Number(totalStok || 0))} stok lokal`;
+      stok = keys.filter(k => parseKeyTag(k).days === null).length;
     }
-    const color = (!providerKnown && providerBacked && localStok === 0)
-      ? 'text-amber-500 border-amber-500/30 bg-amber-500/10'
-      : (Number(totalStok || 0) <= 0 ? 'text-red-400 border-red-500/30 bg-red-500/10' : Number(totalStok || 0) < 5 ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10' : 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10');
+    const color = stok === 0 ? 'text-red-400 border-red-500/30 bg-red-500/10' : stok < 5 ? 'text-yellow-400 border-yellow-500/30 bg-yellow-500/10' : 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
     return `<div class="flex items-center justify-between p-3 rounded-xl border ${color}">
       <span class="text-xs font-bold text-white">${item.l}</span>
-      <span class="text-xs font-black">${right}</span>
+      <span class="text-xs font-black">${stok} stok</span>
     </div>`;
   }).join('');
   document.getElementById('stockInfo').innerHTML = stockHtml;
@@ -640,7 +602,7 @@ function renderKeyInfo() {
   if (totalKeys > 0) {
     wrap.classList.remove('hidden');
     document.getElementById('keyCountLabel').textContent = `${totalKeys} key tersimpan`;
-    const chips = usableKeys.slice(0, 30).map(k => `<span class="key-chip">${k}</span>`).join('');
+    const chips = keys.slice(0, 30).map(k => `<span class="key-chip">${k}</span>`).join('');
     document.getElementById('keyChips').innerHTML = chips + (totalKeys > 30 ? `<span class="key-chip text-zinc-500">+${totalKeys - 30} lainnya</span>` : '');
   } else {
     wrap.classList.add('hidden');
