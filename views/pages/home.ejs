@@ -294,6 +294,7 @@ const popularProducts = products
     <% popularProducts.forEach(product => {
       const stock = Number(product._catalogStock || 0);
       const isOut = stock <= 0;
+      const stockUnknown = !!product._providerStockUnknown;
       const prodCategories = Array.isArray(product.categories) ? product.categories
         : (Array.isArray(product.platforms) ? product.platforms
         : (product.category ? [product.category] : []));
@@ -340,7 +341,7 @@ const popularProducts = products
             <iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli
           </button>
           <% } else { %>
-          <button class="fz-btn-buy" disabled>Habis</button>
+          <button class="fz-btn-buy" disabled><%= stockUnknown ? 'Cek stok' : 'Habis' %></button>
           <% } %>
         </div>
       </div>
@@ -373,6 +374,7 @@ const popularProducts = products
     <% products.forEach(product => {
       const stock = Number(product._catalogStock || 0);
       const isOut = stock <= 0;
+      const stockUnknown = !!product._providerStockUnknown;
       // Backward-compat: produk lama mungkin masih punya `category` (string
       // tunggal) atau `platforms` (array lama) alih-alih `categories` array baru.
       const prodCategories = Array.isArray(product.categories) ? product.categories
@@ -441,7 +443,7 @@ const popularProducts = products
             <iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli
           </button>
           <% } else { %>
-          <button class="fz-btn-buy" disabled>Habis</button>
+          <button class="fz-btn-buy" disabled><%= stockUnknown ? 'Cek stok' : 'Habis' %></button>
           <% } %>
         </div>
       </div>
@@ -771,7 +773,7 @@ function renderTurnstileWidgets(){
 <% } %>
 
 <script>
-const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: Number(p._catalogStock || (keys||[]).length || 0)}))) %>;
+const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: Number(p._catalogStock || 0), stockUnknown: !!p._providerStockUnknown}))) %>;
 const CATEGORY_LABELS = <%- safeJson(categoryLabels || {}) %>;
 
 // ── Carousel (swipe/drag bebas kiri-kanan, diminta client 14 Sep 2026) ──

@@ -226,14 +226,20 @@ function parseKeyDuration(keyStr) {
 function isUsableLocalKey(keyStr) {
   const s = String(keyStr || '').trim();
   if (!s) return false;
-  // Ignore legacy placeholder entries that describe missing stock rather than
-  // a real key. These used to be counted as generic local stock.
+  // Placeholder lama bukan inventory nyata.
   if (/^(?:stok|stock|produk)\s+(?:tidak\s+tersedia|unavailable)\s*:/i.test(s)) return false;
+  // Jangan menganggap semua string bertanda '=' sebagai invalid inventory:
+  // karakter '=' bisa saja menjadi bagian dari key legacy. Key bertanda '='
+  // yang suffix-nya valid akan dipakai oleh keyMatchesDuration(), sedangkan
+  // key bertanda '=' yang malformed tidak dianggap generic oleh isGenericKey().
   return true;
 }
 
 function isGenericKey(keyStr) {
-  return isUsableLocalKey(keyStr) && parseKeyDuration(keyStr).value === null;
+  const s = String(keyStr || '').trim();
+  // Generic = benar-benar tidak punya tag durasi. Key bertanda durasi harus
+  // selalu dipakai melalui pasangan value+unit yang tepat.
+  return isUsableLocalKey(s) && !s.includes('=');
 }
 
 // keyMatchesDuration: cocokkan key stok dengan durasi+unit yang dipesan
@@ -1292,17 +1298,32 @@ function parseDurationLabel(value) {
 function _dsExtractProductItems(resp) {
   const out = [];
   const seen = new Set();
+  const productNameKeys = ['product_name', 'productName', 'product_title', 'productTitle'];
+  const variantNameKeys = ['variant_name', 'variantName', 'variant_title', 'variantTitle', 'label', 'l', 'variant'];
+  const childKeys = ['variants', 'options', 'plans', 'items', 'products', 'data', 'result'];
+
   const walk = (node, parentProductName = '') => {
     if (!node) return;
     if (Array.isArray(node)) { node.forEach(x => walk(x, parentProductName)); return; }
     if (typeof node !== 'object') return;
 
-    const ownProductName = _dsFirst(node, ['product_name', 'productName', 'product_title', 'productTitle', 'name', 'title', 'product']);
-    const productName = typeof ownProductName === 'string' ? ownProductName : parentProductName;
+    // PENTING: `name` pada object variant biasanya adalah NAMA VARIANT
+    // (mis. "3 hari"), bukan nama produk. Versi lama mengambil `name` di sini
+    // sebagai productName lalu menimpa inheritance parent saat masuk ke
+    // `variants[]`; akibatnya mapping XREG -> AIM HACK gagal total karena
+    // productName menjadi "3 hari".
+    const explicitProduct = _dsFirst(node, productNameKeys);
+    const genericName = _dsFirst(node, ['name', 'title']);
+    const productField = _dsFirst(node, ['product']);
+    let productName = typeof explicitProduct === 'string' ? explicitProduct : parentProductName;
+    if (!productName && typeof productField === 'string') productName = productField;
+
     const variantId = _dsFirst(node, ['variant_id', 'variantId', 'id']);
-    const variantName = _dsFirst(node, ['variant_name', 'variantName', 'variant_title', 'variantTitle', 'name', 'title', 'label']);
+    const explicitVariantName = _dsFirst(node, variantNameKeys);
+    const variantName = explicitVariantName != null ? explicitVariantName : genericName;
     const explicitDays = _dsFirst(node, ['days', 'duration_days', 'durationDays']);
     const explicitHours = _dsFirst(node, ['hours', 'duration_hours', 'durationHours']);
+    const explicitDuration = _dsFirst(node, ['duration', 'duration_label', 'durationLabel']);
     const explicitUnit = _dsFirst(node, ['unit', 'duration_unit', 'durationUnit']);
     let duration = null;
     const unitText = String(explicitUnit || '').toLowerCase().trim();
@@ -1312,22 +1333,38 @@ function _dsExtractProductItems(resp) {
       if (isYearUnit) duration = { days: Number(explicitDays) * 365, unit: 'd', sourceUnit: 'y' };
       else duration = { days: Number(explicitDays), unit: unitText === 'h' ? 'h' : 'd' };
     }
-    if (!duration) duration = _dsDurationFromText(`${variantName || ''} ${productName || ''}`);
+    if (!duration && explicitDuration != null) duration = _dsDurationFromText(String(explicitDuration));
+    if (!duration) duration = _dsDurationFromText(`${variantName || ''}`);
+
+    // Kalau node memiliki nested variants/items dan belum punya product name,
+    // generic `name`/`title` di node ini biasanya adalah nama PRODUK. Pakai
+    // sebagai parent, tetapi jangan jadikan node container sebagai variant
+    // hanya karena ia memiliki id yang kebetulan ada.
+    const hasChildren = childKeys.some(k => node[k] !== undefined);
+    const containerName = (!productName && typeof genericName === 'string' && hasChildren)
+      ? genericName.trim() : '';
+    const inheritedForChildren = productName || containerName || parentProductName;
+    if (containerName) productName = containerName;
 
     if (variantId !== null && (productName || variantName) && duration && !seen.has(String(variantId))) {
-      seen.add(String(variantId));
-      out.push({
-        variantId: String(variantId),
-        productName: String(productName || variantName || '').trim(),
-        variantName: String(variantName || '').trim(),
-        days: Number(duration.days),
-        unit: duration.unit === 'h' ? 'h' : 'd',
-        raw: node,
-      });
+      // Jangan emit container product sebagai variant bila ia hanya memiliki
+      // nested variants/items dan durasinya datang dari nama produk kebetulan.
+      const looksLikeContainer = hasChildren && !explicitVariantName && !explicitDays && !explicitHours && !explicitDuration;
+      if (!looksLikeContainer) {
+        seen.add(String(variantId));
+        out.push({
+          variantId: String(variantId),
+          productName: String(productName || parentProductName || '').trim(),
+          variantName: String(variantName || genericName || '').trim(),
+          days: Number(duration.days),
+          unit: duration.unit === 'h' ? 'h' : 'd',
+          raw: node,
+        });
+      }
     }
 
-    for (const key of ['variants', 'options', 'plans', 'items', 'products', 'data', 'result']) {
-      if (node[key] !== undefined) walk(node[key], productName || parentProductName);
+    for (const key of childKeys) {
+      if (node[key] !== undefined) walk(node[key], inheritedForChildren);
     }
   };
   walk(resp, '');
@@ -1336,7 +1373,10 @@ function _dsExtractProductItems(resp) {
 
 const DRIPSTORE_PRODUCT_ALIASES = {
   // XREG on AGHA NL is fulfilled from the provider's AIM HACK catalog.
-  'xreg apk mod': ['aim hack', 'aim hack android+ ios', 'aim hack android ios']
+  'xreg apk mod': ['aim hack', 'aim hack android+ ios', 'aim hack android ios'],
+  // Typo/casing mismatch that exists between the AGHA product name and
+  // DripStore catalog; use an explicit alias instead of broad fuzzy matching.
+  'drip clint apk mod': ['drip client apk mod']
 };
 
 function _dsProviderNameCandidates(localName) {
@@ -1354,14 +1394,39 @@ function _dsNameMatch(localName, supplierName) {
   const b = _dsNormalizeName(supplierName);
   if (!a || !b) return false;
   if (a === b) return true;
-  if (a.length >= 4 && b.includes(a)) return true;
-  if (b.length >= 4 && a.includes(b)) return true;
-  const aw = new Set(a.split(' ').filter(w => w.length >= 3));
-  const bw = new Set(b.split(' ').filter(w => w.length >= 3));
-  if (!aw.size || !bw.size) return false;
-  let hit = 0;
-  for (const w of aw) if (bw.has(w)) hit++;
-  return hit >= Math.max(1, Math.min(3, Math.ceil(Math.min(aw.size, bw.size) * 0.6)));
+  // Hanya izinkan containment untuk nama yang cukup panjang. Jangan pakai
+  // token-overlap fuzzy karena dua produk seperti "DRIP CLINT APK MOD" dan
+  // "DRIP CLINT ROOT" bisa sama-sama lolos dan berujung mapping salah.
+  return (a.length >= 4 && b.includes(a)) || (b.length >= 4 && a.includes(b));
+}
+
+let _productsWriteQueue = Promise.resolve();
+
+// SINGLE WRITER untuk products.json.
+// Stok adalah satu dokumen JSON bersama; lock per-product saja tidak cukup
+// karena writeDB() menulis seluruh array. Semua operasi yang mengubah inventory
+// atau mapping yang bisa berjalan bersamaan harus lewat writer global ini supaya
+// tidak ada lost-update (mis. checkout key lokal tertimpa oleh auto-map).
+function withProductsWriteLock(task) {
+  const run = _productsWriteQueue.then(async () => {
+    const release = await acquirePersistentNamedLock('products-json-write-lock', { waitMs: 10000, staleMs: 60000 });
+    if (!release) throw new Error('Stok/data produk sedang diproses transaksi lain. Coba lagi sebentar.');
+    try {
+      return await task();
+    } finally {
+      await release();
+    }
+  }, async () => {
+    const release = await acquirePersistentNamedLock('products-json-write-lock', { waitMs: 10000, staleMs: 60000 });
+    if (!release) throw new Error('Stok/data produk sedang diproses transaksi lain. Coba lagi sebentar.');
+    try {
+      return await task();
+    } finally {
+      await release();
+    }
+  });
+  _productsWriteQueue = run.catch(() => undefined);
+  return run;
 }
 
 async function autoMapDripstoreProducts({ restockLowStock = false } = {}) {
@@ -1374,59 +1439,61 @@ async function autoMapDripstoreProducts({ restockLowStock = false } = {}) {
     throw new Error('Daftar produk DripStore kosong / format response products.php belum dikenali. Klik Sync lagi setelah memastikan endpoint products.php mengembalikan data produk + variant_id.');
   }
 
-  const products = await readFresh('products.json');
-  let mapped = 0, unchanged = 0, unmatched = 0;
-  const unmatchedList = [];
-  const restockTargets = [];
+  return withProductsWriteLock(async () => {
+    const products = await readFresh('products.json');
+    let mapped = 0, unchanged = 0, unmatched = 0;
+    const unmatchedList = [];
+    const restockTargets = [];
 
-  for (const product of products) {
-    if (!Array.isArray(product.pricingOptions) && !Array.isArray(product.items)) continue;
-    const normalized = normalizeProductBuyOptions(product);
-    product.pricingOptions = normalized.pricingOptions;
-    product.items = normalized.items;
-    for (const opt of product.pricingOptions) {
-      const normalizedOptDays = Number(opt.days);
-      const normalizedOptUnit = opt.unit === 'h' ? 'h' : 'd';
-      const candidates = supplierItems
-        .filter(s => Number(s.days) === normalizedOptDays && (s.unit || 'd') === normalizedOptUnit && _dsNameMatchWithAliases(product.name, s.productName));
-      if (!candidates.length) {
-        unmatched++;
-        unmatchedList.push(`${product.name} — ${opt.days}${opt.unit === 'h' ? 'h' : 'd'}`);
-        continue;
+    for (const product of products) {
+      if (!Array.isArray(product.pricingOptions) && !Array.isArray(product.items)) continue;
+      const normalized = normalizeProductBuyOptions(product);
+      product.pricingOptions = normalized.pricingOptions;
+      product.items = normalized.items;
+      for (const opt of product.pricingOptions) {
+        const normalizedOptDays = Number(opt.days);
+        const normalizedOptUnit = opt.unit === 'h' ? 'h' : 'd';
+        const candidates = supplierItems
+          .filter(s => Number(s.days) === normalizedOptDays && (s.unit || 'd') === normalizedOptUnit && _dsNameMatchWithAliases(product.name, s.productName));
+        if (!candidates.length) {
+          unmatched++;
+          unmatchedList.push(`${product.name} — ${opt.days}${opt.unit === 'h' ? 'h' : 'd'}`);
+          continue;
+        }
+        // Prioritaskan kecocokan exact-normalized name, lalu yang paling panjang.
+        candidates.sort((x, y) => {
+          const xe = _dsNormalizeName(x.productName) === _dsNormalizeName(product.name) ? 1 : 0;
+          const ye = _dsNormalizeName(y.productName) === _dsNormalizeName(product.name) ? 1 : 0;
+          if (xe !== ye) return ye - xe;
+          return String(y.productName).length - String(x.productName).length;
+        });
+        const chosen = candidates[0];
+        if (String(opt.dripstoreVariantId || '') !== chosen.variantId) {
+          opt.dripstoreVariantId = chosen.variantId;
+          mapped++;
+        } else unchanged++;
+        restockTargets.push({ productId: product.id, days: opt.days, unit: opt.unit || 'd', variantId: chosen.variantId });
       }
-      // Prioritaskan kecocokan exact-normalized name, lalu yang paling panjang.
-      candidates.sort((x, y) => {
-        const xe = _dsNormalizeName(x.productName) === _dsNormalizeName(product.name) ? 1 : 0;
-        const ye = _dsNormalizeName(y.productName) === _dsNormalizeName(product.name) ? 1 : 0;
-        if (xe !== ye) return ye - xe;
-        return String(y.productName).length - String(x.productName).length;
-      });
-      const chosen = candidates[0];
-      if (String(opt.dripstoreVariantId || '') !== chosen.variantId) {
-        opt.dripstoreVariantId = chosen.variantId;
-        mapped++;
-      } else unchanged++;
-      restockTargets.push({ productId: product.id, days: opt.days, unit: opt.unit || 'd', variantId: chosen.variantId });
     }
-  }
 
-  await writeDB('products.json', products);
+    await writeDB('products.json', products);
 
-  // Jangan melakukan generate key di request mapping ini. Di Vercel/serverless,
-  // kalau ada banyak produk dengan stok <= threshold, generate dilakukan satu per
-  // satu dan request bisa timeout sehingga browser cuma menerima "Failed to fetch".
-  // Mapping sekarang hanya menyimpan variant_id dan mengembalikan target restock;
-  // frontend akan memanggil endpoint restock-one per durasi secara terpisah.
-  return {
-    supplierVariants: supplierItems.length,
-    mapped,
-    unchanged,
-    unmatched,
-    unmatchedList: unmatchedList.slice(0, 20),
-    restocked: 0,
-    restockErrors: [],
-    restockTargets: restockTargets.slice(0, 100)
-  };
+    // Jangan melakukan generate key di request mapping ini. Di Vercel/serverless,
+    // kalau ada banyak produk dengan stok <= threshold, generate dilakukan satu per
+    // satu dan request bisa timeout sehingga browser cuma menerima "Failed to fetch".
+    // Mapping sekarang hanya menyimpan variant_id dan mengembalikan target restock;
+    // frontend akan memanggil endpoint restock-one per durasi secara terpisah.
+    return {
+      supplierVariants: supplierItems.length,
+      mapped,
+      unchanged,
+      unmatched,
+      unmatchedList: unmatchedList.slice(0, 20),
+      restocked: 0,
+      restockErrors: [],
+      restockTargets: restockTargets.slice(0, 100)
+    };
+  });
 }
 
 // Restock satu produk+durasi dalam request pendek. Dipanggil setelah auto-mapping
@@ -1439,40 +1506,46 @@ async function createDripstoreRestockRequest({ productId, days, unit = 'd', quan
 
   const settings = await readFresh('settings.json');
   if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
-  const products = await readFresh('products.json');
-  const product = products.find(p => String(p.id) === String(productId));
-  if (!product) throw new Error('Produk tidak ditemukan');
-  const opt = (product.pricingOptions || []).find(o => Number(o.days) === d && (o.unit || 'd') === u);
-  if (!opt) throw new Error('Opsi harga durasi ini tidak ditemukan di produk');
-  if (!opt.dripstoreVariantId) throw new Error('Durasi ini belum di-mapping ke Variant ID DripStore');
+  const lock = await acquirePersistentNamedLock(`restock-request-create:${String(productId)}:${d}${u}`, { waitMs: 7000, staleMs: 60000 });
+  if (!lock) throw new Error('Pembuatan proposal restock sedang diproses. Coba lagi sebentar.');
+  try {
+    const products = await readFresh('products.json');
+    const product = products.find(p => String(p.id) === String(productId));
+    if (!product) throw new Error('Produk tidak ditemukan');
+    const opt = (product.pricingOptions || []).find(o => Number(o.days) === d && (o.unit || 'd') === u);
+    if (!opt) throw new Error('Opsi harga durasi ini tidak ditemukan di produk');
+    if (!opt.dripstoreVariantId) throw new Error('Durasi ini belum di-mapping ke Variant ID DripStore');
 
-  const requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
-  const duplicate = requests.find(r => r.status === 'pending' && String(r.productId) === String(productId) && Number(r.days) === d && (r.unit || 'd') === u);
-  if (duplicate) return duplicate;
+    const requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
+    const duplicate = requests.find(r => r.status === 'pending' && String(r.productId) === String(productId) && Number(r.days) === d && (r.unit || 'd') === u);
+    if (duplicate) return duplicate;
 
-  const remaining = (product.keys || []).filter(k => keyMatchesDuration(k, d, u)).length;
-  const request = {
-    id: uuidv4(),
-    status: 'pending',
-    source,
-    productId: String(productId),
-    productName: product.name,
-    days: d,
-    unit: u,
-    quantity: qty,
-    remainingBefore: remaining,
-    variantId: String(opt.dripstoreVariantId),
-    createdAt: new Date().toISOString(),
-    approvedAt: null,
-    rejectedAt: null,
-    approvedBy: null,
-    transactionId: null,
-    added: 0,
-    error: null
-  };
-  requests.unshift(request);
-  await writeDB('dripstore_restock_requests.json', requests.slice(0, 500));
-  return request;
+    const remaining = getLocalOptionStock(product, { days: d, unit: u });
+    const request = {
+      id: uuidv4(),
+      status: 'pending',
+      source,
+      productId: String(productId),
+      productName: product.name,
+      days: d,
+      unit: u,
+      quantity: qty,
+      remainingBefore: remaining,
+      variantId: String(opt.dripstoreVariantId),
+      createdAt: new Date().toISOString(),
+      approvedAt: null,
+      rejectedAt: null,
+      approvedBy: null,
+      transactionId: null,
+      added: 0,
+      error: null
+    };
+    requests.unshift(request);
+    await writeDB('dripstore_restock_requests.json', requests.slice(0, 500));
+    return request;
+  } finally {
+    await lock();
+  }
 }
 
 async function restockOneDripstoreTarget(target) {
@@ -1491,8 +1564,12 @@ async function approveDripstoreRestockRequest(requestId, adminName = 'admin') {
   const lockKey = `request:${requestId}`;
   if (_dripstoreRestockLocks.has(lockKey)) throw new Error('Restock request sedang diproses');
   _dripstoreRestockLocks.add(lockKey);
+  let releasePersistent = null;
   try {
-    const requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
+    releasePersistent = await acquirePersistentNamedLock(`dripstore-restock-request:${String(requestId)}`, { waitMs: 10000, staleMs: 60000 });
+    if (!releasePersistent) throw new Error('Restock request sedang diproses di instance lain. Coba lagi sebentar.');
+
+    let requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
     const request = requests.find(r => r.id === requestId);
     if (!request) throw new Error('Restock request tidak ditemukan');
     if (request.status !== 'pending') throw new Error(`Request sudah ${request.status}`);
@@ -1502,33 +1579,49 @@ async function approveDripstoreRestockRequest(requestId, adminName = 'admin') {
     const products = await readFresh('products.json');
     const product = products.find(p => String(p.id) === String(request.productId));
     if (!product) throw new Error('Produk tidak ditemukan');
-    const opt = (product.pricingOptions || []).find(o => Number(o.days) === Number(request.days) && (o.unit || 'd') === request.unit);
-    if (!opt?.dripstoreVariantId) throw new Error('Variant DripStore sudah tidak tersedia pada produk ini');
+    const normalized = normalizeProductBuyOptions(product);
+    const opt = (normalized.pricingOptions || []).find(o => Number(o.days) === Number(request.days) && (o.unit || 'd') === (request.unit || 'd'));
+    if (!opt) throw new Error('Opsi durasi pada produk sudah tidak tersedia');
 
-    // IMPORTANT: satu-satunya jalur purchase ada setelah admin approve.
-    const purchase = await dripstoreGenerateKey(settings, opt.dripstoreVariantId, Number(request.quantity));
-    const newKeys = purchase.keys;
-    const tag = `=${request.days}${request.unit}`;
+    // Resolve provider dari katalog TERKINI sebelum purchase. Mapping tersimpan
+    // hanya metadata; request lama tidak boleh membeli variant yang sudah berubah.
+    const providerProducts = await dripstoreCall(settings, 'products.php');
+    const currentVariantId = resolveDripstoreVariantFromCatalog(providerProducts, normalized.name, opt);
+    if (!currentVariantId) throw new Error('Variant DripStore terkini untuk produk + durasi ini tidak ditemukan');
+
+    // Purchase tetap eksklusif di jalur approval admin.
+    const purchase = await dripstoreGenerateKey(settings, String(currentVariantId), Number(request.quantity));
+    const newKeys = Array.isArray(purchase.keys) ? purchase.keys.map(k => String(k || '').trim()).filter(k => k) : [];
+    if (!newKeys.length) throw new Error('DripStore tidak mengembalikan key setelah purchase');
+    const tag = `=${Number(request.days)}${request.unit === 'h' ? 'h' : 'd'}`;
     const taggedKeys = newKeys.map(k => `${k}${tag}`);
-    const freshProducts = await readFresh('products.json');
-    const freshProduct = freshProducts.find(p => String(p.id) === String(request.productId));
-    if (!freshProduct) throw new Error('Produk hilang saat menyimpan key');
-    const existing = new Set(freshProduct.keys || []);
-    const unique = taggedKeys.filter(k => !existing.has(k));
-    freshProduct.keys = [...(freshProduct.keys || []), ...unique];
-    await writeDB('products.json', freshProducts);
+
+    // Simpan hasil purchase di bawah lock stok produk supaya tidak menimpa
+    // key yang baru saja di-consume checkout instance lain.
+    const saved = await withPersistentProductStockLock(request.productId, async () => {
+      const freshProducts = await readFresh('products.json');
+      const freshProduct = freshProducts.find(p => String(p.id) === String(request.productId));
+      if (!freshProduct) throw new Error('Produk hilang saat menyimpan key');
+      const existing = new Set(normalizeUsableLocalKeys(freshProduct.keys));
+      const unique = taggedKeys.filter(k => !existing.has(k));
+      const existingRaw = Array.isArray(freshProduct.keys) ? freshProduct.keys.map(k => String(k || '').trim()).filter(k => k) : [];
+      freshProduct.keys = [...existingRaw, ...unique];
+      await writeDB('products.json', freshProducts);
+      return { unique, product: freshProduct };
+    });
 
     request.status = 'approved';
     request.approvedAt = new Date().toISOString();
     request.approvedBy = adminName;
-    request.added = unique.length;
-    request.variantId = String(opt.dripstoreVariantId);
+    request.added = saved.unique.length;
+    request.variantId = String(currentVariantId);
     request.error = null;
     request.transactionId = purchase.transactionId || null;
+    requests = await readFresh('dripstore_restock_requests.json').catch(() => requests);
     const idx = requests.findIndex(r => r.id === requestId);
     if (idx !== -1) requests[idx] = request;
     await writeDB('dripstore_restock_requests.json', requests.slice(0, 500));
-    console.log(`DRIPSTORE PURCHASE APPROVED ${request.id}: ${request.productName} ${request.days}${request.unit} +${unique.length}`);
+    console.log(`DRIPSTORE PURCHASE APPROVED ${request.id}: ${request.productName} ${request.days}${request.unit} +${saved.unique.length}`);
     return request;
   } catch (e) {
     const requests = await readFresh('dripstore_restock_requests.json').catch(() => []);
@@ -1539,6 +1632,7 @@ async function approveDripstoreRestockRequest(requestId, adminName = 'admin') {
     }
     throw e;
   } finally {
+    if (releasePersistent) await releasePersistent();
     _dripstoreRestockLocks.delete(lockKey);
   }
 }
@@ -1568,7 +1662,7 @@ function _dsParseMoney(value) {
 
 async function getDripstoreBalanceValue(settings) {
   const resp = await dripstoreCall(settings, 'balance.php');
-  const raw = resp?.data?.balance ?? resp?.balance ?? resp?.data?.credits ?? resp?.credits ?? resp?.data?.saldo ?? resp?.saldo;
+  const raw = resp?.data?.balance ?? resp?.balance ?? resp?.data?.credits ?? resp?.credits ?? resp?.data?.saldo ?? resp?.saldo ?? resp?.data?.amount ?? resp?.amount ?? resp?.data?.balance_usd ?? resp?.balance_usd;
   return _dsParseMoney(raw);
 }
 
@@ -1583,7 +1677,7 @@ function _dsFindVariantCost(resp, variantId) {
     const name = _dsFirst(node, ['variant_name','variantName','name','title']);
     const product = _dsFirst(node, ['product_name','productName','product_title','productTitle','product']) || inheritedProduct;
     if (id != null && String(id) === target) {
-      const raw = _dsFirst(node, ['unit_price','unitPrice','price','cost','cost_price','costPrice','price_usd','priceUsd','unit_cost','unitCost','reseller_price','resellerPrice','selling_price','sellingPrice']);
+      const raw = _dsFirst(node, ['unit_price','unitPrice','price','cost','cost_price','costPrice','price_usd','priceUsd','unitPriceUsd','unit_price_usd','cost_usd','costUsd','unit_cost','unitCost','reseller_price','resellerPrice','selling_price','sellingPrice','p']);
       const n = _dsParseMoney(raw);
       if (n !== null && n >= 0) found = n;
     }
@@ -1596,12 +1690,27 @@ function _dsFindVariantCost(resp, variantId) {
 let _dripstoreCatalogCache = null;
 let _dripstoreCatalogCacheAt = 0;
 let _dripstoreCatalogInflight = null;
-const DRIPSTORE_CATALOG_CACHE_TTL = 120000;
+let _dripstoreCatalogCacheSignature = '';
+const DRIPSTORE_CATALOG_CACHE_TTL = 30000;
 const DRIPSTORE_CATALOG_TIMEOUT_MS = 4500;
+
+function _getDripstoreCatalogSignature(settings) {
+  const ds = settings?.dripstore || {};
+  const token = String(ds.apiToken || '').trim();
+  if (!token) return '';
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
+  return `${String(ds.baseUrl || 'https://dripclientstore.shop/api/v1').trim()}|${tokenHash}`;
+}
 
 async function getDripstoreCatalogSnapshot(settings) {
   const ds = settings.dripstore || {};
   if (!ds.apiToken) return { balance: null, products: null };
+  const signature = _getDripstoreCatalogSignature(settings);
+  if (signature !== _dripstoreCatalogCacheSignature) {
+    _dripstoreCatalogCache = null;
+    _dripstoreCatalogCacheAt = 0;
+    _dripstoreCatalogCacheSignature = signature;
+  }
   const now = Date.now();
   if (_dripstoreCatalogCache && (now - _dripstoreCatalogCacheAt) < DRIPSTORE_CATALOG_CACHE_TTL) return _dripstoreCatalogCache;
 
@@ -1620,13 +1729,18 @@ async function getDripstoreCatalogSnapshot(settings) {
       ]);
       const balance = results[0].status === 'fulfilled' ? results[0].value : null;
       const products = results[1].status === 'fulfilled' ? results[1].value : null;
-      // Keep the last known good snapshot during transient provider failures;
-      // otherwise one timeout could make every card suddenly show "Habis".
+      // Cache hanya diperbarui jika balance DAN products sama-sama terbaca.
+      // Setelah TTL habis, kegagalan refresh tidak boleh menjadikan saldo/harga
+      // lama sebagai sumber kebenaran stok baru.
       if (balance !== null && products) {
         _dripstoreCatalogCache = { balance, products };
         _dripstoreCatalogCacheAt = Date.now();
+        return _dripstoreCatalogCache;
       }
-      return _dripstoreCatalogCache || { balance: null, products: null };
+      // Kalau cache terakhir sudah expired dan refresh gagal, FAIL CLOSED.
+      // Lebih aman menampilkan "Cek stok provider" daripada menjual berdasarkan
+      // saldo/harga yang mungkin sudah kedaluwarsa.
+      return { balance: null, products: null, stale: true };
     } finally {
       _dripstoreCatalogInflight = null;
     }
@@ -1644,6 +1758,9 @@ async function getDripstoreCatalogSnapshot(settings) {
 function getCachedDripstoreCatalogSnapshot(settings) {
   const ds = settings?.dripstore || {};
   if (!ds.apiToken || !_dripstoreCatalogCache) return null;
+  const signature = _getDripstoreCatalogSignature(settings);
+  if (signature !== _dripstoreCatalogCacheSignature) return null;
+  if ((Date.now() - _dripstoreCatalogCacheAt) >= DRIPSTORE_CATALOG_CACHE_TTL) return null;
   return _dripstoreCatalogCache;
 }
 function warmDripstoreCatalog(settings) {
@@ -1671,56 +1788,146 @@ function _dsFindVariantExplicitStock(resp, variantId) {
   return found;
 }
 
-function getDripstoreVirtualStock(snapshot, variantId) {
-  if (!snapshot?.products) return null;
-  // IMPORTANT: untuk mode LIVE/HYBRID, stok publik dihitung dari kemampuan
-  // saldo provider untuk VARIANT INI, bukan dari field `stock` katalog.
-  // Field `stock` di supplier bisa berarti stok internal/supplier inventory
-  // dan nilainya 0 pada variant mahal walaupun saldo akun masih cukup untuk
-  // variant yang lebih murah. Kalau kita return `stock` mentah di sini,
-  // satu variant mahal bisa ikut membuat produk terlihat Habis.
-  if (snapshot.balance === null || snapshot.balance === undefined) return null;
-  const cost = _dsFindVariantCost(snapshot.products, variantId);
-  if (cost === null || !Number.isFinite(Number(cost)) || Number(cost) <= 0) return null;
-  const balance = Number(snapshot.balance);
-  return Math.max(0, Math.floor((balance + 1e-9) / Number(cost)));
+function _dsMoneyCents(value) {
+  const n = _dsParseMoney(value);
+  if (n === null || !Number.isFinite(n)) return null;
+  // Provider kita menampilkan nominal USD hingga 2 desimal. Hitung dalam
+  // integer cents supaya floor(balance / cost) tidak kena error floating-point
+  // seperti 1.34 / 0.67 = 1.999999....
+  return Math.round(n * 100);
 }
 
-// Resolve a provider variant even when the persisted mapping is stale/missing.
-// IMPORTANT: this never creates an AGHA product and never purchases anything.
-// It only reads the current provider catalog and uses product name + duration
-// as a fallback for availability calculation.
-function findDripstoreVariantForOption(snapshot, productName, opt) {
-  if (!snapshot?.products || !productName || !opt) return null;
+function getDripstoreVirtualStock(snapshot, variantId) {
+  if (!snapshot?.products) return null;
+  if (snapshot.balance === null || snapshot.balance === undefined) return null;
+  const costCents = _dsMoneyCents(_dsFindVariantCost(snapshot.products, variantId));
+  const balanceCents = _dsMoneyCents(snapshot.balance);
+  if (costCents === null || costCents <= 0 || balanceCents === null) return null;
+  if (balanceCents < 0) return 0;
+  return Math.max(0, Math.floor(balanceCents / costCents));
+}
 
-  // Prefer a CURRENT provider catalog match by product name + duration. This
-  // avoids stale/wrong saved variant IDs masking a valid cheaper/same-duration
-  // provider option. XREG is explicitly aliased to AIM HACK below.
-  const items = _dsExtractProductItems(snapshot.products);
+function resolveDripstoreVariantFromCatalog(productsResp, productName, opt) {
+  if (!productsResp || !productName || !opt) return null;
+  const items = _dsExtractProductItems(productsResp);
   const matches = items.filter(item =>
     Number(item.days) === Number(opt.days) &&
     (item.unit || 'd') === (opt.unit || 'd') &&
     _dsNameMatchWithAliases(productName, item.productName)
   );
-
   if (matches.length) {
     matches.sort((a,b) => {
       const ae = _dsNormalizeName(a.productName) === _dsNormalizeName(productName) ? 1 : 0;
       const be = _dsNormalizeName(b.productName) === _dsNormalizeName(productName) ? 1 : 0;
       return be - ae || String(b.productName).length - String(a.productName).length;
     });
-    const chosen = matches[0];
-    const stock = getDripstoreVirtualStock(snapshot, chosen.variantId);
-    if (stock !== null) return { variantId: chosen.variantId, stock };
+    return matches[0].variantId;
+  }
+  // Katalog provider berhasil dibaca tetapi pasangan product+durasi tidak ada.
+  // Jangan menggunakan ID lama karena bisa menunjuk ke variant yang sudah
+  // berubah; false-positive stock lebih berbahaya daripada status unknown.
+  return null;
+}
+
+function findDripstoreVariantForOption(snapshot, productName, opt) {
+  if (!snapshot?.products || !productName || !opt) return null;
+  const variantId = resolveDripstoreVariantFromCatalog(snapshot.products, productName, opt);
+  if (!variantId) return null;
+  const stock = getDripstoreVirtualStock(snapshot, variantId);
+  if (stock === null) return null;
+  return { variantId: String(variantId), stock };
+}
+
+function normalizeUsableLocalKeys(keys) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of (Array.isArray(keys) ? keys : [])) {
+    const key = String(raw ?? '').trim();
+    if (!isUsableLocalKey(key) || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+function countLocalDurationStock(keys, days, unit) {
+  return normalizeUsableLocalKeys(keys).filter(k => keyMatchesDuration(k, days, unit)).length;
+}
+
+function getLocalOptionStock(product, opt) {
+  const keys = Array.isArray(product?.keys) ? product.keys : [];
+  if (Number(opt?.days) > 0) return countLocalDurationStock(keys, Number(opt.days), opt.unit === 'h' ? 'h' : 'd');
+  return normalizeUsableLocalKeys(keys).filter(isGenericKey).length;
+}
+
+function getOptionStockView(product, opt, snapshot, mode, providerConfigured = false) {
+  const normalizedMode = ['live','hybrid','local'].includes(mode) ? mode : 'live';
+  const localStock = getLocalOptionStock(product, opt);
+  if (normalizedMode === 'local') {
+    return { stock: localStock, localStock, providerStock: 0, providerKnown: false, providerBacked: false, variantId: null };
   }
 
-  // Fallback for provider catalogs whose labels are not consistently exposed.
-  // This is only a read/lookup path; it never purchases anything.
-  if (opt.dripstoreVariantId) {
-    const direct = getDripstoreVirtualStock(snapshot, String(opt.dripstoreVariantId));
-    if (direct !== null) return { variantId: String(opt.dripstoreVariantId), stock: direct };
+  const resolved = findDripstoreVariantForOption(snapshot, product.name, opt);
+  // LIVE berarti provider adalah satu-satunya sumber fulfillment. Jadi variant
+  // yang belum ter-resolve TIDAK BOLEH terlihat punya stok lokal. Di HYBRID,
+  // lokal tetap boleh tampil dan dipakai sebagai fallback.
+  const providerBacked = normalizedMode === 'live'
+    ? !!providerConfigured
+    : (!!opt?.dripstoreVariantId || !!resolved);
+  if (!providerBacked) {
+    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: false, variantId: null };
   }
-  return null;
+  if (!snapshot) {
+    // Provider belum terverifikasi. Jangan mengarang "1 stok" dan jangan
+    // menampilkan variant Habis sebagai fakta. Hybrid masih boleh memakai
+    // stok lokal yang benar-benar ada.
+    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
+  }
+  if (!resolved) {
+    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
+  }
+
+  const providerStock = Math.max(0, Number(resolved.stock) || 0);
+  const stock = normalizedMode === 'hybrid' ? localStock + providerStock : providerStock;
+  return { stock, localStock, providerStock, providerKnown: true, providerBacked: true, variantId: resolved.variantId };
+}
+
+
+// Satu-satunya jalur untuk mengonsumsi key lokal. Semua pembelian lokal
+// (hybrid/local checkout, wallet, admin confirm) lewat helper ini supaya:
+// - durasi + unit harus exact;
+// - tidak pernah mengambil key durasi lain;
+// - tidak double-sell saat 2 request bersamaan, termasuk lintas instance Vercel.
+async function consumeLocalProductKey(productId, selectedDays, selectedUnit = 'd') {
+  return withPersistentProductStockLock(productId, async () => {
+    const freshProducts = await readFresh('products.json');
+    const freshProduct = freshProducts.find(p => String(p.id) === String(productId));
+    if (!freshProduct) return { key: null, products: freshProducts, committed: false };
+
+    const keys = Array.isArray(freshProduct.keys) ? freshProduct.keys : [];
+    const days = Number(selectedDays);
+    const unit = selectedUnit === 'h' ? 'h' : 'd';
+    let idx = -1;
+    if (Number.isFinite(days) && days > 0) {
+      idx = keys.findIndex(k => keyMatchesDuration(k, days, unit));
+    } else {
+      idx = keys.findIndex(k => isGenericKey(k));
+    }
+
+    if (idx < 0) return { key: null, products: freshProducts, committed: false };
+    const stored = String(keys[idx] || '').trim();
+    const parsed = parseKeyDuration(stored);
+    const key = parsed.value === null ? stored : parsed.raw;
+    if (!key || !isUsableLocalKey(stored)) return { key: null, products: freshProducts, committed: false };
+
+    // Identical key strings cannot be sold safely twice. Remove every duplicate
+    // of the consumed key so legacy duplicate rows can never become double-sales.
+    freshProduct.keys = keys.filter(k => String(k || '').trim() !== stored);
+
+    freshProduct.sold = (freshProduct.sold || 0) + 1;
+    await writeDB('products.json', freshProducts);
+    return { key, products: freshProducts, product: freshProduct, committed: true };
+  });
 }
 
 function getCombinedOptionStock(snapshot, productName, opt, localStock = 0) {
@@ -1728,24 +1935,90 @@ function getCombinedOptionStock(snapshot, productName, opt, localStock = 0) {
   return Math.max(0, Number(localStock) || 0) + (resolved ? resolved.stock : 0);
 }
 
-function countUsableLocalKeys(keys) {
-  return (Array.isArray(keys) ? keys : []).filter(isUsableLocalKey);
+function buildProductStockSummary(rawProduct, settings, snapshot = null) {
+  const product = normalizeProductBuyOptions(rawProduct);
+  const mode = ['live', 'hybrid', 'local'].includes(settings?.dripstore?.fulfillmentMode)
+    ? settings.dripstore.fulfillmentMode : 'live';
+  const options = Array.isArray(product.pricingOptions) ? product.pricingOptions : [];
+  const providerConfigured = !!settings?.dripstore?.apiToken;
+  const optionViews = options.map(opt => getOptionStockView(product, opt, snapshot, mode, providerConfigured));
+  const stockByOption = optionViews.map((view, index) => ({
+    index,
+    days: Number(options[index]?.days),
+    unit: options[index]?.unit === 'h' ? 'h' : 'd',
+    stock: Math.max(0, Number(view.stock) || 0),
+    localStock: Math.max(0, Number(view.localStock) || 0),
+    providerStock: Math.max(0, Number(view.providerStock) || 0),
+    providerKnown: !!view.providerKnown,
+    providerBacked: !!view.providerBacked,
+    variantId: view.variantId || null
+  }));
+  const stockCount = stockByOption.length
+    ? Math.max(...stockByOption.map(x => x.stock), 0)
+    : (mode === 'live' ? 0 : getLocalOptionStock(product, { days: null, unit: 'd' }));
+  return {
+    product,
+    mode,
+    stockByOption,
+    stockCount: Math.max(0, Number(stockCount) || 0),
+    providerStockUnknown: stockByOption.some(x => x.providerBacked && !x.providerKnown),
+    usableLocalKeyCount: countUsableLocalKeys(product.keys).length,
+    genericLocalKeyCount: countUsableLocalKeys(product.keys).filter(isGenericKey).length
+  };
 }
 
-function countLocalDurationStock(keys, days, unit) {
-  return countUsableLocalKeys(keys).filter(k => keyMatchesDuration(k, days, unit)).length;
+function countUsableLocalKeys(keys) {
+  return normalizeUsableLocalKeys(keys);
 }
 
 async function checkDripstoreVariantAvailability(settings, variantId, quantity = 1) {
   const ds = settings.dripstore || {};
   if (!ds.apiToken) return { ok: false, reason: 'API Token DripStore belum dikonfigurasi' };
-  const balance = await getDripstoreBalanceValue(settings);
-  const productsResp = await dripstoreCall(settings, 'products.php');
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty <= 0 || qty > 1000) {
+    return { ok: false, reason: 'Jumlah key provider tidak valid (1-1000)' };
+  }
+  const [balance, productsResp] = await Promise.all([
+    getDripstoreBalanceValue(settings),
+    dripstoreCall(settings, 'products.php')
+  ]);
   const unitCost = _dsFindVariantCost(productsResp, variantId);
-  if (balance === null) return { ok: true, guarded: false, balance: null, unitCost, reason: 'Saldo provider tidak dapat dibaca; provider menjadi pemeriksaan terakhir' };
-  if (unitCost === null) return { ok: true, guarded: false, balance, unitCost: null, reason: 'Harga variant provider tidak tersedia di products.php; provider menjadi pemeriksaan terakhir' };
-  const required = unitCost * Math.max(1, Number(quantity) || 1);
-  return { ok: balance + 1e-9 >= required, guarded: true, balance, unitCost, required, shortfall: Math.max(0, required - balance) };
+  if (balance === null) return { ok: false, guarded: false, balance: null, unitCost, variantId: String(variantId), reason: 'Saldo provider tidak dapat diverifikasi' };
+  if (unitCost === null || !Number.isFinite(Number(unitCost)) || Number(unitCost) <= 0) {
+    return { ok: false, guarded: false, balance, unitCost: null, variantId: String(variantId), reason: 'Harga variant provider tidak tersedia / tidak valid di products.php' };
+  }
+  const balanceCents = _dsMoneyCents(balance);
+  const unitCostCents = _dsMoneyCents(unitCost);
+  if (balanceCents === null || unitCostCents === null || unitCostCents <= 0) {
+    return { ok: false, guarded: false, balance, unitCost, variantId: String(variantId), reason: 'Nominal provider tidak valid' };
+  }
+  const requiredCents = unitCostCents * qty;
+  const required = requiredCents / 100;
+  return { ok: balanceCents >= requiredCents, guarded: true, balance, unitCost, required, variantId: String(variantId), shortfall: Math.max(0, required - balanceCents / 100) };
+}
+
+async function checkDripstoreOptionAvailability(settings, productName, opt, quantity = 1) {
+  const ds = settings.dripstore || {};
+  if (!ds.apiToken) return { ok: false, reason: 'API Token DripStore belum dikonfigurasi di Settings' };
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty <= 0 || qty > 1000) return { ok: false, reason: 'Jumlah key provider tidak valid (1-1000)' };
+  const productsResp = await dripstoreCall(settings, 'products.php');
+  const variantId = resolveDripstoreVariantFromCatalog(productsResp, productName, opt);
+  if (!variantId) return { ok: false, reason: 'Variant DripStore untuk produk + durasi ini tidak ditemukan' };
+  const balance = await getDripstoreBalanceValue(settings);
+  const unitCost = _dsFindVariantCost(productsResp, variantId);
+  if (balance === null) return { ok: false, guarded: false, variantId: String(variantId), unitCost, balance: null, reason: 'Saldo provider tidak dapat diverifikasi' };
+  if (unitCost === null || !Number.isFinite(Number(unitCost)) || Number(unitCost) <= 0) {
+    return { ok: false, guarded: false, variantId: String(variantId), unitCost: null, balance, reason: 'Harga variant provider tidak valid' };
+  }
+  const balanceCents = _dsMoneyCents(balance);
+  const unitCostCents = _dsMoneyCents(unitCost);
+  if (balanceCents === null || unitCostCents === null || unitCostCents <= 0) {
+    return { ok: false, guarded: false, variantId: String(variantId), unitCost, balance, reason: 'Nominal provider tidak valid' };
+  }
+  const requiredCents = unitCostCents * qty;
+  const required = requiredCents / 100;
+  return { ok: balanceCents >= requiredCents, guarded: true, variantId: String(variantId), unitCost, balance, required, shortfall: Math.max(0, required - balanceCents / 100) };
 }
 
 // Serialize provider purchases so two paid orders cannot both pass the
@@ -1754,23 +2027,48 @@ async function checkDripstoreVariantAvailability(settings, variantId, quantity =
 let _dripstorePurchaseQueue = Promise.resolve();
 
 function withDripstorePurchaseLock(task) {
-  const run = _dripstorePurchaseQueue.then(task, task);
+  const run = _dripstorePurchaseQueue.then(async () => {
+    const release = await acquirePersistentNamedLock('dripstore-purchase-lock', { waitMs: 10000, staleMs: 60000 });
+    if (!release) throw new Error('Pembelian provider sedang diproses transaksi lain. Coba lagi sebentar.');
+    try {
+      return await task();
+    } finally {
+      await release();
+    }
+  }, async () => {
+    const release = await acquirePersistentNamedLock('dripstore-purchase-lock', { waitMs: 10000, staleMs: 60000 });
+    if (!release) throw new Error('Pembelian provider sedang diproses transaksi lain. Coba lagi sebentar.');
+    try {
+      return await task();
+    } finally {
+      await release();
+    }
+  });
   _dripstorePurchaseQueue = run.catch(() => undefined);
   return run;
 }
 
 async function dripstoreGenerateKey(settings, variantId, quantity) {
+  const qty = Number(quantity);
+  if (!Number.isInteger(qty) || qty <= 0 || qty > 1000) throw new Error('Jumlah key DripStore harus 1-1000');
   return withDripstorePurchaseLock(async () => {
     const guard = settings.dripstore?.balanceGuardEnabled !== false;
     if (guard) {
-      const availability = await checkDripstoreVariantAvailability(settings, variantId, quantity);
+      const availability = await checkDripstoreVariantAvailability(settings, variantId, qty);
       if (!availability.ok) {
-        throw new Error(`Saldo DripStore tidak cukup untuk variant ini. Saldo $${Number(availability.balance).toFixed(2)}, kebutuhan minimal $${Number(availability.required).toFixed(2)}.`);
+        if (availability.reason && availability.balance == null) throw new Error(availability.reason);
+        const bal = availability.balance == null ? '?' : Number(availability.balance).toFixed(2);
+        const req = availability.required == null ? '?' : Number(availability.required).toFixed(2);
+        throw new Error(`Saldo DripStore tidak cukup / tidak terverifikasi untuk variant ini. Saldo $${bal}, kebutuhan minimal $${req}.`);
       }
     }
     const resp = await dripstoreCall(settings, 'generate_key.php', { variant_id: variantId, quantity }, 'POST');
     const keys = extractDripstoreKeys(resp);
     const transactionId = resp?.data?.transaction_id || resp?.data?.transactionId || resp?.transaction_id || resp?.transactionId || resp?.data?.purchase_id || resp?.purchase_id || null;
+    // Saldo provider berubah setelah generate_key. Jangan biarkan halaman publik
+    // memakai snapshot sebelum pembelian selama TTL cache penuh.
+    _dripstoreCatalogCache = null;
+    _dripstoreCatalogCacheAt = 0;
     return { keys, transactionId };
   });
 }
@@ -1794,8 +2092,13 @@ async function fulfillProductFromDripstore(transaction, settings) {
   if (!product) return null;
   const opt = (product.pricingOptions || []).find(o => Number(o.days) === days && (o.unit || 'd') === unit);
   const mode = settings.dripstore?.fulfillmentMode || 'live';
-  if (mode === 'local') return null;
-  if (!opt?.dripstoreVariantId) return null;
+  if (mode === 'local' || !opt) return null;
+
+  // Selalu resolve dari katalog provider TERKINI. Mapping tersimpan hanya
+  // fallback; ini mencegah Variant ID lama menunjuk ke paket yang salah.
+  const providerProducts = await dripstoreCall(settings, 'products.php');
+  const currentVariantId = resolveDripstoreVariantFromCatalog(providerProducts, product.name, opt);
+  if (!currentVariantId) return null;
 
   const lockKey = `live:${transaction.id}`;
   if (_dripstoreLiveLocks.has(lockKey)) {
@@ -1803,13 +2106,13 @@ async function fulfillProductFromDripstore(transaction, settings) {
   }
   _dripstoreLiveLocks.add(lockKey);
   try {
-    const purchase = await dripstoreGenerateKey(settings, String(opt.dripstoreVariantId), 1);
+    const purchase = await dripstoreGenerateKey(settings, String(currentVariantId), 1);
     const key = purchase.keys?.[0];
     if (!key) throw new Error('DripStore berhasil merespons tetapi tidak mengembalikan key.');
     return {
       key,
       source: 'dripstore_live',
-      variantId: String(opt.dripstoreVariantId),
+      variantId: String(currentVariantId),
       providerTransactionId: purchase.transactionId || null
     };
   } finally {
@@ -2153,24 +2456,12 @@ app.get('/', async (req, res) => {
     warmDripstoreCatalog(settings);
   }
   const homeProducts = products.map(rawProduct => {
-    const p = normalizeProductBuyOptions(rawProduct);
-    const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
-    const localStock = countUsableLocalKeys(p.keys).length;
-    const providerStocks = opts
-      .map(o => findDripstoreVariantForOption(homeProviderSnapshot, p.name, o))
-      .filter(Boolean)
-      .map(v => v.stock);
-    // Provider availability is resolved from the CURRENT catalog by mapping
-    // first, then by product-name + duration fallback. Local keys are always
-    // retained and never replaced by a provider refresh.
-    const providerStock = providerStocks.length ? Math.max(...providerStocks) : 0;
-    // DISPLAY STOCK = stok key lokal yang sudah ada + kapasitas provider.
-    // Jangan pernah membuat produk terlihat habis hanya karena stok lokal 0,
-    // dan jangan mengarang stok 1 saat snapshot provider gagal.
-    // Untuk kartu katalog, nilai ini adalah kapasitas maksimum yang terlihat
-    // untuk satu pilihan/durasi; detail /buy menghitung stok per durasi.
-    const catalogStock = localStock + providerStock;
-    return { ...p, _liveProviderStock: providerStock, _catalogStock: catalogStock };
+    const summary = buildProductStockSummary(rawProduct, settings, homeProviderSnapshot);
+    const providerStock = summary.stockByOption.length ? Math.max(...summary.stockByOption.map(v => v.providerKnown ? v.providerStock : 0), 0) : 0;
+    const hasProviderBacked = summary.stockByOption.some(v => v.providerBacked);
+    return { ...summary.product, _liveProviderStock: providerStock, _catalogStock: summary.stockCount,
+      _providerStockUnknown: summary.providerStockUnknown, _hasProviderBacked: hasProviderBacked,
+      _stockByOption: summary.stockByOption };
   });
 
   res.render('pages/home', {
@@ -2586,37 +2877,6 @@ app.post('/reseller/join', requireAuth, async (req, res) => {
     const orderId = `RES-${Date.now()}`;
     const refId = uuidv4();
     const orderCode = generateOrderCode();
-    // Balance guard: jangan izinkan buyer membuat order baru jika saldo provider
-    // sudah pasti tidak cukup untuk variant yang akan dipakai. Ini mencegah
-    // contoh saldo $0.30: variant $0.50 ditolak, variant $0.20 tetap bisa checkout.
-    const dsMode = settings.dripstore?.fulfillmentMode || 'live';
-    const selectedOpt = product.pricingOptions?.find(o => Number(o.days) === Number(selectedDays) && (o.unit || 'd') === selectedUnit);
-    const mappedVariant = selectedOpt?.dripstoreVariantId || null;
-
-    // HYBRID: kalau stok lokal untuk durasi yang dipilih masih ada, buyer
-    // tidak perlu diblokir hanya karena saldo provider kurang. Provider baru
-    // dibutuhkan kalau stok lokal ternyata habis saat fulfillment.
-    let hybridHasLocalStock = false;
-    if (dsMode === 'hybrid' && selectedDays) {
-      const localKeys = Array.isArray(product.keys) ? product.keys : [];
-      hybridHasLocalStock = localKeys.some(k => keyMatchesDuration(k, Number(selectedDays), selectedUnit));
-    }
-
-    if (dsMode === 'live' && mappedVariant && settings.dripstore?.balanceGuardEnabled !== false) {
-      try {
-        const av = await checkDripstoreVariantAvailability(settings, String(mappedVariant), 1);
-        if (!av.ok) return res.json({ success: false, message: `Stok provider untuk durasi ini tidak tersedia saat ini. Saldo provider $${Number(av.balance).toFixed(2)}, kebutuhan $${Number(av.required).toFixed(2)}.` });
-      } catch (e) {
-        return res.json({ success: false, message: 'Tidak bisa memverifikasi ketersediaan provider sebelum checkout: ' + e.message });
-      }
-    } else if (dsMode === 'hybrid' && mappedVariant && !hybridHasLocalStock && settings.dripstore?.balanceGuardEnabled !== false) {
-      try {
-        const av = await checkDripstoreVariantAvailability(settings, String(mappedVariant), 1);
-        if (!av.ok) return res.json({ success: false, message: `Stok lokal durasi ini habis dan saldo provider tidak cukup. Saldo provider $${Number(av.balance).toFixed(2)}, kebutuhan $${Number(av.required).toFixed(2)}.` });
-      } catch (e) {
-        return res.json({ success: false, message: 'Tidak bisa memverifikasi ketersediaan provider sebelum checkout: ' + e.message });
-      }
-    }
 
     const qrisMode = settings.qrisMode || 'static';
 
@@ -2731,14 +2991,14 @@ app.post('/wallet/topup', requireAuth, async (req, res) => {
 // Beli key langsung pakai saldo wallet (khusus reseller) — tanpa scan QRIS,
 // saldo langsung terpotong dan key langsung diberikan.
 app.post('/wallet/buy', requireAuth, async (req, res) => {
-  // Cegah race condition double-spend: tolak request kedua kalau request
-  // sebelumnya dari user yang sama masih diproses (lihat komentar di
-  // deklarasi walletLocks).
   if (walletLocks.has(req.session.userId)) {
     return res.json({ success: false, message: 'Transaksi sebelumnya masih diproses, tunggu sebentar...' });
   }
   walletLocks.add(req.session.userId);
+  let releaseWalletLock = null;
   try {
+    releaseWalletLock = await acquirePersistentNamedLock(`wallet-purchase:${String(req.session.userId)}`, { waitMs: 7000, staleMs: 60000 });
+    if (!releaseWalletLock) return res.json({ success: false, message: 'Transaksi saldo sedang diproses di perangkat lain. Tunggu sebentar.' });
     if (req.session.isAdmin) return res.json({ success: false, message: 'Admin tidak bisa membeli produk' });
     const { productId, duration, durationUnit, customerName, wa, voucherCode } = req.body;
 
@@ -2752,101 +3012,86 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     const product = rawProduct ? normalizeProductBuyOptions(rawProduct) : null;
     if (!product || product.status !== 'active') return res.json({ success: false, message: 'Produk tidak ditemukan' });
 
-    // Produk yang punya Variant ID DripStore akan mengambil 1 key live saat
-    // order selesai. Jadi stok lokal boleh 0. Produk tanpa mapping tetap
-    // memakai stok lokal seperti biasa.
-    const hasDripstoreMappedOption = (product.pricingOptions || []).some(o => o?.dripstoreVariantId);
-
-    // Resolusi harga paket — logika sama seperti /create-order (unit-aware, lihat komentar di sana)
-    const selectedUnit = (durationUnit === 'h') ? 'h' : 'd';
-    let price = 0, selectedDays = null;
+    const selectedUnit = durationUnit === 'h' ? 'h' : 'd';
+    let price = 0, selectedDays = null, matchedOpt = null, matchedItem = null;
     if (product.pricingOptions?.length) {
-      let opt = null;
       if (durationUnit) {
-        const days = parseInt(duration);
-        opt = product.pricingOptions.find(o => o.days === days && (o.unit || 'd') === selectedUnit);
-        if (!opt) return res.json({ success: false, message: 'Durasi tidak valid' });
-        price = opt.price; selectedDays = days;
+        const days = parseInt(duration, 10);
+        matchedOpt = product.pricingOptions.find(o => Number(o.days) === days && (o.unit || 'd') === selectedUnit);
       } else {
-        const itemMatch = product.items?.find(i => i.l === duration || i.l.includes(duration));
-        if (itemMatch) {
-          opt = product.pricingOptions.find(o => o.price === itemMatch.p);
-          if (!opt) { price = itemMatch.p; const m = duration.match(/(\d+)/); selectedDays = m ? parseInt(m[1]) : null; }
-          else { price = opt.price; selectedDays = opt.days; }
-        } else {
-          const days = parseInt(duration);
-          opt = product.pricingOptions.find(o => o.days === days && (o.unit || 'd') === 'd');
-          if (!opt) return res.json({ success: false, message: 'Durasi tidak valid' });
-          price = opt.price; selectedDays = days;
+        matchedItem = product.items?.find(i => i.l === duration || i.l.includes(duration));
+        if (matchedItem) matchedOpt = product.pricingOptions.find(o => Number(o.price) === Number(matchedItem.p));
+        if (!matchedOpt) {
+          const days = parseInt(duration, 10);
+          matchedOpt = product.pricingOptions.find(o => Number(o.days) === days && (o.unit || 'd') === 'd');
         }
       }
+    }
+    if (matchedOpt) {
+      price = Number(matchedOpt.price || 0);
+      selectedDays = Number(matchedOpt.days);
     } else {
-      const opt = product.items?.find(i => i.l.includes(duration));
-      if (!opt) return res.json({ success: false, message: 'Durasi tidak valid' });
-      price = opt.p;
-      const m = duration.match(/(\d+)/); selectedDays = m ? parseInt(m[1]) : null;
+      matchedItem = matchedItem || product.items?.find(i => i.l === duration || i.l.includes(duration));
+      if (!matchedItem) return res.json({ success: false, message: 'Durasi tidak valid' });
+      price = Number(matchedItem.p || 0);
+      const m = String(duration).match(/(\d+)/);
+      selectedDays = m ? parseInt(m[1], 10) : null;
     }
 
-    const settings = readDB('settings.json');
-    // Prioritas harga: reseller_price manual per-produk → global diskon %
-    const matchedItem = product.items?.find(i => i.l === duration || i.l.includes(duration));
-    const matchedOpt = product.pricingOptions?.find(o => o.days === selectedDays && (o.unit || 'd') === selectedUnit);
+    const settings = await readFresh('settings.json');
+    if (matchedItem == null && selectedDays != null) {
+      matchedItem = product.items?.find(i => Number(i.durationValue) === Number(selectedDays) && (i.durationUnit || 'd') === selectedUnit);
+    }
     const manualResellerPrice = matchedItem?.reseller_price ?? matchedOpt?.reseller_price ?? null;
     if (manualResellerPrice != null && manualResellerPrice >= 0) {
-      price = manualResellerPrice;
+      price = Number(manualResellerPrice);
     } else {
       const disc = settings.resellerDiscount || 20;
       price = Math.round(price * (1 - disc / 100));
     }
 
-    // Terapkan voucher (setelah diskon reseller) — opsional, sama seperti /create-order
     let voucherDiscount = 0, appliedVoucher = null, originalPrice = price;
     if (voucherCode && voucherCode.trim()) {
       const vResult = await validateVoucher(voucherCode, price, req.session.userId);
-      if (vResult.valid) {
-        voucherDiscount = vResult.discount;
-        price = vResult.finalPrice;
-        appliedVoucher = vResult.voucher;
-      } else {
-        return res.json({ success: false, message: 'Voucher: ' + vResult.error });
-      }
+      if (!vResult.valid) return res.json({ success: false, message: 'Voucher: ' + vResult.error });
+      voucherDiscount = vResult.discount;
+      price = vResult.finalPrice;
+      appliedVoucher = vResult.voucher;
     }
 
-    const balance = user.balance || 0;
+    const balance = Number(user.balance || 0);
     if (balance < price) {
       return res.json({ success: false, message: 'insufficient_balance', shortfall: price - balance,
         needed: price, balance, plainMessage: `Saldo tidak cukup. Kurang Rp ${(price - balance).toLocaleString('id-ID')}, top up dulu yuk!` });
     }
 
-    // Ambil key — HARUS sesuai durasi yang dibeli (format KEY=DAYSunit).
-    //
-    // FIX BUG KRITIS (dilaporkan client 21 Agu 2026): sebelumnya kalau stok
-    // key durasi tertentu (misal 1-day / 3-day) HABIS, kode fallback ke
-    // "key generic tanpa durasi" dulu, dan kalau itu juga kosong, fallback
-    // TERAKHIR adalah allKeys.shift() -- ambil key APAPUN dari depan array,
-    // termasuk key durasi 7/15/30-day milik produk lain. Akibatnya customer
-    // yang beli durasi 1-day tapi stoknya kosong malah dapat key 7/15/30-day
-    // secara gratis/tidak sengaja (kerugian buat penjual). Sekarang: kalau
-    // user memilih durasi spesifik (selectedDays truthy) dan stok durasi itu
-    // kosong, TOLAK transaksi dengan pesan jelas -- JANGAN kasih durasi lain.
-    // Fallback ke key generic (tanpa "=") hanya berlaku untuk produk yang
-    // MEMANG tidak punya sistem durasi sama sekali (selectedDays null/kosong).
-    //
-    // Sekarang unit-aware (hari 'd' / jam 'h') via keyMatchesDuration/
-    // parseKeyDuration, dan separator "=" (bukan ":", lihat definisi helper
-    // di atas untuk alasan lengkapnya).
+    const fulfillmentMode = settings.dripstore?.fulfillmentMode || 'live';
     let key = null;
     let keySource = 'local_stock';
     let providerTransactionId = null;
     let providerVariantId = null;
+    let localInventoryCommitted = false;
 
-    const matchedLiveOpt = selectedDays
-      ? product.pricingOptions?.find(o => Number(o.days) === Number(selectedDays) && (o.unit || 'd') === selectedUnit)
-      : null;
+    // LOCAL/HYBRID: coba stok lokal exact dulu. Tidak pernah fallback ke
+    // durasi lain. Pada HYBRID, kalau lokal kosong BARU lanjut ke provider.
+    if ((fulfillmentMode === 'local' || fulfillmentMode === 'hybrid') && selectedDays != null) {
+      const local = await consumeLocalProductKey(product.id, selectedDays, selectedUnit);
+      if (local.key) {
+        key = local.key;
+        localInventoryCommitted = !!local.committed;
+      }
+    } else if (fulfillmentMode === 'local' && selectedDays == null) {
+      const local = await consumeLocalProductKey(product.id, null, selectedUnit);
+      if (local.key) {
+        key = local.key;
+        localInventoryCommitted = !!local.committed;
+      }
+    }
 
-    const dsFulfillmentMode = settings.dripstore?.fulfillmentMode || 'live';
-    const useLiveProvider = !!matchedLiveOpt?.dripstoreVariantId && (dsFulfillmentMode === 'live' || dsFulfillmentMode === 'hybrid');
-    if (useLiveProvider && dsFulfillmentMode === 'live') {
+    // LIVE: selalu provider. HYBRID: provider hanya fallback setelah stok lokal
+    // exact benar-benar kosong. Resolver provider membaca katalog TERKINI, jadi
+    // mapping ID lama/stale tidak bisa membuat pembelian jatuh ke variant salah.
+    if (!key && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid') && selectedDays != null) {
       try {
         const live = await fulfillProductFromDripstore({
           id: 'wallet-' + Date.now() + '-' + req.session.userId,
@@ -2855,42 +3100,26 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
         key = live?.key || null;
         keySource = live?.source || keySource;
         providerTransactionId = live?.providerTransactionId || null;
-        providerVariantId = live?.variantId || String(matchedLiveOpt.dripstoreVariantId);
+        providerVariantId = live?.variantId || null;
       } catch (e) {
-        return res.json({ success: false, message: 'Gagal mengambil key dari DripStore: ' + e.message });
-      }
-    } else {
-      const allKeys = product.keys || [];
-      if (selectedDays) {
-        const idx = allKeys.findIndex(k => keyMatchesDuration(k, selectedDays, selectedUnit));
-        if (idx !== -1) key = parseKeyDuration(allKeys.splice(idx, 1)[0]).raw;
-        else return res.json({ success: false, message: `Stok key durasi ${formatDurationLabel(selectedDays, selectedUnit)} sedang habis. Silakan pilih durasi lain atau tunggu admin restock.` });
-      } else {
-        const idx = allKeys.findIndex(k => isGenericKey(k));
-        if (idx !== -1) key = allKeys.splice(idx, 1)[0];
+        return res.json({ success: false, message: (fulfillmentMode === 'hybrid' ? 'Stok lokal habis dan provider tidak dapat memenuhi pesanan: ' : 'Gagal mengambil key dari DripStore: ') + e.message });
       }
     }
-    if (!key && useLiveProvider && dsFulfillmentMode === 'hybrid') {
-      try {
-        const live = await fulfillProductFromDripstore({
-          id: 'wallet-' + Date.now() + '-' + req.session.userId,
-          productId: product.id, selectedDays, selectedUnit
-        }, settings);
-        key = live?.key || null;
-        keySource = live?.source || keySource;
-        providerTransactionId = live?.providerTransactionId || null;
-        providerVariantId = live?.variantId || String(matchedLiveOpt.dripstoreVariantId);
-      } catch (e) {
-        return res.json({ success: false, message: 'Stok lokal habis dan saldo/provider tidak cukup: ' + e.message });
-      }
-    }
-    if (!key) return res.json({ success: false, message: 'Stok habis' });
 
-    // Potong saldo & catat transaksi — lakukan setelah key berhasil diambil
+    if (!key) {
+      return res.json({ success: false, message: selectedDays != null
+        ? `Stok ${formatDurationLabel(selectedDays, selectedUnit)} sedang habis. Silakan pilih durasi lain atau tunggu admin.`
+        : 'Stok habis' });
+    }
+
+    // Key sudah aman didapat. Baru potong wallet. Untuk local key, stok dan sold
+    // sudah dipersist dalam consumeLocalProductKey() di bawah lock.
     user.balance = balance - price;
-    product.sold = (product.sold || 0) + 1;
     await writeDB('users.json', users);
-    await writeDB('products.json', products);
+
+    if (!localInventoryCommitted) {
+      await incrementProductSold(product.id);
+    }
 
     const refId = uuidv4();
     const orderCode = generateOrderCode();
@@ -2907,8 +3136,7 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
       status: 'done', key, keySource,
       providerVariantId: providerVariantId || undefined,
       providerTransactionId: providerTransactionId || undefined,
-      paidAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(), time: formatDate()
+      paidAt: new Date().toISOString(), createdAt: new Date().toISOString(), time: formatDate()
     });
     await writeDB('transactions.json', transactions);
 
@@ -2923,7 +3151,7 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
       }
     }
 
-    const notifs = readDB('notifications.json');
+    const notifs = await readFresh('notifications.json').catch(() => []);
     notifs.unshift({ id: uuidv4(), type: 'purchase', buyerName: customerName || user.username,
       buyerPhoto: user.photo || null, productName: product.name,
       price, time: new Date().toISOString(), timeStr: formatDate() });
@@ -2934,6 +3162,7 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     console.error('[wallet/buy] error:', e.message);
     res.json({ success: false, message: 'Terjadi kesalahan: ' + e.message });
   } finally {
+    if (releaseWalletLock) await releaseWalletLock();
     walletLocks.delete(req.session.userId);
   }
 });
@@ -3161,7 +3390,8 @@ app.get('/dashboard', requireAuth, (req, res) => {
 // Sekarang publik -- guest bisa checkout cukup isi nama+nomor WA (lihat
 // /create-order di bawah, yang sekarang auto-create akun kalau belum login).
 app.get('/buy/:id', async (req, res) => {
-  const products = readDB('products.json');
+  res.set('Cache-Control', 'no-store, max-age=0');
+  const products = await readFresh('products.json');
   let product = products.find(p => p.id === req.params.id);
 
   if (!product || product.status !== 'active') {
@@ -3197,56 +3427,29 @@ app.get('/buy/:id', async (req, res) => {
     }
     warmDripstoreCatalog(settings);
   }
+  const buyStockSummary = buildProductStockSummary(product, settings, buyProviderSnapshot);
+  product = buyStockSummary.product;
+  const stockByOption = buyStockSummary.stockByOption;
   if (product.items) {
-    product.items = product.items.map(item => {
-      // Label item sekarang bisa "... 30 HARI" atau "... 12 JAM" (lihat
-      // formatDurationLabel) -- regex ini menangkap keduanya. Item lama
-      // (format lawas "30 DAYS") tetap dikenali via alternasi DAYS|HARI.
-      // Support semua label durasi yang bisa muncul di produk lama maupun baru:
-      // 1 THN / 1 TAHUN / 1 YEAR harus dibaca sebagai 365 hari.
-      // Tanpa ini item Gbox 1 thn masuk ke branch days=null -> stok generic=0.
-      const m = (item.l || '').match(/(\d+)\s*(DAYS?|HARI|JAM|HOURS?|THN|TH|TAHUN|YEAR|YEARS|YR|YRS)/i);
-      let days = m ? parseInt(m[1], 10) : null;
-      const rawUnit = m ? String(m[2]).toUpperCase() : '';
-      const unit = m && /^(JAM|HOUR|HOURS)$/i.test(rawUnit) ? 'h' : 'd';
-      if (m && /^(THN|TH|TAHUN|YEAR|YEARS|YR|YRS)$/i.test(rawUnit)) days *= 365;
-      let stok;
-      const pOpt = (product.pricingOptions || []).find(o => Number(o.days) === Number(days) && (o.unit || 'd') === unit);
-      const providerBacked = !!pOpt?.dripstoreVariantId;
-      if (providerBacked) {
-        // Stok yang ditampilkan = key lokal durasi ini + kapasitas provider.
-        // Kalau katalog provider belum berhasil diambil saat cold-start,
-        // JANGAN mengubah variant mapped menjadi Habis. Checkout tetap
-        // melakukan balance/price guard langsung sebelum generate key.
-        const localDurationStock = countLocalDurationStock(allKeys, days, unit);
-        if (buyProviderSnapshot) {
-          stok = getCombinedOptionStock(buyProviderSnapshot, product.name, pOpt, localDurationStock);
-        } else {
-          stok = Math.max(localDurationStock, 1);
-        }
-      } else if (days) {
-        const tagged = countLocalDurationStock(allKeys, days, unit);
-        stok = tagged > 0 ? tagged : genericKeys.length;
-      } else {
-        stok = genericKeys.length;
-      }
-      // Prioritas harga reseller: 1) harga manual per-produk jika ada,
-      // 2) harga dari pricingOptions, 3) fallback ke global diskon %
+    product.items = product.items.map((item, idx) => {
+      const view = stockByOption[idx] || { stock: getLocalOptionStock(product, { days: item.durationValue, unit: item.durationUnit }), localStock: getLocalOptionStock(product, { days: item.durationValue, unit: item.durationUnit }), providerStock: 0, providerKnown: false, providerBacked: false, variantId: null };
+      const stok = Math.max(0, Number(view.stock) || 0);
+
       let computedResellerPrice = null;
+      const pOpt = product.pricingOptions?.[idx] || null;
       if (isReseller) {
         if (item.reseller_price != null && item.reseller_price >= 0) {
           computedResellerPrice = item.reseller_price;
+        } else if (pOpt?.reseller_price != null && pOpt.reseller_price >= 0) {
+          computedResellerPrice = pOpt.reseller_price;
         } else {
-          // Cek di pricingOptions (unit-aware)
-          const pOpt = (product.pricingOptions || []).find(o => o.days === days && (o.unit || 'd') === unit);
-          if (pOpt?.reseller_price != null && pOpt.reseller_price >= 0) {
-            computedResellerPrice = pOpt.reseller_price;
-          } else {
-            computedResellerPrice = Math.round(item.p * (1 - resellerDiscount / 100));
-          }
+          computedResellerPrice = Math.round(item.p * (1 - resellerDiscount / 100));
         }
       }
-      return { ...item, stok, providerBacked, reseller_price: computedResellerPrice, durationValue: days, durationUnit: unit };
+      return { ...item, stok, providerBacked: !!view.providerBacked, providerStockKnown: !!view.providerKnown,
+        providerStock: Number(view.providerStock || 0), localStock: Number(view.localStock || 0),
+        providerVariantId: view.variantId || null, durationValue: item.durationValue != null ? Number(item.durationValue) : (pOpt?.days != null ? Number(pOpt.days) : null), durationUnit: item.durationUnit || pOpt?.unit || 'd',
+        reseller_price: computedResellerPrice };
     });
   }
 
@@ -3269,29 +3472,45 @@ app.get('/buy/:id', async (req, res) => {
   // Strip di sini, di level backend -- defense-in-depth, bukan bergantung
   // pada disiplin "jangan pernah pakai field ini di template nanti".
   const { keys: _rawKeys, ...productSafe } = product;
-  const hasLiveProvider = (product.pricingOptions || []).some(o => o?.dripstoreVariantId);
-  // Public availability: mapped DripStore products remain purchasable even
-  // when AGHA NL has zero locally cached keys. The actual provider purchase
-  // happens only after payment confirmation.
-  // Public availability menggabungkan key lokal + kapasitas provider.
-  // Ini mencegah produk dengan stok lokal yang nyata (mis. XREG 49 key)
-  // berubah menjadi Habis hanya karena mapping/provider snapshot sementara
-  // tidak terbaca.
-  let publicProviderStock = 0;
-  if (hasLiveProvider && (settings.dripstore?.fulfillmentMode === 'live' || settings.dripstore?.fulfillmentMode === 'hybrid')) {
-    if (buyProviderSnapshot) {
-      publicProviderStock = Math.max(0, ...(product.pricingOptions || [])
-        .map(o => findDripstoreVariantForOption(buyProviderSnapshot, product.name, o)?.stock || 0));
-    } else {
-      // Tanpa snapshot provider, jangan mengarang stok provider. Gunakan stok
-      // lokal saja sampai cache/provider berhasil dibaca lagi.
-      publicProviderStock = 0;
-    }
-  }
-  productSafe.stockCount = usableLocalKeys.length + publicProviderStock;
+  const hasLiveProvider = (product.items || []).some(i => i.providerBacked);
+  const hasUnknownProviderStock = buyStockSummary.providerStockUnknown;
+  // Stok produk = kapasitas TERBESAR dari variant yang benar-benar dapat dibeli.
+  // Jangan menjumlahkan semua durasi menjadi satu stok.
+  productSafe.stockCount = buyStockSummary.stockCount;
   productSafe.liveProvider = hasLiveProvider;
+  productSafe.providerStockUnknown = hasUnknownProviderStock;
 
   res.render('pages/buy', { product: productSafe, settings, user, isReseller, hasPurchased, categoryLabels: settings.categoryLabels || {} });
+});
+
+// Public stock refresh endpoint used by the buy page when the first render
+// could not verify provider data quickly enough. Never returns actual local keys.
+app.get('/api/products/:id/stock', async (req, res) => {
+  try {
+    res.set('Cache-Control', 'no-store, max-age=0');
+    const rawProducts = await readFresh('products.json');
+    const raw = rawProducts.find(p => String(p.id) === String(req.params.id) && p.status === 'active');
+    if (!raw) return res.status(404).json({ success: false, message: 'Produk tidak ditemukan' });
+    const settings = await readFresh('settings.json');
+    const mode = settings.dripstore?.fulfillmentMode || 'live';
+    let snapshot = null;
+    if ((mode === 'live' || mode === 'hybrid') && settings.dripstore?.apiToken) {
+      snapshot = getCachedDripstoreCatalogSnapshot(settings);
+      if (!snapshot) snapshot = await getDripstoreCatalogSnapshot(settings);
+    }
+    const summary = buildProductStockSummary(raw, settings, snapshot);
+    const items = summary.stockByOption.map(view => ({
+      stock: view.stock,
+      localStock: view.localStock,
+      providerStock: view.providerStock,
+      providerKnown: view.providerKnown,
+      providerBacked: view.providerBacked,
+      variantId: view.variantId
+    }));
+    return res.json({ success: true, mode, items, stockCount: summary.stockCount, providerStockUnknown: summary.providerStockUnknown });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
 });
 
 // FIX (guest checkout, diminta client 21 Agu 2026 -- "isi data cukup nama
@@ -3420,6 +3639,33 @@ app.post('/create-order', async (req, res) => {
       }
     }
 
+    // PRE-FLIGHT STOCK GUARD: cek kemampuan variant yang BENAR-BENAR akan
+    // dipakai saat fulfillment. Di LIVE provider wajib cukup. Di HYBRID provider
+    // hanya menjadi fallback ketika stok lokal exact = 0. Guard ini cuma mencegah
+    // order yang sudah diketahui mustahil; saat pembayaran selesai, finalizeOrder
+    // tetap melakukan re-check balance + harga tepat sebelum generate_key.
+    const dsMode = settings.dripstore?.fulfillmentMode || 'live';
+    const selectedOpt = product.pricingOptions?.find(o => Number(o.days) === Number(selectedDays) && (o.unit || 'd') === selectedUnit);
+    const localDurationStock = selectedOpt ? getLocalOptionStock(product, selectedOpt) : 0;
+    const providerNeededAtCreate = !!selectedOpt && (dsMode === 'live' || (dsMode === 'hybrid' && localDurationStock <= 0));
+    if (providerNeededAtCreate) {
+      if (!settings.dripstore?.apiToken && dsMode === 'live') {
+        return res.json({ success: false, message: 'Provider DripStore belum dikonfigurasi untuk produk ini.' });
+      }
+      if (settings.dripstore?.apiToken && settings.dripstore?.balanceGuardEnabled !== false) {
+        try {
+          const av = await checkDripstoreOptionAvailability(settings, product.name, selectedOpt, 1);
+          if (!av.ok) {
+            const bal = av.balance == null ? '?' : Number(av.balance).toFixed(2);
+            const reqCost = av.required == null ? '?' : Number(av.required).toFixed(2);
+            return res.json({ success: false, message: `Stok variant ini belum tersedia. Saldo provider $${bal}, kebutuhan $${reqCost}.` });
+          }
+        } catch (e) {
+          return res.json({ success: false, message: 'Tidak bisa memverifikasi stok provider sebelum checkout: ' + e.message });
+        }
+      }
+    }
+
     const qrisMode = settings.qrisMode || 'static';
     const orderId = `FX-${Date.now()}`;
     const refId = uuidv4();
@@ -3505,6 +3751,78 @@ app.post('/create-order', async (req, res) => {
 // keyvalue_store punya UNIQUE(key), jadi INSERT atomik menjadi pagar lintas-instance:
 // hanya satu request yang boleh mengklaim order sebelum menyentuh stok/provider.
 const _localFulfillmentClaims = new Set();
+const _localStockQueues = new Map();
+
+const _sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+function withLocalStockQueue(productId, task) {
+  const key = String(productId);
+  const previous = _localStockQueues.get(key) || Promise.resolve();
+  const run = previous.then(task, task);
+  _localStockQueues.set(key, run);
+  return run.finally(() => {
+    if (_localStockQueues.get(key) === run) _localStockQueues.delete(key);
+  });
+}
+
+async function acquirePersistentNamedLock(lockKey, { waitMs = 7000, staleMs = 60000 } = {}) {
+  const client = db.getClient();
+  if (!client) return async () => {};
+  const owner = uuidv4();
+  const deadline = Date.now() + waitMs;
+
+  while (Date.now() < deadline) {
+    const { error } = await client.from('keyvalue_store').insert({
+      key: String(lockKey),
+      value: { owner, acquiredAt: new Date().toISOString() }
+    });
+    if (!error) {
+      return async () => {
+        try {
+          const { data } = await client.from('keyvalue_store').select('value').eq('key', String(lockKey)).maybeSingle();
+          if (data?.value?.owner === owner) {
+            await client.from('keyvalue_store').delete().eq('key', String(lockKey));
+          }
+        } catch (e) {
+          console.warn('[persistent-lock] release gagal:', e.message);
+        }
+      };
+    }
+
+    const duplicate = error.code === '23505' || /duplicate key|unique constraint/i.test(error.message || '');
+    if (!duplicate) throw new Error(error.message || 'Gagal mengunci proses');
+
+    const { data } = await client.from('keyvalue_store').select('value').eq('key', String(lockKey)).maybeSingle();
+    const acquiredAt = new Date(data?.value?.acquiredAt || 0).getTime();
+    if (acquiredAt && Date.now() - acquiredAt > staleMs) {
+      // Hanya hapus lock stale. Dua waiter boleh balapan di sini; UNIQUE(key)
+      // pada insert berikutnya tetap menentukan satu pemenang.
+      await client.from('keyvalue_store').delete().eq('key', String(lockKey));
+      continue;
+    }
+    await _sleep(150);
+  }
+  return null;
+}
+
+async function withPersistentProductStockLock(productId, task) {
+  // Queue lokal tetap per-produk agar dua pembelian produk yang sama tidak
+  // saling menunggu terlalu lama di instance yang sama; persistent writer
+  // global kemudian menjamin snapshot products.json tidak saling menimpa
+  // lintas produk/instance Vercel.
+  return withLocalStockQueue(productId, () => withProductsWriteLock(task));
+}
+
+async function incrementProductSold(productId) {
+  return withPersistentProductStockLock(productId, async () => {
+    const products = await readFresh('products.json');
+    const product = products.find(p => String(p.id) === String(productId));
+    if (!product) return false;
+    product.sold = (product.sold || 0) + 1;
+    await writeDB('products.json', products);
+    return true;
+  });
+}
 
 async function claimProductFulfillment(refId) {
   const claimKey = `fulfillment-claim:${String(refId)}`;
@@ -3524,7 +3842,22 @@ async function claimProductFulfillment(refId) {
     });
     if (!error) return true;
     const duplicate = error.code === '23505' || /duplicate key|unique constraint/i.test(error.message || '');
-    if (duplicate) return false;
+    if (duplicate) {
+      const { data } = await client.from('keyvalue_store').select('value').eq('key', claimKey).maybeSingle();
+      const claimedAt = new Date(data?.value?.claimedAt || 0).getTime();
+      // Kalau claim yatim >5 menit (mis. instance Vercel crash), buka kembali.
+      if (claimedAt && Date.now() - claimedAt > 5 * 60 * 1000) {
+        await client.from('keyvalue_store').delete().eq('key', claimKey);
+        const retry = await client.from('keyvalue_store').insert({
+          key: claimKey,
+          value: { refId: String(refId), claimedAt: new Date().toISOString(), reclaimed: true }
+        });
+        if (!retry.error) return true;
+        if (retry.error.code === '23505' || /duplicate key|unique constraint/i.test(retry.error.message || '')) return false;
+        throw new Error(retry.error.message || 'Gagal mengambil alih fulfillment claim');
+      }
+      return false;
+    }
     throw new Error(error.message || 'Gagal membuat fulfillment claim');
   } catch (e) {
     if (e?.code === '23505' || /duplicate key|unique constraint/i.test(e?.message || '')) return false;
@@ -3609,32 +3942,22 @@ async function finalizeOrder(refId, settings) {
     }
   }
 
-  const products = await readFresh('products.json');
-  const product = products.find(p => p.id === transaction.productId);
+  let products = await readFresh('products.json');
+  let product = products.find(p => p.id === transaction.productId);
+  let localInventoryCommitted = false;
 
-  // FIX BUG KRITIS (dilaporkan client 21 Agu 2026): sebelumnya kalau stok
-  // durasi yang dipesan (misal 1-day) habis, kode fallback ke key generic,
-  // dan kalau itu juga kosong fallback TERAKHIR adalah product.keys.shift()
-  // -- ambil key APAPUN, termasuk durasi 7/15/30-day. Sekarang: kalau
-  // transaction.selectedDays truthy dan stok durasi itu kosong, JANGAN
-  // ambil durasi lain -- tandai outOfStock (sudah dibayar, admin notif
-  // WA buat proses manual / restock), sama seperti kalau stok kosong total.
-  //
-  // Memakai helper parseKeyDuration/keyMatchesDuration (separator "=", lihat
-  // definisi di atas) dan sekarang unit-aware (hari 'd' / jam 'h') untuk
-  // dukung fitur key per-jam.
-  // Hanya gunakan stok lokal bila durasi TIDAK punya mapping DripStore.
-  // Untuk live-provider, key sudah diambil dari provider di atas dan stok lokal
-  // tidak disentuh. Tidak ada auto-restock setelah penjualan live.
-  if (!key && !outOfStock && shouldTryLocalFirst && product?.keys?.length > 0) {
-    const days = transaction.selectedDays;
-    const unit = transaction.selectedUnit || 'd';
-    if (days) {
-      const idx = product.keys.findIndex(k => keyMatchesDuration(k, days, unit));
-      if (idx !== -1) key = parseKeyDuration(product.keys.splice(idx, 1)[0]).raw;
-    } else {
-      const idx = product.keys.findIndex(k => isGenericKey(k));
-      if (idx !== -1) key = product.keys.splice(idx, 1)[0];
+  // LOCAL/HYBRID: stok lokal hanya boleh memenuhi durasi+unit yang dibeli.
+  // consumeLocalProductKey() mengambil snapshot terbaru dan melakukan write
+  // di bawah lock per-product, sehingga dua order tidak dapat mengambil key
+  // lokal yang sama sekaligus. Generic key hanya dipakai untuk produk yang
+  // memang tidak memiliki durasi spesifik.
+  if (!key && !outOfStock && shouldTryLocalFirst && product) {
+    const localResult = await consumeLocalProductKey(product.id, transaction.selectedDays, transaction.selectedUnit || 'd');
+    products = localResult.products || products;
+    product = products.find(p => p.id === transaction.productId) || product;
+    if (localResult.key) {
+      key = localResult.key;
+      localInventoryCommitted = !!localResult.committed;
     }
   }
 
@@ -3650,9 +3973,11 @@ async function finalizeOrder(refId, settings) {
   }
 
   if (key) {
-    product.sold = (product.sold || 0) + 1;
-    // Hanya simpan products.json bila memang mengambil key lokal.
-    if (keySource === 'local_stock') await writeDB('products.json', products);
+    // Key lokal sudah menaikkan sold di consumeLocalProductKey(). Untuk provider,
+    // increment sold juga masuk lock produk agar dua instance tidak lost-update.
+    if (!localInventoryCommitted) {
+      await incrementProductSold(transaction.productId);
+    }
   } else {
     outOfStock = true;
   }
@@ -4084,7 +4409,8 @@ app.get('/admin/fix-categories-agha', requireAdmin, async (req, res) => {
 });
 app.post('/admin/fix-categories-agha', requireAdmin, async (req, res) => {
   try {
-    const plan = await aghaBuildCategoryFixPlan();
+    const plan = await withProductsWriteLock(async () => {
+      const plan = await aghaBuildCategoryFixPlan();
     plan.newCategories.forEach(c => { plan.settings.categories.push(c.slug); plan.settings.categoryLabels[c.slug] = c.label; });
     plan.productUpdates.forEach(u => {
       const p = plan.products.find(pr => pr.id === u.id);
@@ -4100,6 +4426,8 @@ app.post('/admin/fix-categories-agha', requireAdmin, async (req, res) => {
     }
     if (plan.newCategories.length > 0 || plan.priorityEntry?.slug) await writeDB('settings.json', plan.settings);
     if (plan.productUpdates.length > 0) await writeDB('products.json', plan.products);
+      return plan;
+    });
     res.send(aghaCategoryFixHtml({ ...plan, applied: true }));
   } catch (e) { res.status(500).send('Error: ' + e.message); }
 });
@@ -4149,188 +4477,190 @@ async function importAghaClientProducts({ price, days, unit = 'd' }) {
     throw new Error('Durasi wajib diisi. Gunakan ?days=30');
   }
 
-  const [productsRaw, settingsRaw] = await Promise.all([
-    readFresh('products.json'),
-    readFresh('settings.json')
-  ]);
-  const products = Array.isArray(productsRaw) ? productsRaw : [];
-  const settings = settingsRaw && typeof settingsRaw === 'object' ? settingsRaw : {};
+  return withProductsWriteLock(async () => {
+      const [productsRaw, settingsRaw] = await Promise.all([
+        readFresh('products.json'),
+        readFresh('settings.json')
+      ]);
+      const products = Array.isArray(productsRaw) ? productsRaw : [];
+      const settings = settingsRaw && typeof settingsRaw === 'object' ? settingsRaw : {};
 
-  settings.categories = Array.isArray(settings.categories) ? [...settings.categories] : [];
-  settings.categoryLabels = settings.categoryLabels && typeof settings.categoryLabels === 'object'
-    ? { ...settings.categoryLabels }
-    : {};
+      settings.categories = Array.isArray(settings.categories) ? [...settings.categories] : [];
+      settings.categoryLabels = settings.categoryLabels && typeof settings.categoryLabels === 'object'
+        ? { ...settings.categoryLabels }
+        : {};
 
-  // PENTING: cari KATEGORI EXISTING berdasarkan label ATAU slug.
-  // Jangan bikin kategori kedua hanya karena label/slug di data lama tidak persis sama.
-  const targetNorm = importProductsNormalizeName(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
-  const targetSlugCandidates = new Set([
-    importProductsSlugify(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY),
-    'apk-mod-no-root',
-    'apkmodnoroot'
-  ]);
+      // PENTING: cari KATEGORI EXISTING berdasarkan label ATAU slug.
+      // Jangan bikin kategori kedua hanya karena label/slug di data lama tidak persis sama.
+      const targetNorm = importProductsNormalizeName(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
+      const targetSlugCandidates = new Set([
+        importProductsSlugify(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY),
+        'apk-mod-no-root',
+        'apkmodnoroot'
+      ]);
 
-  let categorySlug = settings.categories.find(slug =>
-    importProductsNormalizeName(settings.categoryLabels[slug]) === targetNorm
-  );
-  if (!categorySlug) {
-    categorySlug = settings.categories.find(slug =>
-      targetSlugCandidates.has(importProductsNormalizeName(slug).replace(/\s+/g, '-'))
-      || importProductsNormalizeName(slug).replace(/[^a-z0-9]+/g, '') === 'apkmodnoroot'
-    );
-  }
-  // Fallback hanya kalau kategori memang benar-benar belum ada.
-  if (!categorySlug) {
-    categorySlug = importProductsSlugify(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
-    settings.categories.unshift(categorySlug);
-  }
-  if (!settings.categories.includes(categorySlug)) settings.categories.unshift(categorySlug);
-  settings.categoryLabels[categorySlug] = AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY;
+      let categorySlug = settings.categories.find(slug =>
+        importProductsNormalizeName(settings.categoryLabels[slug]) === targetNorm
+      );
+      if (!categorySlug) {
+        categorySlug = settings.categories.find(slug =>
+          targetSlugCandidates.has(importProductsNormalizeName(slug).replace(/\s+/g, '-'))
+          || importProductsNormalizeName(slug).replace(/[^a-z0-9]+/g, '') === 'apkmodnoroot'
+        );
+      }
+      // Fallback hanya kalau kategori memang benar-benar belum ada.
+      if (!categorySlug) {
+        categorySlug = importProductsSlugify(AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY);
+        settings.categories.unshift(categorySlug);
+      }
+      if (!settings.categories.includes(categorySlug)) settings.categories.unshift(categorySlug);
+      settings.categoryLabels[categorySlug] = AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY;
 
-  const existingByName = new Map();
-  for (const product of products) {
-    const key = importProductsNormalizeName(product?.name);
-    if (key && !existingByName.has(key)) existingByName.set(key, product);
-  }
+      const existingByName = new Map();
+      for (const product of products) {
+        const key = importProductsNormalizeName(product?.name);
+        if (key && !existingByName.has(key)) existingByName.set(key, product);
+      }
 
-  const added = [];
-  const updated = [];
-  const skipped = [];
+      const added = [];
+      const updated = [];
+      const skipped = [];
 
-  for (const name of AGHA_CLIENT_PRODUCT_IMPORT_LIST) {
-    const normalized = importProductsNormalizeName(name);
-    const existing = existingByName.get(normalized);
+      for (const name of AGHA_CLIENT_PRODUCT_IMPORT_LIST) {
+        const normalized = importProductsNormalizeName(name);
+        const existing = existingByName.get(normalized);
 
-    // BUG FIX UTAMA:
-    // Produk yang SUDAH ADA tidak boleh sekadar di-skip. Pastikan produk
-    // tersebut benar-benar punya kategori target. Kategori lain tetap dipertahankan.
-    if (existing) {
-      const currentCategories = Array.isArray(existing.categories)
-        ? [...existing.categories]
-        : (existing.category ? [existing.category] : []);
+        // BUG FIX UTAMA:
+        // Produk yang SUDAH ADA tidak boleh sekadar di-skip. Pastikan produk
+        // tersebut benar-benar punya kategori target. Kategori lain tetap dipertahankan.
+        if (existing) {
+          const currentCategories = Array.isArray(existing.categories)
+            ? [...existing.categories]
+            : (existing.category ? [existing.category] : []);
 
-      // Normalisasi kategori target ke SLUG CANONICAL yang dipakai tombol filter
-      // di home.ejs. Ini penting untuk produk lama yang menyimpan label
-      // "APK MOD NO ROOT" langsung di field categories.
-      const normalizedCategories = [];
-      let targetFound = false;
-      for (const category of currentCategories) {
-        const categoryText = importProductsNormalizeName(category);
-        const categoryLabel = importProductsNormalizeName(settings.categoryLabels[category]);
-        const isTarget = categoryText === importProductsNormalizeName(categorySlug)
-          || categoryLabel === targetNorm
-          || categoryText.replace(/[^a-z0-9]+/g, '') === 'apkmodnoroot';
+          // Normalisasi kategori target ke SLUG CANONICAL yang dipakai tombol filter
+          // di home.ejs. Ini penting untuk produk lama yang menyimpan label
+          // "APK MOD NO ROOT" langsung di field categories.
+          const normalizedCategories = [];
+          let targetFound = false;
+          for (const category of currentCategories) {
+            const categoryText = importProductsNormalizeName(category);
+            const categoryLabel = importProductsNormalizeName(settings.categoryLabels[category]);
+            const isTarget = categoryText === importProductsNormalizeName(categorySlug)
+              || categoryLabel === targetNorm
+              || categoryText.replace(/[^a-z0-9]+/g, '') === 'apkmodnoroot';
 
-        if (isTarget) {
-          targetFound = true;
-          if (!normalizedCategories.includes(categorySlug)) normalizedCategories.push(categorySlug);
-        } else if (!normalizedCategories.includes(category)) {
-          normalizedCategories.push(category);
+            if (isTarget) {
+              targetFound = true;
+              if (!normalizedCategories.includes(categorySlug)) normalizedCategories.push(categorySlug);
+            } else if (!normalizedCategories.includes(category)) {
+              normalizedCategories.push(category);
+            }
+          }
+
+          // Selalu canonicalize kategori produk. Kategori lain tidak dihapus.
+          if (!targetFound) normalizedCategories.push(categorySlug);
+          const changed = JSON.stringify(currentCategories) !== JSON.stringify(normalizedCategories)
+            || Object.prototype.hasOwnProperty.call(existing, 'category');
+
+          if (changed) {
+            existing.categories = normalizedCategories;
+            // Field singular lama dapat membuat fallback frontend membaca nilai yang salah.
+            if (Object.prototype.hasOwnProperty.call(existing, 'category')) delete existing.category;
+            updated.push({
+              id: existing.id,
+              name: existing.name,
+              action: targetFound ? 'kategori dinormalisasi' : 'kategori ditambahkan'
+            });
+          } else {
+            skipped.push({ name, reason: 'sudah benar di kategori' });
+          }
+          continue;
         }
+
+        const pricingOption = {
+          days: safeDays,
+          unit: safeUnit,
+          price: safePrice,
+          reseller_price: null,
+          strike_price: null
+        };
+
+        const durationLabel = safeUnit === 'h' ? `${safeDays} JAM` : `${safeDays} HARI`;
+        const product = {
+          id: uuidv4(),
+          name,
+          categories: [categorySlug],
+          description: '',
+          image: '/images/placeholder.jpg',
+          pricingOptions: [pricingOption],
+          items: [{
+            l: `${name.toUpperCase()} ${durationLabel}`,
+            p: safePrice,
+            reseller_price: null,
+            strike_price: null
+          }],
+          status: 'active',
+          keys: [],
+          channelUrl: '',
+          downloadUrl: '',
+          fakeSold: null,
+          sold: 0,
+          createdAt: new Date().toISOString()
+        };
+
+        products.push(product);
+        existingByName.set(normalized, product);
+        added.push(product);
       }
 
-      // Selalu canonicalize kategori produk. Kategori lain tidak dihapus.
-      if (!targetFound) normalizedCategories.push(categorySlug);
-      const changed = JSON.stringify(currentCategories) !== JSON.stringify(normalizedCategories)
-        || Object.prototype.hasOwnProperty.call(existing, 'category');
-
-      if (changed) {
-        existing.categories = normalizedCategories;
-        // Field singular lama dapat membuat fallback frontend membaca nilai yang salah.
-        if (Object.prototype.hasOwnProperty.call(existing, 'category')) delete existing.category;
-        updated.push({
-          id: existing.id,
-          name: existing.name,
-          action: targetFound ? 'kategori dinormalisasi' : 'kategori ditambahkan'
-        });
-      } else {
-        skipped.push({ name, reason: 'sudah benar di kategori' });
+      // Pastikan kategori target berada paling awal setelah SEMUA.
+      const categoryIndex = settings.categories.indexOf(categorySlug);
+      if (categoryIndex > 0) {
+        settings.categories.splice(categoryIndex, 1);
+        settings.categories.unshift(categorySlug);
       }
-      continue;
-    }
 
-    const pricingOption = {
-      days: safeDays,
-      unit: safeUnit,
-      price: safePrice,
-      reseller_price: null,
-      strike_price: null
-    };
+      // Satu write per sumber data.
+      await writeDB('settings.json', settings);
+      await writeDB('products.json', products);
 
-    const durationLabel = safeUnit === 'h' ? `${safeDays} JAM` : `${safeDays} HARI`;
-    const product = {
-      id: uuidv4(),
-      name,
-      categories: [categorySlug],
-      description: '',
-      image: '/images/placeholder.jpg',
-      pricingOptions: [pricingOption],
-      items: [{
-        l: `${name.toUpperCase()} ${durationLabel}`,
-        p: safePrice,
-        reseller_price: null,
-        strike_price: null
-      }],
-      status: 'active',
-      keys: [],
-      channelUrl: '',
-      downloadUrl: '',
-      fakeSold: null,
-      sold: 0,
-      createdAt: new Date().toISOString()
-    };
+      // Verifikasi source-of-truth setelah write. Jangan kasih status sukses
+      // kalau data yang dibaca ulang belum benar-benar memuat kategori target.
+      const [verifiedSettings, verifiedProductsRaw] = await Promise.all([
+        readFresh('settings.json'),
+        readFresh('products.json')
+      ]);
+      const verifiedProducts = Array.isArray(verifiedProductsRaw) ? verifiedProductsRaw : [];
+      const verifiedCategorySlug = (verifiedSettings?.categories || []).find(slug =>
+        importProductsNormalizeName(verifiedSettings?.categoryLabels?.[slug]) === targetNorm
+        || String(slug) === String(categorySlug)
+      );
+      if (!verifiedCategorySlug) {
+        throw new Error('Kategori APK MOD NO ROOT tidak terverifikasi setelah penyimpanan.');
+      }
+      const verifyMissing = AGHA_CLIENT_PRODUCT_IMPORT_LIST.filter(name => {
+        const p = verifiedProducts.find(x => importProductsNormalizeName(x?.name) === importProductsNormalizeName(name));
+        const cats = Array.isArray(p?.categories) ? p.categories : (p?.category ? [p.category] : []);
+        return !p || !cats.includes(verifiedCategorySlug);
+      });
+      if (verifyMissing.length) {
+        throw new Error('Verifikasi kategori gagal untuk: ' + verifyMissing.join(', '));
+      }
 
-    products.push(product);
-    existingByName.set(normalized, product);
-    added.push(product);
-  }
-
-  // Pastikan kategori target berada paling awal setelah SEMUA.
-  const categoryIndex = settings.categories.indexOf(categorySlug);
-  if (categoryIndex > 0) {
-    settings.categories.splice(categoryIndex, 1);
-    settings.categories.unshift(categorySlug);
-  }
-
-  // Satu write per sumber data.
-  await writeDB('settings.json', settings);
-  await writeDB('products.json', products);
-
-  // Verifikasi source-of-truth setelah write. Jangan kasih status sukses
-  // kalau data yang dibaca ulang belum benar-benar memuat kategori target.
-  const [verifiedSettings, verifiedProductsRaw] = await Promise.all([
-    readFresh('settings.json'),
-    readFresh('products.json')
-  ]);
-  const verifiedProducts = Array.isArray(verifiedProductsRaw) ? verifiedProductsRaw : [];
-  const verifiedCategorySlug = (verifiedSettings?.categories || []).find(slug =>
-    importProductsNormalizeName(verifiedSettings?.categoryLabels?.[slug]) === targetNorm
-    || String(slug) === String(categorySlug)
-  );
-  if (!verifiedCategorySlug) {
-    throw new Error('Kategori APK MOD NO ROOT tidak terverifikasi setelah penyimpanan.');
-  }
-  const verifyMissing = AGHA_CLIENT_PRODUCT_IMPORT_LIST.filter(name => {
-    const p = verifiedProducts.find(x => importProductsNormalizeName(x?.name) === importProductsNormalizeName(name));
-    const cats = Array.isArray(p?.categories) ? p.categories : (p?.category ? [p.category] : []);
-    return !p || !cats.includes(verifiedCategorySlug);
+      return {
+        category: AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY,
+        categorySlug,
+        price: safePrice,
+        days: safeDays,
+        unit: safeUnit,
+        added: added.map(p => ({ id: p.id, name: p.name })),
+        updated,
+        skipped,
+        totalRequested: AGHA_CLIENT_PRODUCT_IMPORT_LIST.length,
+        totalChanged: added.length + updated.length
+      };
   });
-  if (verifyMissing.length) {
-    throw new Error('Verifikasi kategori gagal untuk: ' + verifyMissing.join(', '));
-  }
-
-  return {
-    category: AGHA_CLIENT_PRODUCT_IMPORT_CATEGORY,
-    categorySlug,
-    price: safePrice,
-    days: safeDays,
-    unit: safeUnit,
-    added: added.map(p => ({ id: p.id, name: p.name })),
-    updated,
-    skipped,
-    totalRequested: AGHA_CLIENT_PRODUCT_IMPORT_LIST.length,
-    totalChanged: added.length + updated.length
-  };
 }
 
 // URL AUTO-IMPORT:
@@ -4672,9 +5002,32 @@ app.get('/admin', requireAdmin, async (req, res) => {
 
   const chartData = dateKeys.map(k => chartByDate[k]);
 
+  // Audit stok admin: tampilkan stok yang sama dengan frontend publik, bukan
+  // simbol "∞" atau raw keys.length. Satu angka stok hanya merepresentasikan
+  // kapasitas paket terbesar yang tersedia; stok per durasi dihitung sendiri.
+  const adminDsMode = settings.dripstore?.fulfillmentMode || 'live';
+  let adminProviderSnapshot = null;
+  if ((adminDsMode === 'live' || adminDsMode === 'hybrid') && settings.dripstore?.apiToken) {
+    adminProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    warmDripstoreCatalog(settings);
+  }
+  const adminProducts = products.map(rawProduct => {
+    const summary = buildProductStockSummary(rawProduct, settings, adminProviderSnapshot);
+    return {
+      ...rawProduct,
+      pricingOptions: summary.product.pricingOptions,
+      items: summary.product.items,
+      _adminStockByOption: summary.stockByOption,
+      _adminStockCount: summary.stockCount,
+      _adminStockUnknown: summary.providerStockUnknown,
+      _adminUsableKeyCount: summary.usableLocalKeyCount,
+      _adminGenericKeyCount: summary.genericLocalKeyCount
+    };
+  });
+
   res.render('pages/admin', {
     layout: false,
-    products,
+    products: adminProducts,
     transactions: transactions.slice(-20).reverse(),
     users,
     settings,
@@ -4811,8 +5164,13 @@ app.post('/admin/product/add', requireAdmin, (req, res, next) => {
     // dinormalisasi jadi array selalu.
     const categoriesArray = categories ? (Array.isArray(categories) ? categories : [categories]) : [];
     const newProduct={id:uuidv4(),name,categories:categoriesArray,description:description||'',image,pricingOptions,items,status:status==='inactive'?'inactive':'active',keys:keyArray,channelUrl:channelUrl?.trim()||'',downloadUrl:downloadUrl?.trim()||'',fakeSold:fakeSoldVal,sold:0,createdAt:new Date().toISOString()};
-    products.push(newProduct);await writeDB('products.json',products);
-    res.json({success:true,product:newProduct});
+    const savedProduct = await withProductsWriteLock(async () => {
+      const freshProducts = await readFresh('products.json');
+      freshProducts.push(newProduct);
+      await writeDB('products.json', freshProducts);
+      return newProduct;
+    });
+    res.json({success:true,product:savedProduct});
   }catch(error){res.json({success:false,message:error.message});}
 });
 
@@ -4827,73 +5185,85 @@ app.post('/admin/product/edit/:id', requireAdmin, (req, res, next) => {
   });
 }, async (req, res) => {
   try {
-    const {name,categories,description,imageUrl:imgUrl,pricingDays,pricingPrices,pricingResellerPrices,pricingUnits,pricingStrikePrices,keys,keysMode,status,channelUrl,downloadUrl,fakeSold}=req.body;
-    const products=await readFresh('products.json');
-    const product=products.find(p=>p.id===req.params.id);
-    if(!product)return res.json({success:false,message:'Produk tidak ditemukan'});
-    if(imgUrl && !isValidImageUrl(imgUrl)) return res.json({success:false,message:'URL gambar tidak valid'});
-    if(channelUrl && !isValidImageUrl(channelUrl)) return res.json({success:false,message:'URL channel tidak valid'});
-    if(downloadUrl && !isValidImageUrl(downloadUrl)) return res.json({success:false,message:'URL download tidak valid'});
-    if(name)product.name=name;
-    if(categories!==undefined) product.categories = Array.isArray(categories) ? categories : (categories ? [categories] : []);
-    if(description!==undefined)product.description=description;if(status)product.status=status;
-    if(channelUrl!==undefined)product.channelUrl=channelUrl.trim();
-    if(downloadUrl!==undefined)product.downloadUrl=downloadUrl.trim();
-    // Angka "terjual" palsu/manual (diminta client 21 Agu 2026, contoh
-    // kingstore) -- TERPISAH dari product.sold asli (counter transaksi
-    // riil, dipakai untuk laporan internal/analitik). Kalau fakeSold diisi
-    // angka >= 0, dipakai buat TAMPILAN saja (lihat home.ejs); kalau
-    // dikosongkan (string ''), override dihapus dan tampilan balik pakai
-    // product.sold asli.
-    if (fakeSold !== undefined) {
-      if (fakeSold === '' || fakeSold === null) product.fakeSold = null;
-      else { const fs = parseInt(String(fakeSold).replace(/[^\d]/g,''), 10); if (!isNaN(fs) && fs >= 0) product.fakeSold = fs; }
-    }
-    // Harga coret (strikethrough) -- FIX (diminta client 22 Agu 2026,
-    // referensi screenshot produk "SENJU"): sekarang PER-OPSI DURASI, ada
-    // di dalam tiap pricingOptions/items (lihat parsePricingOptions), bukan
-    // lagi field tunggal product.strikePrice. Field lama dihapus supaya
-    // tidak ada 2 sumber kebenaran yang bisa saling tidak sinkron.
-    if (product.strikePrice !== undefined) delete product.strikePrice;
-    if(pricingDays){const opts=parsePricingOptions(pricingDays,pricingPrices,pricingResellerPrices,pricingUnits,pricingStrikePrices);if(opts.length){product.pricingOptions=opts;product.items=opts.map(o=>({l:`${product.name.toUpperCase()} ${formatDurationLabel(o.days,o.unit)}`,p:o.price,reseller_price:o.reseller_price,strike_price:o.strike_price}));}}
-    if(keys!==undefined&&keys!==null){const nk=keys.split('\n').map(k=>k.trim()).filter(k=>k);product.keys=keysMode==='append'?[...(product.keys||[]),...nk]:nk;}
-    if (req.file) {
-      if (!isVercel) product.image=`/uploads/products/${req.file.filename}`;
-      else { try { product.image = await db.uploadImage(require('fs').readFileSync(req.file.path), req.file.originalname, req.file.mimetype); } catch {} }
-    }
-    else if(imgUrl?.trim()) product.image=imgUrl.trim();
-    await writeDB('products.json',products);res.json({success:true,product});
+    const result = await withPersistentProductStockLock(req.params.id, async () => {
+      const {name,categories,description,imageUrl:imgUrl,pricingDays,pricingPrices,pricingResellerPrices,pricingUnits,pricingStrikePrices,keys,keysMode,status,channelUrl,downloadUrl,fakeSold}=req.body;
+      const products=await readFresh('products.json');
+      const product=products.find(p=>p.id===req.params.id);
+      if(!product) throw new Error('Produk tidak ditemukan');
+      if(imgUrl && !isValidImageUrl(imgUrl)) throw new Error('URL gambar tidak valid');
+      if(channelUrl && !isValidImageUrl(channelUrl)) throw new Error('URL channel tidak valid');
+      if(downloadUrl && !isValidImageUrl(downloadUrl)) throw new Error('URL download tidak valid');
+      if(name)product.name=name;
+      if(categories!==undefined) product.categories = Array.isArray(categories) ? categories : (categories ? [categories] : []);
+      if(description!==undefined)product.description=description;if(status)product.status=status;
+      if(channelUrl!==undefined)product.channelUrl=channelUrl.trim();
+      if(downloadUrl!==undefined)product.downloadUrl=downloadUrl.trim();
+      if (fakeSold !== undefined) {
+        if (fakeSold === '' || fakeSold === null) product.fakeSold = null;
+        else { const fs = parseInt(String(fakeSold).replace(/[^\d]/g,''), 10); if (!isNaN(fs) && fs >= 0) product.fakeSold = fs; }
+      }
+      if (product.strikePrice !== undefined) delete product.strikePrice;
+      if(pricingDays){
+        const opts=parsePricingOptions(pricingDays,pricingPrices,pricingResellerPrices,pricingUnits,pricingStrikePrices);
+        if(opts.length){
+          const oldMap = new Map((product.pricingOptions || []).map(o => [
+            `${Number(o.days)}${o.unit === 'h' ? 'h' : 'd'}`, String(o.dripstoreVariantId || '') || null
+          ]));
+          for (const o of opts) {
+            const k = `${Number(o.days)}${o.unit === 'h' ? 'h' : 'd'}`;
+            o.dripstoreVariantId = oldMap.get(k) || null;
+          }
+          product.pricingOptions=opts;
+          product.items=opts.map(o=>({l:`${product.name.toUpperCase()} ${formatDurationLabel(o.days,o.unit)}`,p:o.price,reseller_price:o.reseller_price,strike_price:o.strike_price}));
+        }
+      }
+      if(keys!==undefined&&keys!==null){
+        const nk=normalizeUsableLocalKeys(String(keys).split('\n'));
+        if (keysMode==='append') {
+          product.keys=normalizeUsableLocalKeys([...(product.keys||[]), ...nk]);
+        } else {
+          // Replace tetap membuang placeholder lama dan duplikat identik.
+          product.keys=nk;
+        }
+      }
+      if (req.file) {
+        if (!isVercel) product.image=`/uploads/products/${req.file.filename}`;
+        else { try { product.image = await db.uploadImage(require('fs').readFileSync(req.file.path), req.file.originalname, req.file.mimetype); } catch {} }
+      } else if(imgUrl?.trim()) product.image=imgUrl.trim();
+      await writeDB('products.json',products);
+      return product;
+    });
+    res.json({success:true,product:result});
   }catch(error){res.json({success:false,message:error.message});}
 });
 
 app.post('/admin/product/keys/:id', requireAdmin, async (req, res) => {
   try {
-    const{keys,mode}=req.body;const products=await readFresh('products.json');
-    const product=products.find(p=>p.id===req.params.id);
-    if(!product)return res.json({success:false,message:'Produk tidak ditemukan'});
-    const nk=(keys||'').split('\n').map(k=>k.trim()).filter(k=>k);
-    if (mode === 'replace') {
-      product.keys = nk;
-    } else {
-      // FIX (diminta client 15 Sep 2026, fitur import key dari file): mode
-      // "tambah" dulu asal concat mentah -- kalau file yang di-import
-      // kebetulan ada key yang udah pernah masuk sebelumnya, jadi numpuk
-      // duplikat di database. Sekarang key baru yang PERSIS SAMA dengan
-      // key yang sudah ada di produk ini otomatis dilewati (skip), biar
-      // stok tetap akurat.
-      const existing = new Set(product.keys || []);
-      const uniqueNew = nk.filter(k => !existing.has(k));
-      product.keys = [...(product.keys || []), ...uniqueNew];
-    }
-    await writeDB('products.json',products);res.json({success:true,keyCount:product.keys.length});
+    const result = await withPersistentProductStockLock(req.params.id, async () => {
+      const{keys,mode}=req.body;
+      const products=await readFresh('products.json');
+      const product=products.find(p=>p.id===req.params.id);
+      if(!product) throw new Error('Produk tidak ditemukan');
+      const nk=normalizeUsableLocalKeys(String(keys||'').split('\n'));
+      if (mode === 'replace') {
+        product.keys = nk;
+      } else {
+        product.keys = normalizeUsableLocalKeys([...(product.keys || []), ...nk]);
+      }
+      await writeDB('products.json',products);
+      return { keyCount: product.keys.length, product };
+    });
+    res.json({success:true,keyCount:result.keyCount,product:result.product});
   }catch(e){res.json({success:false,message:e.message});}
 });
 
 app.post('/admin/product/delete/:id', requireAdmin, async (req, res) => {
   try {
-    let products = await readFresh('products.json');
-    products = products.filter(p => p.id !== req.params.id);
-    await writeDB('products.json', products);
+    await withProductsWriteLock(async () => {
+      let products = await readFresh('products.json');
+      products = products.filter(p => p.id !== req.params.id);
+      await writeDB('products.json', products);
+    });
     res.json({ success: true, message: 'Produk berhasil dihapus' });
   } catch (error) {
     res.json({ success: false, message: error.message });
@@ -4947,10 +5317,16 @@ app.post('/admin/product/toggle/:id', requireAdmin, async (req, res) => {
       return res.json({ success: false, message: 'Produk tidak ditemukan' });
     }
 
-    product.status = product.status === 'active' ? 'inactive' : 'active';
-    await writeDB('products.json', products);
-
-    res.json({ success: true, message: 'Status produk berhasil diubah', status: product.status });
+    const nextStatus = await withProductsWriteLock(async () => {
+      const freshProducts = await readFresh('products.json');
+      const freshProduct = freshProducts.find(p => p.id === req.params.id);
+      if (!freshProduct) return null;
+      freshProduct.status = freshProduct.status === 'active' ? 'inactive' : 'active';
+      await writeDB('products.json', freshProducts);
+      return freshProduct.status;
+    });
+    if (!nextStatus) return res.json({ success: false, message: 'Produk tidak ditemukan' });
+    res.json({ success: true, message: 'Status produk berhasil diubah', status: nextStatus });
   } catch (error) {
     res.json({ success: false, message: error.message });
   }
@@ -4958,20 +5334,19 @@ app.post('/admin/product/toggle/:id', requireAdmin, async (req, res) => {
 
 app.post('/admin/product/add-keys/:id', requireAdmin, async (req, res) => {
   try {
-    const { keys } = req.body;
-    const products = await readFresh('products.json');
-    const product = products.find(p => p.id === req.params.id);
-
-    if (!product) {
-      return res.json({ success: false, message: 'Produk tidak ditemukan' });
-    }
-
-    const newKeys = keys.split('\n').map(k => k.trim()).filter(k => k);
-    product.keys = product.keys || [];
-    product.keys.push(...newKeys);
-
-    await writeDB('products.json', products);
-    res.json({ success: true, message: `${newKeys.length} key berhasil ditambahkan`, keyCount: product.keys.length });
+    const result = await withPersistentProductStockLock(req.params.id, async () => {
+      const { keys } = req.body;
+      const products = await readFresh('products.json');
+      const product = products.find(p => p.id === req.params.id);
+      if (!product) throw new Error('Produk tidak ditemukan');
+      const newKeys = normalizeUsableLocalKeys(String(keys || '').split('\n'));
+      const before = new Set(normalizeUsableLocalKeys(product.keys));
+      const uniqueNew = newKeys.filter(k => !before.has(k));
+      product.keys = normalizeUsableLocalKeys([...(product.keys || []), ...uniqueNew]);
+      await writeDB('products.json', products);
+      return { added: uniqueNew.length, keyCount: product.keys.length };
+    });
+    res.json({ success: true, message: `${result.added} key berhasil ditambahkan`, keyCount: result.keyCount });
   } catch (error) {
     res.json({ success: false, message: error.message });
   }
@@ -5095,16 +5470,25 @@ app.post('/admin/settings/dripstore', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
     const { apiToken, baseUrl, fulfillmentMode, balanceGuardEnabled, autoRestockEnabled, lowStockThreshold, restockQty } = req.body;
+    const savedMode = ['live','local','hybrid'].includes(fulfillmentMode) ? fulfillmentMode : (settings.dripstore?.fulfillmentMode || 'live');
+    const requestedAutoRestock = autoRestockEnabled === 'on' || autoRestockEnabled === true;
     settings.dripstore = {
       apiToken: apiToken !== undefined ? apiToken.trim() : (settings.dripstore?.apiToken || ''),
       baseUrl: baseUrl !== undefined ? baseUrl.trim() : (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1'),
-      fulfillmentMode: ['live','local','hybrid'].includes(fulfillmentMode) ? fulfillmentMode : (settings.dripstore?.fulfillmentMode || 'live'),
+      fulfillmentMode: savedMode,
       balanceGuardEnabled: balanceGuardEnabled === undefined ? (settings.dripstore?.balanceGuardEnabled !== false) : (balanceGuardEnabled === 'on' || balanceGuardEnabled === true),
-      autoRestockEnabled: autoRestockEnabled === 'on' || autoRestockEnabled === true,
+      // Auto-restock hanya masuk akal di HYBRID karena LIVE sudah JIT provider
+      // dan LOCAL tidak memakai provider. Mode lain selalu dipaksa OFF.
+      autoRestockEnabled: savedMode === 'hybrid' ? requestedAutoRestock : false,
       lowStockThreshold: Number.isFinite(parseInt(lowStockThreshold, 10)) ? Math.max(0, parseInt(lowStockThreshold, 10)) : (settings.dripstore?.lowStockThreshold ?? 3),
       restockQty: Number.isFinite(parseInt(restockQty, 10)) && parseInt(restockQty, 10) > 0 ? parseInt(restockQty, 10) : (settings.dripstore?.restockQty ?? 10),
     };
     await writeDB('settings.json', settings);
+    // Token/base URL provider berubah => snapshot provider lama harus dibuang.
+    _dripstoreCatalogCache = null;
+    _dripstoreCatalogCacheAt = 0;
+    _dripstoreCatalogInflight = null;
+    _dripstoreCatalogCacheSignature = '';
 
     // Saat Auto-Restock diaktifkan + token tersedia, sinkronkan
     // product -> variant DripStore. Stok rendah hanya membuat proposal pending.
@@ -5161,19 +5545,32 @@ app.get('/admin/dripstore/balance', requireAdmin, async (req, res) => {
 app.get('/admin/dripstore/availability', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
-    const balance = await getDripstoreBalanceValue(settings);
-    const supplier = await dripstoreCall(settings, 'products.php');
+    const snapshot = await getDripstoreCatalogSnapshot(settings);
+    const balance = snapshot?.balance ?? null;
     const products = await readFresh('products.json');
     const rows = [];
-    for (const p of products) {
-      for (const o of (p.pricingOptions || [])) {
-        if (!o?.dripstoreVariantId) continue;
-        const cost = _dsFindVariantCost(supplier, o.dripstoreVariantId);
-        const required = cost == null ? null : Number(cost);
-        rows.push({ productId: p.id, productName: p.name, days: Number(o.days), unit: o.unit || 'd', variantId: String(o.dripstoreVariantId), cost: required, available: balance != null && required != null ? balance + 1e-9 >= required : null });
+    for (const raw of products) {
+      const product = normalizeProductBuyOptions(raw);
+      for (const opt of (product.pricingOptions || [])) {
+        const resolved = findDripstoreVariantForOption(snapshot, product.name, opt);
+        const localStock = getLocalOptionStock(product, opt);
+        if (!resolved) {
+          rows.push({ productId: product.id, productName: product.name, days: Number(opt.days), unit: opt.unit || 'd', variantId: null, cost: null, localStock, providerCapacity: null, totalStock: localStock, available: null });
+          continue;
+        }
+        const cost = _dsFindVariantCost(snapshot.products, resolved.variantId);
+        const balanceCents = _dsMoneyCents(balance);
+        const costCents = _dsMoneyCents(cost);
+        const capacity = balanceCents != null && costCents != null && costCents > 0 ? Math.max(0, Math.floor(balanceCents / costCents)) : null;
+        rows.push({ productId: product.id, productName: product.name, days: Number(opt.days), unit: opt.unit || 'd', variantId: String(resolved.variantId), cost, localStock, providerCapacity: capacity, totalStock: localStock + (capacity || 0), available: capacity == null ? null : capacity > 0 });
       }
     }
-    res.json({ success: true, balance, rows });
+    const counts = {
+      available: rows.filter(x => x.available === true).length,
+      unavailable: rows.filter(x => x.available === false).length,
+      unknown: rows.filter(x => x.available === null).length
+    };
+    res.json({ success: true, balance, rows, ...counts });
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
@@ -5383,102 +5780,24 @@ app.post('/admin/user/adjust-balance/:id', requireAdmin, async (req, res) => {
 });
 app.post('/admin/transaction/confirm/:id', requireAdmin, async (req, res) => {
   try {
-    const transactions = await readFresh('transactions.json');
-    const transaction = transactions.find(t => t.id === req.params.id);
-    if (!transaction) return res.json({ success: false, message: 'Transaksi tidak ditemukan' });
-    if (transaction.status === 'done') return res.json({ success: false, message: 'Transaksi sudah selesai' });
+    const settings = await readFresh('settings.json');
+    const result = await finalizeOrder(req.params.id, settings);
+    if (result.status === 'not_found') return res.json({ success: false, message: 'Transaksi tidak ditemukan' });
+    if (result.status === 'already_done') return res.json({ success: false, message: 'Transaksi sudah selesai' });
+    if (result.status === 'already_processing') return res.json({ success: false, message: 'Transaksi sedang diproses di request lain. Tunggu sebentar.' });
+    if (result.status !== 'done') return res.json({ success: false, message: 'Transaksi belum dapat diproses' });
 
-    // Jika transaksi reseller, upgrade user
-    if (transaction.type === 'reseller') {
-      const users = await readFresh('users.json');
-      const u = users.find(u => u.id === transaction.userId);
-      if (u) {
-        u.is_reseller = true;
-        u.role = 'reseller';
-        u.reseller_since = u.reseller_since || new Date().toISOString();
-        u.reseller_code = u.reseller_code || ('RSL-' + u.username.toUpperCase().slice(0, 4) + '-' + crypto.randomBytes(2).toString('hex').toUpperCase());
-        await writeDB('users.json', users);
-      }
-      transaction.status = 'done';
-      transaction.paidAt = new Date().toISOString();
-      await writeDB('transactions.json', transactions);
-      return res.json({ success: true, type: 'reseller' });
-    }
-
-    // Jika transaksi top up saldo wallet, kreditkan saldo user
-    if (transaction.type === 'deposit') {
-      const users = await readFresh('users.json');
-      const u = users.find(u => u.id === transaction.userId);
-      if (u) {
-        u.balance = (u.balance || 0) + (transaction.amount || transaction.price || 0);
-        await writeDB('users.json', users);
-      }
-      transaction.status = 'done';
-      transaction.paidAt = new Date().toISOString();
-      await writeDB('transactions.json', transactions);
-      return res.json({ success: true, type: 'deposit', balance: u?.balance || 0 });
-    }
-
-    // Transaksi produk biasa: untuk durasi yang sudah di-map ke DripStore,
-    // ambil 1 key LIVE dari provider setelah admin mengonfirmasi pembayaran.
-    const liveProvider = await fulfillProductFromDripstore(transaction, await readFresh('settings.json')).catch(e => ({ error: e }));
-    if (liveProvider && !liveProvider.error) {
-      transaction.status = 'done';
-      transaction.key = liveProvider.key;
-      transaction.keySource = liveProvider.source;
-      transaction.providerVariantId = liveProvider.variantId;
-      transaction.providerTransactionId = liveProvider.providerTransactionId || undefined;
-      transaction.outOfStock = false;
-      transaction.paidAt = new Date().toISOString();
-      transaction.confirmedBy = 'admin';
-      await writeDB('transactions.json', transactions);
-      return res.json({ success: true, key: transaction.key });
-    } else if (liveProvider?.error) {
-      return res.json({ success: false, message: 'Gagal mengambil key dari DripStore: ' + liveProvider.error.message });
-    }
-
-    // Transaksi produk biasa: ambil key
-    // FIX BUG KRITIS (sama seperti finalizeOrder & /wallet/buy): kalau stok
-    // durasi yang dipesan habis, JANGAN fallback ke durasi lain (dulu
-    // fallback terakhirnya product.keys.shift() = ambil key durasi apapun).
-    // Unit-aware (hari/jam) via parseKeyDuration/keyMatchesDuration, separator "=".
-    const products = readDB('products.json');
-    const product = products.find(p => p.id === transaction.productId);
-    let key = null;
-    let outOfStock = false;
-    if (product?.keys?.length > 0) {
-      const days = transaction.selectedDays;
-      const unit = transaction.selectedUnit || 'd';
-      if (days) {
-        const idx = product.keys.findIndex(k => keyMatchesDuration(k, days, unit));
-        if (idx !== -1) key = parseKeyDuration(product.keys.splice(idx, 1)[0]).raw;
-        // else: stok durasi ini kosong -- jangan ambil durasi lain, tandai outOfStock di bawah.
-      } else {
-        const idx = product.keys.findIndex(k => isGenericKey(k));
-        if (idx !== -1) key = product.keys.splice(idx, 1)[0];
-      }
-      if (key) {
-        product.sold = (product.sold || 0) + 1;
-        await writeDB('products.json', products);
-        // Tidak auto-purchase setelah penjualan. Auto-restock hanya membuat proposal.
-      } else {
-        outOfStock = true;
-      }
-    } else {
-      outOfStock = true;
-    }
-
-    transaction.status = 'done';
-    transaction.key = key;
-    transaction.keySource = 'local_stock';
-    transaction.outOfStock = outOfStock;
-    transaction.paidAt = new Date().toISOString();
-    transaction.confirmedBy = 'admin';
-    await writeDB('transactions.json', transactions);
-
-    res.json({ success: true, key });
+    return res.json({
+      success: true,
+      type: result.type,
+      key: result.key || null,
+      code: result.code,
+      outOfStock: !!result.outOfStock,
+      balance: result.balance
+    });
   } catch (e) {
-    res.json({ success: false, message: e.message });
+    console.error('[admin/transaction/confirm]', e.message);
+    return res.json({ success: false, message: e.message });
   }
 });
 
@@ -5533,8 +5852,17 @@ app.get('/api/products', async (req, res) => {
   // cache ber-TTL sehingga data yang sama tidak ditransfer berulang.
   const products = (await readSmart('products.json'))
     .filter(p => p.status === 'active')
-    // SECURITY: jangan kirim keys ke publik — keys hanya dikirim setelah pembayaran sukses
-    .map(({ keys, ...safe }) => ({ ...safe, stockCount: (keys || []).length }));
+    // SECURITY: jangan kirim keys ke publik — keys hanya dikirim setelah pembayaran sukses.
+    // stockCount di endpoint pencarian hanya merepresentasikan stok lokal yang
+    // benar-benar dapat dipakai; provider stock dihitung di halaman katalog
+    // /buy secara terpisah agar endpoint ini tidak memukul API supplier per request.
+    .map(p => {
+      const normalized = normalizeProductBuyOptions(p);
+      const optionStocks = (normalized.pricingOptions || []).map(o => getLocalOptionStock(normalized, o));
+      const localStock = optionStocks.length ? Math.max(...optionStocks, 0) : getLocalOptionStock(normalized, { days: null, unit: 'd' });
+      const { keys, ...safe } = normalized;
+      return { ...safe, stockCount: localStock };
+    });
   res.json(products);
 });
 
@@ -5937,147 +6265,82 @@ app.get('/admin/product/:id', requireAdmin, async (req, res) => {
 // Admin Update Product (image, status, keys)
 app.post('/admin/product/:id', requireAdmin, async (req, res) => {
   try {
-    const { items, bannerUrl, status, keys, keysMode, categories, channelUrl, downloadUrl, fakeSold, description, videoUrl, compatibility, featureList } = req.body;
-    const products = await readFresh('products.json');
-    const productIndex = products.findIndex(p => p.id === req.params.id);
+    const result = await withPersistentProductStockLock(req.params.id, async () => {
+      const { items, bannerUrl, status, keys, keysMode, categories, channelUrl, downloadUrl, fakeSold, description, videoUrl, compatibility, featureList } = req.body;
+      const products = await readFresh('products.json');
+      const productIndex = products.findIndex(p => p.id === req.params.id);
+      if (productIndex === -1) throw new Error('Produk tidak ditemukan');
+      const p = products[productIndex];
 
-    if (productIndex === -1) return res.json({ success: false, message: 'Produk tidak ditemukan' });
-    const p = products[productIndex];
-
-    // Simpan ke image (yang dibaca frontend) DAN bannerUrl
-    if (bannerUrl && bannerUrl.trim()) {
-      p.image    = bannerUrl.trim();
-      p.bannerUrl = bannerUrl.trim();
-    }
-
-    if (status) p.status = status;
-    // FIX (diminta client 22 Agu 2026): sebelumnya "platform" (Android/iOS/PC)
-    // itu HARDCODE 3 pilihan tetap, terpisah dari sistem "categories" (Free
-    // Fire/Mobile Legends/dst) yang sudah admin-editable. Sekarang digabung
-    // jadi SATU sistem: categories yang sepenuhnya diatur admin lewat Admin
-    // Panel (bisa "Free Fire", bisa "Android", bisa "iOS", apa saja -- admin
-    // yang tentukan), dan 1 produk bisa masuk LEBIH DARI SATU kategori
-    // sekaligus (array, bukan string tunggal seperti field `category` lama).
-    if (Array.isArray(categories)) p.categories = categories;
-    // Deskripsi produk (diminta client 22 Agu 2026, referensi fixaonly.com)
-    // -- sebelumnya halaman edit produk ini TIDAK punya field description
-    // sama sekali, jadi admin tidak bisa ubah deskripsi produk yang sudah
-    // ada, hanya bisa isi sekali pas awal create. String polos, diparsing
-    // ke bullet/paragraf saat render (lihat parseProductDescription).
-    if (description !== undefined) p.description = description;
-    // ── Tab "Showcase" & "Information" di halaman produk (diminta client
-    // 22 Agu 2026, referensi screenshot vipibmstore.com) ──
-    // videoUrl: link YouTube/direct video (BUKAN upload file -- admin cukup
-    // isi link, sesuai keputusan client). compatibility: teks bebas
-    // (mis. "ANDROID NON ROOT"). featureList: array baris fitur, satu
-    // fitur per baris (dikirim sebagai string newline-separated dari
-    // textarea, disimpan sebagai array supaya gampang di-render sebagai
-    // bullet list).
-    if (videoUrl !== undefined) {
-      if (videoUrl && !isValidImageUrl(videoUrl)) return res.json({ success: false, message: 'URL video tidak valid' });
-      p.videoUrl = videoUrl.trim();
-    }
-    if (compatibility !== undefined) p.compatibility = compatibility.trim();
-    if (featureList !== undefined) {
-      p.featureList = featureList.split('\n').map(f => f.trim()).filter(f => f);
-    }
-    if (channelUrl !== undefined) {
-      if (channelUrl && !isValidImageUrl(channelUrl)) return res.json({ success: false, message: 'URL channel tidak valid' });
-      p.channelUrl = channelUrl.trim();
-    }
-    // Link Download Langsung (diminta client 14 Sep 2026, referensi mallstor.id):
-    // kalau diisi, tombol di kartu produk (home.ejs) berubah dari "Beli"
-    // jadi "Download" yang langsung buka link ini di tab baru -- dipakai
-    // untuk produk semacam APK mod/file yang memang gratis/tidak lewat
-    // alur checkout, jadi TERPISAH dari channelUrl (link join channel WA
-    // yang muncul di halaman detail /buy/:id, bukan di kartu produk).
-    if (downloadUrl !== undefined) {
-      if (downloadUrl && !isValidImageUrl(downloadUrl)) return res.json({ success: false, message: 'URL download tidak valid' });
-      p.downloadUrl = downloadUrl.trim();
-    }
-
-    // Angka "terjual" palsu/manual (diminta client 21 Agu 2026, contoh
-    // referensi kingstore) -- lihat komentar lengkap di
-    // /admin/product/edit/:id untuk penjelasan kenapa ini terpisah dari
-    // product.sold asli.
-    if (fakeSold !== undefined) {
-      if (fakeSold === '' || fakeSold === null) p.fakeSold = null;
-      else { const fs = parseInt(String(fakeSold).replace(/[^\d]/g,''), 10); if (!isNaN(fs) && fs >= 0) p.fakeSold = fs; }
-    }
-    // FIX (diminta client 22 Agu 2026, referensi screenshot produk "SENJU"):
-    // harga coret sekarang PER-OPSI DURASI (strike_price di dalam tiap
-    // pricingOptions di bawah), bukan lagi field tunggal p.strikePrice.
-    if (p.strikePrice !== undefined) delete p.strikePrice;
-
-    // Kelola harga / pricing options
-    const { pricingOptions } = req.body;
-    if (Array.isArray(pricingOptions) && pricingOptions.length > 0) {
-      const seenDays = new Set();
-      const validOpts = [];
-      // FIX (bug dilaporkan client 14 Sep 2026): sama seperti parsePricingOptions()
-      // di atas -- parseInt("10.000") = 10 kalau ada titik/koma nyempil di
-      // value yang dikirim. cleanNum() bersihin dulu sebelum di-parseInt.
-      const cleanNum = (v) => {
-        if (v === undefined || v === null || v === '') return NaN;
-        if (typeof v === 'number') return v;
-        const digitsOnly = String(v).replace(/[^\d]/g, '');
-        return digitsOnly === '' ? NaN : parseInt(digitsOnly, 10);
-      };
-      for (const o of pricingOptions) {
-        const days = cleanNum(o.days);
-        const price = cleanNum(o.price);
-        const unit = (o.unit === 'h' ? 'h' : 'd'); // default 'd' (hari) kalau tidak dikirim, backward-compat
-        const seenKey = `${days}${unit}`;
-        // Lewati baris yang harinya tidak valid, harga tidak valid, atau duplikat hari+unit
-        // (baris lain dengan hari+unit sama akan menimpa data secara tak sengaja).
-        if (!(days > 0) || isNaN(price) || price < 0 || seenDays.has(seenKey)) continue;
-        seenDays.add(seenKey);
-        // reseller_price manual diambil dari input yang baru dikirim form.
-        // Kalau field-nya dikosongkan/tidak dikirim, dianggap "tidak ada harga manual"
-        // (checkout akan fallback ke diskon % global) — bukan otomatis dari data lama.
-        let resellerPrice = null;
-        if (o.reseller_price !== undefined && o.reseller_price !== null && o.reseller_price !== '') {
-          const rp = cleanNum(o.reseller_price);
-          if (!isNaN(rp) && rp >= 0) resellerPrice = rp;
-        }
-        // Harga coret per-durasi. Harus LEBIH BESAR dari harga jual paket
-        // ini, kalau tidak dianggap tidak valid dan diabaikan (bukan error
-        // keras, supaya tidak mengganggu simpan opsi harga lain yang valid).
-        let strikePriceVal = null;
-        if (o.strike_price !== undefined && o.strike_price !== null && o.strike_price !== '') {
-          const sp = cleanNum(o.strike_price);
-          if (!isNaN(sp) && sp > price) strikePriceVal = sp;
-        }
-        validOpts.push({ days, unit, price, reseller_price: resellerPrice, strike_price: strikePriceVal, dripstoreVariantId: (o.dripstoreVariantId || '').toString().trim() || null });
+      if (bannerUrl && bannerUrl.trim()) { p.image = bannerUrl.trim(); p.bannerUrl = bannerUrl.trim(); }
+      if (status) p.status = status;
+      if (Array.isArray(categories)) p.categories = categories;
+      if (description !== undefined) p.description = description;
+      if (videoUrl !== undefined) {
+        if (videoUrl && !isValidImageUrl(videoUrl)) throw new Error('URL video tidak valid');
+        p.videoUrl = videoUrl.trim();
       }
-      // Kalau SEMUA baris yang dikirim gagal validasi (mis. semuanya kosong/0/duplikat),
-      // JANGAN timpa harga lama — anggap tidak ada perubahan pada harga.
-      if (validOpts.length > 0) {
-        validOpts.sort((a, b) => a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1));
-        p.pricingOptions = validOpts;
-        p.items = validOpts.map(o => ({ l: `${(p.name||'PRODUK').toUpperCase()} ${formatDurationLabel(o.days, o.unit)}`, p: o.price, reseller_price: o.reseller_price, strike_price: o.strike_price }));
+      if (compatibility !== undefined) p.compatibility = compatibility.trim();
+      if (featureList !== undefined) p.featureList = String(featureList).split('\n').map(f => f.trim()).filter(f => f);
+      if (channelUrl !== undefined) {
+        if (channelUrl && !isValidImageUrl(channelUrl)) throw new Error('URL channel tidak valid');
+        p.channelUrl = channelUrl.trim();
       }
-    }
+      if (downloadUrl !== undefined) {
+        if (downloadUrl && !isValidImageUrl(downloadUrl)) throw new Error('URL download tidak valid');
+        p.downloadUrl = downloadUrl.trim();
+      }
+      if (fakeSold !== undefined) {
+        if (fakeSold === '' || fakeSold === null) p.fakeSold = null;
+        else { const fs = parseInt(String(fakeSold).replace(/[^\d]/g,''), 10); if (!isNaN(fs) && fs >= 0) p.fakeSold = fs; }
+      }
+      if (p.strikePrice !== undefined) delete p.strikePrice;
 
-    // Kelola keys
-    if (keys !== undefined && keys !== null) {
-      const newKeys = String(keys).split('\n').map(k => k.trim()).filter(k => k);
-      if (newKeys.length > 0) {
-        if (keysMode === 'replace') {
-          p.keys = newKeys;
-        } else {
-          // FIX (diminta client 15 Sep 2026, fitur import key dari file):
-          // skip key yang PERSIS SAMA dengan yang sudah ada di produk ini
-          // biar mode "tambah" gak numpuk duplikat di database.
-          const existing = new Set(p.keys || []);
-          const uniqueNew = newKeys.filter(k => !existing.has(k));
-          p.keys = [...(p.keys || []), ...uniqueNew];
+      const { pricingOptions } = req.body;
+      if (Array.isArray(pricingOptions) && pricingOptions.length > 0) {
+        const seenDays = new Set();
+        const validOpts = [];
+        const cleanNum = (v) => {
+          if (v === undefined || v === null || v === '') return NaN;
+          if (typeof v === 'number') return v;
+          const digitsOnly = String(v).replace(/[^\d]/g, '');
+          return digitsOnly === '' ? NaN : parseInt(digitsOnly, 10);
+        };
+        for (const o of pricingOptions) {
+          const days = cleanNum(o.days), price = cleanNum(o.price), unit = (o.unit === 'h' ? 'h' : 'd');
+          const seenKey = `${days}${unit}`;
+          if (!(days > 0) || isNaN(price) || price < 0 || seenDays.has(seenKey)) continue;
+          seenDays.add(seenKey);
+          let resellerPrice = null;
+          if (o.reseller_price !== undefined && o.reseller_price !== null && o.reseller_price !== '') {
+            const rp = cleanNum(o.reseller_price); if (!isNaN(rp) && rp >= 0) resellerPrice = rp;
+          }
+          let strikePriceVal = null;
+          if (o.strike_price !== undefined && o.strike_price !== null && o.strike_price !== '') {
+            const sp = cleanNum(o.strike_price); if (!isNaN(sp) && sp > price) strikePriceVal = sp;
+          }
+          validOpts.push({ days, unit, price, reseller_price: resellerPrice, strike_price: strikePriceVal,
+            dripstoreVariantId: (o.dripstoreVariantId || '').toString().trim() || null });
+        }
+        if (validOpts.length > 0) {
+          validOpts.sort((a, b) => a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1));
+          p.pricingOptions = validOpts;
+          p.items = validOpts.map(o => ({ l: `${(p.name||'PRODUK').toUpperCase()} ${formatDurationLabel(o.days, o.unit)}`, p: o.price, reseller_price: o.reseller_price, strike_price: o.strike_price }));
         }
       }
-    }
 
-    await writeDB('products.json', products);
-    res.json({ success: true, message: 'Produk berhasil diupdate', data: p });
+      if (keys !== undefined && keys !== null) {
+        const newKeys = normalizeUsableLocalKeys(String(keys).split('\n'));
+        if (newKeys.length > 0) {
+          if (keysMode === 'replace') p.keys = newKeys;
+          else p.keys = normalizeUsableLocalKeys([...(p.keys || []), ...newKeys]);
+        }
+      }
+
+      await writeDB('products.json', products);
+      return p;
+    });
+    res.json({ success: true, message: 'Produk berhasil diupdate', data: result });
   } catch (error) {
     res.json({ success: false, message: 'Error: ' + error.message });
   }
