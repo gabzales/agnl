@@ -1886,31 +1886,24 @@ function getOptionStockView(product, opt, snapshot, mode, providerConfigured = f
   // LIVE berarti provider adalah satu-satunya sumber fulfillment. Jadi variant
   // yang belum ter-resolve TIDAK BOLEH terlihat punya stok lokal. Di HYBRID,
   // lokal tetap boleh tampil dan dipakai sebagai fallback.
-  // Stok lokal AGHA selalu merupakan stok nyata dan harus tetap dihitung,
-  // terlepas dari mode DripStore. DripStore hanya menjadi sumber tambahan /
-  // fallback. Sebelumnya mode `live` membuang localStock menjadi 0 sehingga
-  // key yang sebenarnya tersimpan di products.json (contoh XREG) dianggap
-  // kosong hanya karena tidak punya variant DripStore.
   const providerBacked = normalizedMode === 'live'
     ? !!providerConfigured
     : (!!opt?.dripstoreVariantId || !!resolved);
   if (!providerBacked) {
-    return { stock: localStock, localStock, providerStock: 0, providerKnown: false, providerBacked: false, variantId: null };
+    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: false, variantId: null };
   }
   if (!snapshot) {
-    // Provider belum terverifikasi. Jangan mengarang stok provider; stok lokal
-    // tetap valid dan tetap tampil.
-    return { stock: localStock, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
+    // Provider belum terverifikasi. Jangan mengarang "1 stok" dan jangan
+    // menampilkan variant Habis sebagai fakta. Hybrid masih boleh memakai
+    // stok lokal yang benar-benar ada.
+    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
   }
   if (!resolved) {
-    // Tidak ada variant provider yang cocok. Ini bukan berarti stok lokal habis.
-    return { stock: localStock, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
+    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
   }
 
   const providerStock = Math.max(0, Number(resolved.stock) || 0);
-  // Combined availability: stok lokal + stok provider. Fulfillment tetap
-  // local-first; provider dipakai sebagai fallback saat localStock = 0.
-  const stock = localStock + providerStock;
+  const stock = normalizedMode === 'hybrid' ? localStock + providerStock : providerStock;
   return { stock, localStock, providerStock, providerKnown: true, providerBacked: true, variantId: resolved.variantId };
 }
 
@@ -1977,7 +1970,7 @@ function buildProductStockSummary(rawProduct, settings, snapshot = null) {
   }));
   const stockCount = stockByOption.length
     ? Math.max(...stockByOption.map(x => x.stock), 0)
-    : getLocalOptionStock(product, { days: null, unit: 'd' });
+    : (mode === 'live' ? 0 : getLocalOptionStock(product, { days: null, unit: 'd' }));
   return {
     product,
     mode,
@@ -3104,15 +3097,15 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     let providerVariantId = null;
     let localInventoryCommitted = false;
 
-    // Selalu coba stok lokal exact terlebih dahulu. Mode DripStore tidak boleh
-    // membuat key lokal yang sudah tersedia menjadi tidak terbaca.
-    if (selectedDays != null) {
+    // LOCAL/HYBRID: coba stok lokal exact dulu. Tidak pernah fallback ke
+    // durasi lain. Pada HYBRID, kalau lokal kosong BARU lanjut ke provider.
+    if ((fulfillmentMode === 'local' || fulfillmentMode === 'hybrid') && selectedDays != null) {
       const local = await consumeLocalProductKey(product.id, selectedDays, selectedUnit);
       if (local.key) {
         key = local.key;
         localInventoryCommitted = !!local.committed;
       }
-    } else if (selectedDays == null) {
+    } else if (fulfillmentMode === 'local' && selectedDays == null) {
       const local = await consumeLocalProductKey(product.id, null, selectedUnit);
       if (local.key) {
         key = local.key;
@@ -3999,10 +3992,19 @@ async function finalizeOrder(refId, settings) {
   let providerVariantId = null;
 
   const fulfillmentMode = settings.dripstore?.fulfillmentMode || 'live';
-  // Local inventory is always tried first. This is intentional even when the
-  // setting is `live`: DripStore is a fallback source, not a replacement for
-  // keys already stored in AGHA.
-  const shouldTryLocalFirst = true;
+  const shouldTryLiveFirst = fulfillmentMode === 'live';
+  const shouldTryLocalFirst = fulfillmentMode === 'local' || fulfillmentMode === 'hybrid';
+
+  if (shouldTryLiveFirst) {
+    const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
+    if (liveProvider && !liveProvider.error) {
+      key = liveProvider.key; keySource = liveProvider.source;
+      providerTransactionId = liveProvider.providerTransactionId; providerVariantId = liveProvider.variantId;
+    } else if (liveProvider?.error) {
+      console.error('[DripStore live fulfillment]', transaction.code, liveProvider.error.message);
+      outOfStock = true;
+    }
+  }
 
   let products = await readFresh('products.json');
   let product = products.find(p => p.id === transaction.productId);
@@ -4023,7 +4025,7 @@ async function finalizeOrder(refId, settings) {
     }
   }
 
-  if (!key && !outOfStock && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid')) {
+  if (!key && !outOfStock && fulfillmentMode === 'hybrid') {
     const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
     if (liveProvider && !liveProvider.error) {
       key = liveProvider.key; keySource = liveProvider.source;
