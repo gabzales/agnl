@@ -274,7 +274,7 @@ const noIndex = true; // halaman privat user, jangan di-index Google
                 <div id="topupStaticNote" class="hidden text-center rounded-xl p-3" style="background:rgba(234,179,8,.07);border:1px solid rgba(234,179,8,.2)">
                     <p class="text-xs text-yellow-300">Setelah transfer, kirim bukti ke admin via WhatsApp agar saldo segera dikonfirmasi</p>
                     <a id="topupWaBtn" href="#" target="_blank" class="inline-flex items-center gap-1.5 px-3 py-1.5 mt-2 rounded-lg text-xs font-bold text-white" style="background:rgba(34,197,94,.2);border:1px solid rgba(34,197,94,.35)">
-                        <span class="agha-social-icon agha-wa text-green-400 text-sm" aria-hidden="true"></span> WhatsApp
+                        <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="rgb(74 222 128)" style="flex-shrink:0;display:block;"><path d="M6.62 10.79a15.46 15.46 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C11.72 21 3 12.28 3 2.99 3 2.44 3.45 2 4 2h3.5c.55 0 1 .44 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2Z"/></svg> WhatsApp
                     </a>
                 </div>
             </div>
@@ -327,7 +327,7 @@ async function submitTopup() {
 }
 
 function showTopupQr(data) {
-    const { qrString, orderCode, refId, isStatic, qrisStaticImage, totalPayment } = data;
+    const { qrString, orderCode, refId, isStatic, qrisStaticImage, totalPayment, paymentGateway } = data;
     const amount = parseInt(document.getElementById('topupAmount').value);
     const payAmount = totalPayment || amount;
     topupRefId = refId;
@@ -356,7 +356,8 @@ function showTopupQr(data) {
         wrap.innerHTML = `<div class="text-center py-4"><iconify-icon icon="mdi:qrcode-remove" class="text-5xl text-zinc-700 block mb-2"></iconify-icon><p class="text-xs text-zinc-500">QRIS belum dikonfigurasi. Hubungi admin.</p></div>`;
     }
 
-    if (refId && !isStatic) topupPayInterval = setInterval(() => checkTopupPay(refId), 4000);
+    if (refId && !isStatic && paymentGateway !== 'genspay') topupPayInterval = setInterval(() => checkTopupPay(refId), 4000);
+    if (paymentGateway === 'genspay') document.getElementById('topupStatusRow').innerHTML = '<div class="w-2 h-2 rounded-full bg-yellow-400"></div><span class="text-xs text-zinc-400">Menunggu pembayaran — status diproses otomatis via webhook.</span>'; 
 }
 
 async function checkTopupPay(refId) {

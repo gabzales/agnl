@@ -607,8 +607,25 @@ const schemaProduct = {
 </div>
 
 <script>
-    const INITIAL_PKG_INDEX = <%= Math.max(0, (product.items || []).findIndex(it => Number(it.stok || 0) > 0)) %>;
+    <%
+    // BUG FIX (audit 19 Sep 2026): baris INITIAL_PKG_INDEX / INITIAL_PKG di
+    // sini SEBELUMNYA ditulis tanpa tag EJS pembungkus sama sekali, jadi
+    // dikirim mentah-mentah sebagai teks JS untuk BROWSER. Masalahnya:
+    // 1) `product` tidak pernah ada di scope browser (itu variabel server
+    //    EJS), jadi baris itu pasti error di console browser duluan.
+    // 2) Yang lebih fatal: baris-baris DI BAWAH sini (selPkg.label, .price,
+    //    dst) dieksekusi di SERVER saat render, dan butuh INITIAL_PKG sudah
+    //    ada sebagai variabel EJS. Karena baris const INITIAL_PKG tadi tidak
+    //    pernah masuk tag EJS, INITIAL_PKG TIDAK PERNAH benar-benar
+    //    dideklarasikan di sisi server. Akibatnya SETIAP kali halaman
+    //    /buy/:id dibuka, render EJS langsung crash "ReferenceError:
+    //    INITIAL_PKG is not defined" jadi Internal Server Error, untuk semua
+    //    produk, tanpa kecuali. Fix: hitung semuanya di sisi server (dalam
+    //    tag EJS ini), tidak perlu dikirim ke browser sama sekali karena
+    //    cuma dipakai untuk membangun object selPkg di bawah.
+    const INITIAL_PKG_INDEX = Math.max(0, (product.items || []).findIndex(it => Number(it.stok || 0) > 0));
     const INITIAL_PKG = (product.items || [])[INITIAL_PKG_INDEX] || (product.items || [])[0] || {};
+    %>
     let selPkg = {
         label: <%- JSON.stringify(INITIAL_PKG.l || '') %>,
         price: <%= (isReseller && (INITIAL_PKG.reseller_price != null)) ? Number(INITIAL_PKG.reseller_price || 0) : Number(INITIAL_PKG.p || 0) %>,

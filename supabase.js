@@ -89,8 +89,8 @@ const readDB = (filename) => {
 const readSmart = async (filename) => {
   const now = Date.now();
   const age = now - (cacheTimestamp[filename] || 0);
-  if (age < CACHE_TTL) return readDB(filename); // cache masih fresh
-  return readFresh(filename);                    // stale → ambil dari Supabase
+  if (age < CACHE_TTL) return readDB(filename);
+  return readFresh(filename);
 };
 
 const writeDB = async (filename, data) => {
@@ -335,23 +335,44 @@ const getDbStatus = async () => {
 
 // Baca langsung dari Supabase (bypass cache) — untuk operasi kritis
 // yang butuh data paling fresh, misal admin concurrent write
+// Deduplicate concurrent cold-start reads and bound slow Supabase requests.
+// Without this, several simultaneous Vercel requests could all download the
+// same JSON blob and a slow DB connection could hold a page open indefinitely.
+const freshReadInflight = new Map();
+const READ_FRESH_TIMEOUT_MS = 4500;
+
 const readFresh = async (filename) => {
   const client = getClient();
-  if (!client) return readDB(filename); // fallback ke cache jika offline
-  try {
-    const { data, error } = await client
-      .from('keyvalue_store')
-      .select('value')
-      .eq('key', filename)
-      .single();
-    if (!error && data?.value !== undefined) {
-      dbCache[filename] = data.value;
-      cacheTimestamp[filename] = Date.now(); // mark fresh
-      writeLocalBackup(filename, data.value);
-      return data.value;
+  if (!client) return readDB(filename);
+  if (freshReadInflight.has(filename)) return freshReadInflight.get(filename);
+
+  const promise = (async () => {
+    let timer = null;
+    try {
+      const controller = new AbortController();
+      timer = setTimeout(() => controller.abort(), READ_FRESH_TIMEOUT_MS);
+      const { data, error } = await client
+        .from('keyvalue_store')
+        .select('value')
+        .eq('key', filename)
+        .single()
+        .abortSignal(controller.signal);
+      if (!error && data?.value !== undefined) {
+        dbCache[filename] = data.value;
+        cacheTimestamp[filename] = Date.now();
+        writeLocalBackup(filename, data.value);
+        return data.value;
+      }
+    } catch (e) {
+      if (e?.name !== 'AbortError') console.warn(`[supabase] readFresh ${filename}:`, e?.message || e);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-  } catch {}
-  return readDB(filename);
+    return readDB(filename);
+  })();
+  freshReadInflight.set(filename, promise);
+  try { return await promise; }
+  finally { freshReadInflight.delete(filename); }
 };
 
 // Re-fetch satu file dari Supabase ke cache — backward compat

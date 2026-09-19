@@ -550,11 +550,14 @@ html.dark .badge-featured { color:#fca5a5 !important; }
             // Fallback untuk produk lama yang cuma punya 'items' tanpa 'pricingOptions'.
             // Regex sekarang tangkap unit juga (HARI/JAM), bukan cuma angka durasi.
             const pricing = p.pricingOptions || p.items?.map(i=>{
-                const m = (i.l||'').match(/(\d+)\s*(HARI|JAM|DAYS?)?/i);
-                const unit = m && /JAM/i.test(m[2]||'') ? 'h' : 'd';
-                return {days:parseInt(m?.[1]||0), unit, price:i.p};
+                const m = (i.l||'').match(/(\d+)\s*(HARI|JAM|DAYS?|THN|TH|TAHUN|YEARS?|YEAR|YR|YRS)?/i);
+                const unitWord = (m?.[2]||'').toUpperCase();
+                const unit = /JAM/.test(unitWord) ? 'h' : 'd';
+                const daysRaw = parseInt(m?.[1]||0);
+                const days = /THN|TH|TAHUN|YEAR|YEARS?|YR|YRS/.test(unitWord) ? daysRaw * 365 : daysRaw;
+                return {days, unit, price:i.p};
             }) || [];
-            const minPrice = pricing.length ? Math.min(...pricing.map(o=>o.price)) : 0;
+            const minPrice = pricing.length ? Math.min(...pricing.map(o=>Number(o.price)||0)) : 0;
             const pricingJson = JSON.stringify(pricing).replace(/"/g,'&quot;');
         %>
         <div class="prod-card fade-in" data-product-id="<%= p.id %>">
@@ -575,20 +578,25 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                 </div>
                 <div class="flex items-center gap-2 text-[10px] text-zinc-500 flex-wrap">
                     <span class="px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 font-bold uppercase"><%= p.category %></span>
-                    <% const hasLiveProvider = (pricing||[]).some(po => po?.dripstoreVariantId); %>
-                    <span class="prod-key-count <%= hasLiveProvider ? 'text-cyan-400' : ((p.keys?.length||0)>0?'text-emerald-400':'text-red-400') %>">
-                        <iconify-icon icon="<%= hasLiveProvider ? 'mdi:cloud-sync-outline' : 'mdi:key' %>" class="align-middle"></iconify-icon> <%= hasLiveProvider ? '∞ provider live' : ((p.keys?.length||0) + ' key') %>
+                    <% const hasProviderBacked = Array.isArray(p._adminStockByOption) && p._adminStockByOption.some(x => x.providerBacked); %>
+                    <% const adminStockUnknown = !!p._adminStockUnknown; %>
+                    <span class="prod-key-count <%= adminStockUnknown ? 'text-amber-400' : ((Number(p._adminStockCount||0)>0)?'text-emerald-400':'text-red-400') %>">
+                        <iconify-icon icon="<%= hasProviderBacked ? 'mdi:cloud-sync-outline' : 'mdi:key' %>" class="align-middle"></iconify-icon>
+                        <%= adminStockUnknown && Number(p._adminStockCount||0)===0 ? 'Cek stok provider' : (Number(p._adminStockCount||0) > 0 ? 'Ada · ' + Number(p._adminStockCount||0) + ' stok' : 'Habis') %>
                     </span>
                     <span><%= p.sold||0 %> terjual</span>
                     <span class="text-zinc-500 flex items-center gap-1 flex-wrap">
-                        <% pricing.forEach(po => { %>
+                        <% pricing.forEach((po, poIdx) => { %>
                         <% const poUnit = po.unit || 'd'; %>
-                        <% const poLive = !!po.dripstoreVariantId; const poCount = (p.keys||[]).filter(k => k.endsWith('='+po.days+poUnit)).length; %>
-                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold <%= poLive ? 'text-cyan-400 bg-cyan-500/10' : (poCount > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-zinc-600 bg-zinc-800/50') %>">
-                            <%= po.days %><%= poUnit %>: <%= poLive ? '∞' : poCount %>
+                        <% const info = Array.isArray(p._adminStockByOption) ? p._adminStockByOption[poIdx] : null; %>
+                        <% const poCount = info ? Number(info.stock || 0) : 0; %>
+                        <% const poUnknown = !!info?.providerBacked && !info?.providerKnown; %>
+                        <% const poLabel = (p.items?.[poIdx]?.l || `${po.days}${poUnit}`); %>
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold <%= poUnknown ? 'text-amber-400 bg-amber-500/10' : (poCount > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-zinc-600 bg-zinc-800/50') %>">
+                            <%= poLabel %>: <%= poUnknown ? '?' : poCount %>
                         </span>
                         <% }) %>
-                        <% const genericCnt = (p.keys||[]).filter(k => !k.includes('=')).length; if (genericCnt > 0) { %>
+                        <% const genericCnt = Number(p._adminGenericKeyCount||0); if (genericCnt > 0) { %>
                         <span class="px-1.5 py-0.5 rounded text-[9px] font-bold text-yellow-400 bg-yellow-500/10">G: <%= genericCnt %></span>
                         <% } %>
                     </span>
@@ -604,7 +612,7 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                 <button
                     data-pid="<%= p.id %>"
                     data-name="<%= (p.name||'').replace(/\"/g,'&quot;') %>"
-                    data-count="<%= p.keys?.length||0 %>"
+                    data-count="<%= p._adminUsableKeyCount || 0 %>"
                     onclick="openAddKeysModal(this.dataset.pid, this.dataset.name, parseInt(this.dataset.count))"
                     class="btn-success py-1 px-2 text-[10px]">
                     <iconify-icon icon="mdi:key-plus"></iconify-icon> Key
@@ -1079,7 +1087,7 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                 </div>
                 <div class="mt-3 pt-3 border-t border-white/5">
                     <div class="text-xs font-bold text-emerald-400 mb-3 flex items-center gap-2">
-                        <span class="agha-social-icon agha-wa" aria-hidden="true"></span> Grup Buyer VIP
+                        <iconify-icon icon="mdi:whatsapp"></iconify-icon> Grup Buyer VIP
                     </div>
                     <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div>
@@ -2779,7 +2787,7 @@ async function checkDripstoreBalance() {
 async function scanDripstoreAvailability() {
     const box = document.getElementById('dripstoreAvailabilityResult');
     box.className = 'text-[11px] p-2.5 rounded-lg bg-white/5 text-zinc-400';
-    box.textContent = 'Mengecek saldo provider + harga setiap variant yang sudah di-mapping...';
+    box.textContent = 'Mengecek saldo provider + kapasitas per variant + gabungan stok lokal...';
     box.classList.remove('hidden');
     try {
         const r = await fetch('/admin/dripstore/availability');
@@ -2790,12 +2798,15 @@ async function scanDripstoreAvailability() {
         const unavailable = rows.filter(x => x.available === false).length;
         const unknown = rows.filter(x => x.available === null).length;
         box.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/5 text-zinc-300 border border-emerald-500/20';
-        const head = `<div class="font-bold text-emerald-300 mb-2">Saldo provider: $${Number(d.balance||0).toFixed(2)} • ${available} tersedia • ${unavailable} tidak cukup • ${unknown} harga belum terbaca</div>`;
+        const head = `<div class="font-bold text-emerald-300 mb-2">Saldo provider: $${d.balance == null ? '?' : Number(d.balance).toFixed(2)} • ${available} tersedia • ${unavailable} tidak cukup • ${unknown} belum terbaca</div>`;
         const body = rows.slice(0,80).map(x => {
             const label = `${x.productName} — ${x.days}${x.unit==='h'?' jam':' hari'}`;
             const price = x.cost == null ? 'harga ?' : `$${Number(x.cost).toFixed(2)}`;
+            const cap = x.providerCapacity == null ? 'kapasitas ?' : `provider ${x.providerCapacity}`;
+            const local = Number(x.localStock || 0);
+            const total = x.totalStock == null ? '?' : Number(x.totalStock);
             const state = x.available === true ? '<span class="text-emerald-300">BISA</span>' : x.available === false ? '<span class="text-red-300">TIDAK CUKUP</span>' : '<span class="text-amber-300">CEK MANUAL</span>';
-            return `<div class="flex items-center justify-between gap-2 py-1 border-b border-white/5"><span class="truncate">${label}</span><span class="shrink-0">${price} • ${state}</span></div>`;
+            return `<div class="flex items-center justify-between gap-2 py-1 border-b border-white/5"><span class="truncate">${label}</span><span class="shrink-0">${price} • lokal ${local} + ${cap} = ${total} total • ${state}</span></div>`;
         }).join('');
         box.innerHTML = head + (body || '<div>Belum ada variant yang ter-mapping.</div>');
     } catch (err) {

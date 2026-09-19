@@ -1,5 +1,5 @@
 const fs = require('fs');
-const ts = require('/opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/typescript.js');
+const ts = require('typescript');
 const vm = require('vm');
 
 const source = fs.readFileSync(__dirname + '/server.js', 'utf8');

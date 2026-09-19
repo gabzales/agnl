@@ -60,25 +60,6 @@
            pakai var(--bg-main) dst otomatis ikut berubah tanpa perlu
            di-cari-ganti satu-satu di setiap file.
            ═══════════════════════════════ */
-        /* SOCIAL ICONS — local SVG masks, independent from Iconify/CDN.
-           WhatsApp + Telegram must never disappear just because the external
-           Iconify runtime/API is blocked, slow, or unavailable on mobile. */
-        .agha-social-icon {
-            display:inline-block;
-            width:1.25em; height:1.25em;
-            flex:0 0 auto;
-            background:currentColor;
-            -webkit-mask-repeat:no-repeat; mask-repeat:no-repeat;
-            -webkit-mask-position:center; mask-position:center;
-            -webkit-mask-size:contain; mask-size:contain;
-        }
-        .agha-social-icon.agha-wa {
-            -webkit-mask-image:url('/icons/whatsapp.svg'); mask-image:url('/icons/whatsapp.svg');
-        }
-        .agha-social-icon.agha-tg {
-            -webkit-mask-image:url('/icons/telegram.svg'); mask-image:url('/icons/telegram.svg');
-        }
-
         :root {
             --bg-main:    #ffffff;
             --bg-section: #f8f8f9;
@@ -693,7 +674,7 @@
                 <div class="my-1" style="border-top:1px solid var(--border);"></div>
                 <% if (settings?.contact?.whatsapp) { %>
                 <a href="https://wa.me/<%= (settings.contact.whatsapp||'').replace(/\D/g,'') %>" target="_blank" onclick="closeMenu()" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm" style="color:var(--text-2);" onmouseover="this.style.color='var(--text-1)';this.style.background='var(--bg-hover)'" onmouseout="this.style.color='var(--text-2)';this.style.background='transparent'">
-                    <span class="agha-social-icon agha-wa" style="color:var(--brand-wa);font-size:18px;" aria-hidden="true"></span> Hubungi CS (WA)
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="flex-shrink:0;display:block;"><path d="M6.62 10.79a15.46 15.46 0 0 0 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1C11.72 21 3 12.28 3 2.99 3 2.44 3.45 2 4 2h3.5c.55 0 1 .44 1 1 0 1.24.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2Z"/></svg> Hubungi CS (WA)
                 </a>
                 <% } %>
                 <% if (settings?.contact?.waChannel) { %>
@@ -703,7 +684,7 @@
                 <% } %>
                 <% if (settings?.contact?.telegram) { %>
                 <a href="https://t.me/<%= settings.contact.telegram %>" target="_blank" onclick="closeMenu()" class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm" style="color:var(--text-2);" onmouseover="this.style.color='var(--text-1)';this.style.background='var(--bg-hover)'" onmouseout="this.style.color='var(--text-2)';this.style.background='transparent'">
-                    <span class="agha-social-icon agha-tg" style="color:#f87171;font-size:18px;" aria-hidden="true"></span> Telegram
+                    <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="flex-shrink:0;display:block;"><path d="M21.5 3.5 2.9 10.67c-.66.25-.64 1.19.03 1.4l4.78 1.5 1.84 5.58c.2.61.96.8 1.42.35l2.67-2.58 4.95 3.64c.54.4 1.31.1 1.45-.56l2.95-15.17c.13-.68-.52-1.16-1.14-.93ZM9.1 13.15l9.31-5.72-7.1 7.04-.27 2.55-1.94-3.87Z"/></svg> Telegram
                 </a>
                 <% } %>
             </div>
@@ -946,7 +927,7 @@
     // ─── INIT ───
     document.addEventListener('DOMContentLoaded', () => {
         updateCartBadge();
-        setTimeout(() => { loadPurchaseNotifs(); setInterval(loadPurchaseNotifs, 30000); }, 2000);
+        setTimeout(loadPurchaseNotifs, 2000);
     });
     document.addEventListener('keydown', e => { if (e.key==='Escape') closeAll(); });
     document.addEventListener('click', e => {
