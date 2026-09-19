@@ -70,9 +70,9 @@ assert(hybrid.stockByOption[1].localStock===1 && hybrid.stockByOption[1].provide
 assert(hybrid.stockCount===3,'product stock uses max option, not sum');
 
 const liveUnmapped = ctx.getOptionStockView({name:'XREG APK MOD',keys:['AAA=3d']},{days:3,unit:'d',dripstoreVariantId:null},snapshot,'live',true);
-assert(liveUnmapped.stock===1,'live resolves via current provider catalog');
+assert(liveUnmapped.stock===2,'live combines local 1 with provider 1');
 const liveMissing = ctx.getOptionStockView({name:'UNKNOWN PRODUCT',keys:['AAA=3d']},{days:3,unit:'d',dripstoreVariantId:null},snapshot,'live',true);
-assert(liveMissing.stock===0 && liveMissing.providerBacked===true && liveMissing.providerKnown===false,'live unmapped never exposes local stock');
+assert(liveMissing.stock===1 && liveMissing.localStock===1 && liveMissing.providerBacked===true && liveMissing.providerKnown===false,'unmapped provider still exposes real local stock');
 
 const units = {name:'T',keys:['H=3h','D=3d'],pricingOptions:[{days:3,unit:'h',price:1},{days:3,unit:'d',price:2}]};
 assert(ctx.getLocalOptionStock(units,units.pricingOptions[0])===1,'hour local stock exact');

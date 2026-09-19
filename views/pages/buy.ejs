@@ -285,14 +285,15 @@ const schemaProduct = {
         </div>
         <div class="grid grid-cols-2 gap-2" id="pkg-grid">
             <% if (product.items && product.items.length > 0) { %>
+                <% const firstAvailableIndex = product.items.findIndex(it => Number(it.stok || 0) > 0); %>
                 <% product.items.forEach((item, idx) => { %>
-                <% const itemStock = (item.stok || 0); %>
-                <% const isOutOfStock = itemStock === 0; %>
+                <% const itemStock = Math.max(0, Number(item.stok || 0)); %>
+                <% const isOutOfStock = itemStock <= 0; %>
                 <% const displayPrice = (isReseller && item.reseller_price) ? item.reseller_price : item.p; %>
-                <label class="pkg-option-label" style="<%= isOutOfStock ? 'opacity:0.5;cursor:not-allowed;' : '' %>">
-                    <input type="radio" name="pkg" value="<%= idx %>"
-                           onchange="selectPkg('<%= item.l %>', <%= displayPrice %>, <%= itemStock %>, <%= item.durationValue||'null' %>, '<%= item.durationUnit||'d' %>')"
-                           <%= idx===0 && !isOutOfStock ? 'checked' : '' %>
+                <label id="pkg-label-<%= idx %>" class="pkg-option-label" style="<%= isOutOfStock ? 'opacity:0.5;cursor:not-allowed;' : '' %>">
+                    <input id="pkg-radio-<%= idx %>" type="radio" name="pkg" value="<%= idx %>"
+                           onchange="selectPkg(<%- JSON.stringify(item.l || '') %>, <%= Number(displayPrice || 0) %>, <%= itemStock %>, <%= item.durationValue != null ? Number(item.durationValue) : 'null' %>, <%- JSON.stringify(item.durationUnit || 'd') %>)"
+                           <%= idx===firstAvailableIndex ? 'checked' : '' %>
                            <%= isOutOfStock ? 'disabled' : '' %>>
                     <div class="pkg-card rounded-2xl p-3">
                         <div class="text-xs font-semibold text-white/70 mb-0.5">
@@ -300,6 +301,28 @@ const schemaProduct = {
                         </div>
                         <div class="text-sm font-black <%= isReseller && item.reseller_price ? 'text-yellow-400' : 'text-white' %>">
                             Rp <%= displayPrice.toLocaleString('id-ID') %>
+                        </div>
+                        <div id="pkg-stock-<%= idx %>" class="text-[10px] font-semibold mt-1 <%= isOutOfStock ? (item.providerBacked && !item.providerStockKnown ? 'text-amber-500' : 'text-zinc-500') : 'text-emerald-400' %>">
+                            <% if (itemStock > 0) { %>
+                                <%= itemStock %> stok
+                            <% } else if (item.providerBacked && !item.providerStockKnown) { %>
+                                Cek stok provider
+                            <% } else { %>
+                                Habis
+                            <% } %>
+                        </div>
+                        <div id="pkg-source-<%= idx %>" class="text-[9px] text-zinc-500 mt-0.5">
+                            <% const localQty = Math.max(0, Number(item.localStock || 0)); %>
+                            <% const providerQty = Math.max(0, Number(item.providerStock || 0)); %>
+                            <% if (localQty > 0 && providerQty > 0) { %>
+                                Lokal <%= localQty %> • DripStore <%= providerQty %>
+                            <% } else if (localQty > 0) { %>
+                                Stok Lokal AGHA: <%= localQty %>
+                            <% } else if (providerQty > 0) { %>
+                                DripStore: <%= providerQty %>
+                            <% } else if (item.providerBacked && !item.providerStockKnown) { %>
+                                Stok lokal: 0 • Provider belum diverifikasi
+                            <% } %>
                         </div>
                         <% if (isReseller && item.reseller_price) { %>
                             <div class="text-[9px] text-zinc-500 line-through">Rp <%= item.p.toLocaleString('id-ID') %></div>
@@ -313,6 +336,10 @@ const schemaProduct = {
             <% } %>
         </div>
     </div>
+
+    <% const summaryAvailableIndex = Math.max(0, (product.items || []).findIndex(it => Number(it.stok || 0) > 0)); %>
+    <% const summaryItem = (product.items || [])[summaryAvailableIndex] || (product.items || [])[0] || {}; %>
+    <% const summaryPrice = (isReseller && summaryItem.reseller_price != null) ? Number(summaryItem.reseller_price || 0) : Number(summaryItem.p || 0); %>
 
     <!-- ── ORDER FORM ── -->
     <div class="card rounded-xl p-5 space-y-4 fade-in-up">
@@ -364,7 +391,7 @@ const schemaProduct = {
             </div>
             <div class="flex justify-between text-white/40">
                 <span>Durasi</span>
-                <span class="text-white font-semibold" id="selectedLabel"><%= product.items?.[0]?.l || '-' %></span>
+                <span class="text-white font-semibold" id="selectedLabel"><%= summaryItem.l || '-' %></span>
             </div>
             <div id="voucherRow" class="hidden flex justify-between text-white/40">
                 <span>Diskon</span>
@@ -374,7 +401,7 @@ const schemaProduct = {
             <div class="flex justify-between items-center">
                 <span class="text-white/50 text-sm font-semibold">Total</span>
                 <span class="text-2xl font-display font-black text-red-300" id="totalPrice">
-                    Rp <%= ((isReseller && product.items?.[0]?.reseller_price) ? product.items[0].reseller_price : (product.items?.[0]?.p||0)).toLocaleString('id-ID') %>
+                    Rp <%= summaryPrice.toLocaleString('id-ID') %>
                 </span>
             </div>
             <div id="originalPriceShow" class="hidden text-right text-[10px] text-zinc-500 line-through"></div>
@@ -390,23 +417,26 @@ const schemaProduct = {
         <% } %>
 
         <!-- KONFIRMASI / ORDER BUTTON -->
-        <% const hasStock = (product.stockCount || 0) > 0 || product.liveProvider; %>
-        <% if (hasStock) { %>
-            <button id="submitBtn" onclick="handleOrder()"
-                class="btn-primary w-full py-4 text-sm font-black text-white flex items-center justify-center gap-2" style="border-radius:4px;">
+        <% const hasStock = (product.stockCount || 0) > 0; %>
+        <% const providerStockUnknown = !!product.providerStockUnknown; %>
+        <button id="submitBtn" onclick="handleOrder()"
+            class="btn-primary w-full py-4 text-sm font-black text-white flex items-center justify-center gap-2" style="border-radius:4px;" <%= hasStock ? '' : 'disabled' %>>
+            <% if (hasStock) { %>
                 <% if (isReseller) { %>
                 <iconify-icon icon="mdi:wallet" class="text-lg"></iconify-icon>Beli dengan Saldo
                 <% } else { %>
                 <iconify-icon icon="solar:bag-check-bold" class="text-lg"></iconify-icon>Konfirmasi
                 <% } %>
-            </button>
+            <% } else if (providerStockUnknown) { %>
+                <iconify-icon icon="mdi:cloud-sync-outline" class="text-lg"></iconify-icon>Cek stok provider...
+            <% } else { %>
+                <iconify-icon icon="solar:close-circle-bold"></iconify-icon>Stok Habis
+            <% } %>
+        </button>
+        <% if (hasStock) { %>
             <button onclick="addProductToCart()"
                 class="btn-ghost w-full py-3 rounded-xl text-sm font-medium text-white/60 flex items-center justify-center gap-2">
                 <iconify-icon icon="solar:cart-plus-bold" class="text-base text-red-400"></iconify-icon>Simpan ke Keranjang
-            </button>
-        <% } else { %>
-            <button disabled class="w-full py-4 text-sm font-bold flex items-center justify-center gap-2 cursor-not-allowed" style="border-radius:4px;background:var(--bg-hover);color:var(--text-3);border:1px solid var(--border);">
-                <iconify-icon icon="solar:close-circle-bold"></iconify-icon>Stok Habis
             </button>
         <% } %>
 
@@ -420,7 +450,7 @@ const schemaProduct = {
             <a href="<%= settings.contact.waChannel %>"
                target="_blank" rel="noopener"
                class="flex-1 btn-ghost py-3 rounded-xl text-white/60 text-xs font-medium flex items-center justify-center gap-1.5">
-                <span class="agha-social-icon agha-wa text-sm text-green-400" aria-hidden="true"></span>Channel WA
+                <iconify-icon icon="mdi:whatsapp" class="text-sm text-green-400"></iconify-icon>Channel WA
             </a>
             <% } %>
         </div>
@@ -562,7 +592,7 @@ const schemaProduct = {
                         <a id="waConfirmBtn" href="#" target="_blank"
                            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white"
                            style="background:rgba(34,197,94,.2);border:1px solid rgba(34,197,94,.35)">
-                            <span class="agha-social-icon agha-wa text-green-400 text-sm" aria-hidden="true"></span> WhatsApp
+                            <iconify-icon icon="mdi:whatsapp" class="text-green-400 text-sm"></iconify-icon> WhatsApp
                         </a>
                     </div>
                 </div>
@@ -577,20 +607,43 @@ const schemaProduct = {
 </div>
 
 <script>
-    let selPkg = { label:'<%= (product.items?.[0]?.l||"") %>', price:<%= (isReseller && product.items?.[0]?.reseller_price) ? product.items[0].reseller_price : (product.items?.[0]?.p||0) %>, durationValue: <%= product.items?.[0]?.durationValue||'null' %>, durationUnit: '<%= product.items?.[0]?.durationUnit||'d' %>' };
+    const INITIAL_PKG_INDEX = <%= Math.max(0, (product.items || []).findIndex(it => Number(it.stok || 0) > 0)) %>;
+    const INITIAL_PKG = (product.items || [])[INITIAL_PKG_INDEX] || (product.items || [])[0] || {};
+    let selPkg = {
+        label: <%- JSON.stringify(INITIAL_PKG.l || '') %>,
+        price: <%= (isReseller && (INITIAL_PKG.reseller_price != null)) ? Number(INITIAL_PKG.reseller_price || 0) : Number(INITIAL_PKG.p || 0) %>,
+        stock: <%= Number(INITIAL_PKG.stok || 0) %>,
+        durationValue: <%= INITIAL_PKG.durationValue != null ? Number(INITIAL_PKG.durationValue) : 'null' %>,
+        durationUnit: <%- JSON.stringify(INITIAL_PKG.durationUnit || 'd') %>
+    };
     let myRating = 0;
     let payInterval = null;
     let currentRefId = null;
     let appliedVoucher = null;   // { code, discount, finalPrice }
-    const PID   = '<%= product.id %>';
-    const PNAME = '<%= product.name %>';
+    const PID   = <%- JSON.stringify(product.id) %>;
+    const PNAME = <%- JSON.stringify(product.name) %>;
     const IS_RESELLER = <%= isReseller ? 'true' : 'false' %>;
 
+    function syncOrderButton() {
+        const btn = document.getElementById('submitBtn');
+        if (!btn) return;
+        const stock = Number(selPkg.stock || 0);
+        btn.disabled = stock <= 0;
+        if (stock <= 0) {
+            btn.classList.add('cursor-not-allowed');
+            btn.style.opacity = '0.55';
+        } else {
+            btn.classList.remove('cursor-not-allowed');
+            btn.style.opacity = '';
+        }
+    }
+
     function selectPkg(label, price, stock, durationValue, durationUnit) {
-        selPkg = { label, price, stock, durationValue, durationUnit: durationUnit || 'd' };
+        selPkg = { label, price, stock: Number(stock || 0), durationValue, durationUnit: durationUnit || 'd' };
         document.getElementById('selectedLabel').textContent = label;
         clearVoucher();
         updateTotalDisplay(price);
+        syncOrderButton();
     }
 
     function updateTotalDisplay(basePrice) {
@@ -611,6 +664,94 @@ const schemaProduct = {
             if (vRow) { vRow.classList.add('hidden'); vRow.classList.remove('flex'); }
         }
     }
+
+    syncOrderButton();
+
+    async function refreshProviderStock() {
+        // Untuk produk yang memakai provider, lakukan satu refresh ringan setelah
+        // render supaya angka kartu tidak tertinggal dari snapshot server saat
+        // halaman dibuka. Endpoint sendiri memakai cache TTL pendek sehingga
+        // ini tidak otomatis berarti satu request provider per kartu.
+        const shouldRefresh = <%= (product.items || []).some(it => it.providerBacked) ? 'true' : 'false' %>;
+        if (!shouldRefresh) return;
+        try {
+            const res = await fetch('/api/products/' + encodeURIComponent(PID) + '/stock', { cache: 'no-store' });
+            if (!res.ok) return;
+            const data = await res.json();
+            if (!data?.success || !Array.isArray(data.items)) return;
+
+            const radios = Array.from(document.querySelectorAll('input[name=\"pkg\"]'));
+            let currentIndex = radios.findIndex(r => r.checked);
+            let firstAvailable = -1;
+            radios.forEach((radio, idx) => {
+                const item = data.items[idx];
+                const label = document.getElementById('pkg-label-' + idx);
+                const status = document.getElementById('pkg-stock-' + idx);
+                const source = document.getElementById('pkg-source-' + idx);
+                if (!radio || !label || !status) return;
+
+                // Backend harus mengembalikan satu entry per pricing option.
+                // Kalau bentuk response tidak sejajar (mis. data produk berubah
+                // saat tab masih terbuka), jangan biarkan kartu lama tetap aktif.
+                if (!item) {
+                    radio.disabled = true;
+                    label.style.opacity = '0.5';
+                    label.style.cursor = 'not-allowed';
+                    status.classList.remove('text-emerald-400','text-zinc-500');
+                    status.classList.add('text-amber-500');
+                    status.textContent = 'Cek stok provider';
+                    if (radio.checked) { radio.checked = false; currentIndex = -1; }
+                    return;
+                }
+
+                const stock = Math.max(0, Number(item.stock || 0));
+                radio.disabled = stock <= 0;
+                label.style.opacity = stock <= 0 ? '0.5' : '';
+                label.style.cursor = stock <= 0 ? 'not-allowed' : '';
+                status.classList.remove('text-emerald-400','text-zinc-500','text-amber-500');
+                const localQty = Math.max(0, Number(item.localStock || 0));
+                const providerQty = Math.max(0, Number(item.providerStock || 0));
+                if (source) {
+                    if (localQty > 0 && providerQty > 0) source.textContent = 'Lokal ' + localQty + ' • DripStore ' + providerQty;
+                    else if (localQty > 0) source.textContent = 'Stok Lokal AGHA: ' + localQty;
+                    else if (providerQty > 0) source.textContent = 'DripStore: ' + providerQty;
+                    else if (item.providerBacked && !item.providerKnown) source.textContent = 'Stok lokal: 0 • Provider belum diverifikasi';
+                    else source.textContent = '';
+                }
+                if (stock > 0) {
+                    status.classList.add('text-emerald-400');
+                    status.textContent = stock + ' stok';
+                    if (firstAvailable === -1) firstAvailable = idx;
+                } else if (item.providerBacked && !item.providerKnown) {
+                    status.classList.add('text-amber-500');
+                    status.textContent = 'Cek stok provider';
+                } else {
+                    status.classList.add('text-zinc-500');
+                    status.textContent = 'Habis';
+                }
+                if (radio.checked) {
+                    if (stock <= 0) {
+                        radio.checked = false;
+                        currentIndex = -1;
+                    } else {
+                        // Sinkronkan state JS dengan stok provider terbaru.
+                        // Tanpa ini tombol bisa tetap memakai angka stok dari
+                        // render awal walaupun endpoint baru saja memperbarui card.
+                        selPkg.stock = stock;
+                    }
+                }
+            });
+
+            if (currentIndex < 0 && firstAvailable >= 0) {
+                const first = document.getElementById('pkg-radio-' + firstAvailable);
+                if (first && !first.disabled) first.click();
+            } else {
+                syncOrderButton();
+            }
+        } catch (_) { /* render awal tetap dipertahankan */ }
+    }
+
+    setTimeout(refreshProviderStock, 100);
 
     async function applyVoucher() {
         const code = document.getElementById('voucherInput').value.trim();
@@ -650,11 +791,13 @@ const schemaProduct = {
     }
 
     function addProductToCart() {
+        if (Number(selPkg.stock || 0) <= 0) { showToast('Varian ini sedang habis.','error'); return; }
         if (!selPkg.price) { showToast('Pilih paket dulu!','error'); return; }
         addToCart({ productId:PID, name:PNAME, duration:selPkg.label, price:selPkg.price, image:'<%= product.image||"" %>' });
     }
 
     async function handleOrder() {
+        if (Number(selPkg.stock || 0) <= 0) { showToast('Varian ini sedang habis. Silakan pilih durasi lain.','error'); return; }
         if (IS_RESELLER) return handleWalletOrder();
 
         const name = document.getElementById('customerName').value.trim();
@@ -688,12 +831,15 @@ const schemaProduct = {
             }
         } catch(e) { showToast('Koneksi error: ' + e.message,'error'); }
         finally {
-            btn.disabled = false;
-            btn.innerHTML = '<iconify-icon icon="solar:bag-check-bold" class="text-lg"></iconify-icon> Konfirmasi';
+            syncOrderButton();
+            btn.innerHTML = IS_RESELLER
+                ? '<iconify-icon icon="mdi:wallet" class="text-lg"></iconify-icon> Beli dengan Saldo'
+                : '<iconify-icon icon="solar:bag-check-bold" class="text-lg"></iconify-icon> Konfirmasi';
         }
     }
 
     async function handleWalletOrder() {
+        if (Number(selPkg.stock || 0) <= 0) { showToast('Varian ini sedang habis. Silakan pilih durasi lain.','error'); return; }
         const name = document.getElementById('customerName').value.trim();
         const wa    = document.getElementById('waInput').value.trim().replace(/[\s\-()]/g,'');
         if (!wa)    { showToast('Masukkan nomor WhatsApp!','error'); document.getElementById('waInput').focus(); return; }
@@ -729,13 +875,13 @@ const schemaProduct = {
             }
         } catch(e) { showToast('Koneksi error: ' + e.message,'error'); }
         finally {
-            btn.disabled = false;
+            syncOrderButton();
             btn.innerHTML = '<iconify-icon icon="mdi:wallet" class="text-lg"></iconify-icon> Beli dengan Saldo';
         }
     }
 
     function showPaymentModal(data) {
-        const { qrString, orderCode, refId, isStatic, qrisStaticImage, totalPayment, expiredAt } = data;
+        const { qrString, orderCode, refId, isStatic, qrisStaticImage, totalPayment, expiredAt, paymentGateway } = data;
         currentRefId = refId;
 
         // Tampilkan modal
@@ -775,7 +921,7 @@ const schemaProduct = {
                          style="display:block;width:210px;height:210px;border-radius:4px;"
                          onerror="qrFallback('${encodeURIComponent(qrString)}')">
                 </div>`;
-            document.getElementById('recheckBtn').classList.remove('hidden');
+            if (paymentGateway !== 'genspay') document.getElementById('recheckBtn').classList.remove('hidden');
         } else {
             wrap.innerHTML = `
                 <div class="text-center py-4">
@@ -790,9 +936,15 @@ const schemaProduct = {
             startTimer(expiredAt);
         }
 
-        // --- Auto polling status ---
-        if (refId && !isStatic) {
+        // GensPay: status diterima server lewat webhook, TANPA polling.
+        // Pakasir: polling lama tetap dipakai karena gateway ini masih mendukungnya.
+        if (refId && !isStatic && paymentGateway !== 'genspay') {
             payInterval = setInterval(() => checkPay(refId), 4000);
+        }
+        if (paymentGateway === 'genspay') {
+            document.getElementById('payStatusRow').innerHTML =
+                '<div class="w-2 h-2 rounded-full bg-yellow-400"></div>' +
+                '<span class="text-xs text-zinc-400">Menunggu pembayaran — status diproses otomatis via webhook.</span>';
         }
     }
 
