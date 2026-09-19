@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node",
+      "config": { "includeFiles": ["views/**", "public/**"] }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/uploads/(.*)",
+      "headers": { "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400" },
+      "continue": true
+    },
+    { "src": "/(.*)", "dest": "server.js" }
+  ]
+}

@@ -1,0 +1,111 @@
+<%
+const pageTitle = 'Top Pembeli';
+%>
+
+<style>
+  /* FIX (dark mode, 23 Agu 2026): sebelumnya semua warna di halaman ini
+     hardcode (Tailwind text-zinc-900, hex #f8f8f9 dst) -- tidak ikut
+     berubah sama sekali kalau dark mode diaktifkan dari menu hamburger.
+     Diganti pakai var(--bg-card)/var(--text-1) dkk yang sudah didefinisikan
+     di layout.ejs (termasuk override html.dark), supaya halaman ini
+     otomatis ikut tema tanpa logic tambahan. */
+  .lb-podium { display:flex; align-items:flex-end; justify-content:center; gap:14px; padding:0 8px 24px; }
+  .lb-rank-item { display:flex; flex-direction:column; align-items:center; flex:1; max-width:140px; }
+  .lb-avatar {
+    border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-weight:800; color:#fff; position:relative; background:var(--red, #dc2626);
+    border:3px solid var(--red, #dc2626);
+  }
+  .lb-podium-base {
+    width:100%; border-radius:12px 12px 0 0; display:flex; flex-direction:column;
+    align-items:center; justify-content:flex-start; padding:14px 8px 16px;
+    background:var(--bg-section); border:1px solid var(--border); margin-top:10px;
+  }
+  .lb-rank-1 .lb-podium-base { height:110px; }
+  .lb-rank-2 .lb-podium-base, .lb-rank-3 .lb-podium-base { height:84px; }
+  .lb-rank-row {
+    display:flex; align-items:center; gap:10px; padding:12px; background:var(--bg-section);
+    border-radius:12px; margin-bottom:8px; border:1px solid var(--border);
+  }
+  .lb-rank-badge {
+    width:28px; height:28px; border-radius:50%; background:var(--bg-card); border:1px solid var(--border);
+    display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:800;
+    color:var(--text-2); flex-shrink:0;
+  }
+</style>
+
+<!-- NAVBAR -->
+<nav class="fixed top-0 left-0 right-0 z-50" style="background:var(--bg-main);border-bottom:1px solid var(--border);backdrop-filter:blur(10px);">
+  <div class="max-w-2xl mx-auto px-4 h-14 flex items-center justify-between">
+    <a href="/" class="flex items-center gap-2" style="text-decoration:none;">
+      <img src="<%= settings?.logoUrl || '/uploads/logo-main.png' %>" alt="Logo" style="height:36px;width:36px;object-fit:contain;border-radius:8px;">
+      <%- include('../partials/logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '15px' }) %>
+    </a>
+    <a href="/" class="text-xs font-semibold transition-colors" style="color:var(--text-2);">
+      <iconify-icon icon="mdi:arrow-left" style="vertical-align:-2px;"></iconify-icon> Kembali
+    </a>
+  </div>
+</nav>
+
+<div class="min-h-screen pt-20 pb-16 px-4" style="background:var(--bg-main);">
+<div class="max-w-2xl mx-auto">
+
+  <div class="text-center mb-8">
+    <h1 class="text-xl font-black" style="color:var(--text-1);">Top Pembeli</h1>
+    <p class="text-xs mt-1" style="color:var(--text-2);">Peringkat pembeli berdasarkan jumlah transaksi</p>
+  </div>
+
+  <% const top3 = leaderboard.slice(0,3); const rest = leaderboard.slice(3); %>
+
+  <% if (top3.length > 0) { %>
+  <div class="lb-podium">
+    <% [top3[1], top3[0], top3[2]].forEach((entry, idx) => { if (!entry) return;
+       const rank = idx === 1 ? 1 : (idx === 0 ? 2 : 3);
+       const size = rank === 1 ? 76 : 58;
+       const initial = (entry.username||'?').charAt(0).toUpperCase();
+    %>
+    <div class="lb-rank-item lb-rank-<%= rank %>">
+      <div class="lb-avatar" style="width:<%= size %>px;height:<%= size %>px;font-size:<%= Math.round(size/2.6) %>px;">
+        <% if (entry.photo) { %>
+        <img src="<%= entry.photo %>" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">
+        <% } else { %><%= initial %><% } %>
+        <% if (rank === 1) { %>
+        <iconify-icon icon="mdi:crown" style="position:absolute;top:-20px;left:50%;transform:translateX(-50%);font-size:20px;color:#f59e0b;"></iconify-icon>
+        <% } %>
+      </div>
+      <div class="text-xs font-bold mt-2 truncate" style="max-width:100px;color:var(--text-1);"><%= entry.username %></div>
+      <div class="text-[10px]" style="color:var(--text-2);"><%= entry.totalTransactions %>x beli</div>
+      <div class="lb-podium-base">
+        <div class="lb-rank-badge">#<%= rank %></div>
+      </div>
+    </div>
+    <% }) %>
+  </div>
+  <% } %>
+
+  <% if (rest.length > 0) { %>
+  <div>
+    <% rest.forEach(entry => { %>
+    <div class="lb-rank-row">
+      <div class="lb-rank-badge">#<%= entry.rank %></div>
+      <div style="width:34px;height:34px;border-radius:50%;background:var(--bg-card);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--text-2);flex-shrink:0;overflow:hidden;">
+        <% if (entry.photo) { %>
+        <img src="<%= entry.photo %>" style="width:100%;height:100%;object-fit:cover;">
+        <% } else { %><%= (entry.username||'?').charAt(0).toUpperCase() %><% } %>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div class="text-xs font-bold truncate" style="color:var(--text-1);"><%= entry.username %></div>
+        <div class="text-[10px]" style="color:var(--text-2);"><%= entry.totalTransactions %>x transaksi</div>
+      </div>
+      <div class="text-xs font-black whitespace-nowrap" style="color:var(--red);">Rp <%= (entry.totalSpent||0).toLocaleString('id-ID') %></div>
+    </div>
+    <% }) %>
+  </div>
+  <% } %>
+
+  <% if (leaderboard.length === 0) { %>
+  <div class="text-center py-16 text-sm" style="color:var(--text-3);">Belum ada data pembeli</div>
+  <% } %>
+
+</div>
+</div>
