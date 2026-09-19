@@ -711,8 +711,20 @@ function exportKeysToFile() {
   a.download = `keys-${safeName || 'produk'}-${keys.length}.txt`;
   document.body.appendChild(a);
   a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  // BUG FIX (audit 19 Sep 2026): sebelumnya a.remove() + URL.revokeObjectURL(url)
+  // dipanggil LANGSUNG setelah a.click(), di baris yang sama tanpa jeda. Di
+  // banyak browser Android (termasuk WebView/Samsung Internet/Chrome mobile),
+  // a.click() cuma MEMICU proses download -- browser belum tentu sudah selesai
+  // (atau bahkan belum mulai) benar-benar membaca blob-nya saat baris berikutnya
+  // langsung dieksekusi. Kalau URL.revokeObjectURL() keburu jalan duluan sebelum
+  // browser sempat baca, blob URL-nya sudah "mati" pas mau dipakai -> muncul
+  // error "File Anda tidak dapat diakses" / ERR_FILE_NOT_FOUND pada blob:...
+  // persis yang dilaporkan Mul. Fix: kasih jeda (setTimeout) sebelum cleanup,
+  // supaya browser punya waktu benar-benar mulai proses simpan filenya dulu.
+  setTimeout(() => {
+    a.remove();
+    URL.revokeObjectURL(url);
+  }, 1000);
   showToast(`${keys.length} key berhasil di-export`, 'success');
 }
 
