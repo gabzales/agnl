@@ -1717,10 +1717,7 @@ async function getDripstoreCatalogSnapshot(settings) {
   if (_dripstoreCatalogInflight) {
     return Promise.race([
       _dripstoreCatalogInflight,
-      // Cache yang sudah melewati TTL TIDAK boleh dipakai sebagai fallback.
-      // Kalau refresh supplier belum selesai, fail-closed supaya frontend
-      // menampilkan `Cek stok provider`, bukan stok lama yang bisa salah.
-      new Promise(resolve => setTimeout(() => resolve({ balance: null, products: null, stale: true }), DRIPSTORE_CATALOG_TIMEOUT_MS))
+      new Promise(resolve => setTimeout(() => resolve(_dripstoreCatalogCache || { balance: null, products: null }), DRIPSTORE_CATALOG_TIMEOUT_MS))
     ]);
   }
 
@@ -1834,18 +1831,6 @@ function resolveDripstoreVariantFromCatalog(productsResp, productName, opt) {
 
 function findDripstoreVariantForOption(snapshot, productName, opt) {
   if (!snapshot?.products || !productName || !opt) return null;
-
-  // Prefer the explicitly auto-mapped Variant ID, but NEVER trust it blindly:
-  // the current provider catalog must still contain that ID and its current
-  // price. This avoids the old bug where a perfectly valid mapping became
-  // invisible because the provider's product/variant name formatting changed
-  // (for example `PATO BLUE — 7 hari` vs `7 hari`).
-  const mappedId = String(opt?.dripstoreVariantId || '').trim();
-  if (mappedId) {
-    const mappedStock = getDripstoreVirtualStock(snapshot, mappedId);
-    if (mappedStock !== null) return { variantId: mappedId, stock: mappedStock };
-  }
-
   const variantId = resolveDripstoreVariantFromCatalog(snapshot.products, productName, opt);
   if (!variantId) return null;
   const stock = getDripstoreVirtualStock(snapshot, variantId);
@@ -2468,16 +2453,6 @@ app.get('/', async (req, res) => {
   const homeDsMode = settings.dripstore?.fulfillmentMode || 'live';
   if ((homeDsMode === 'live' || homeDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     homeProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
-    // IMPORTANT: on a Vercel cold start there is no in-memory provider cache.
-    // Rendering immediately with null snapshot makes every LIVE product look
-    // like stock=0 even though DripStore has balance/variants. Fetch one
-    // catalog snapshot for the first render; later requests use the cache.
-    if (!homeProviderSnapshot) {
-      homeProviderSnapshot = await Promise.race([
-        getDripstoreCatalogSnapshot(settings),
-        new Promise(resolve => setTimeout(() => resolve(null), 5000))
-      ]).catch(() => null);
-    }
     warmDripstoreCatalog(settings);
   }
   const homeProducts = products.map(rawProduct => {
@@ -3508,48 +3483,9 @@ app.get('/buy/:id', async (req, res) => {
   res.render('pages/buy', { product: productSafe, settings, user, isReseller, hasPurchased, categoryLabels: settings.categoryLabels || {} });
 });
 
-// Public catalog stock refresh: SATU request untuk seluruh kartu katalog.
-// Ini mencegah homepage harus memanggil /api/products/:id/stock satu per satu.
-// Provider tetap hanya dipanggil sekali lewat snapshot cache TTL pendek.
-app.get('/api/catalog/stock', async (req, res) => {
-  if (!checkApiRateLimit(req.ip)) return res.status(429).json({ success: false, message: 'Terlalu banyak permintaan. Coba lagi nanti.' });
-  try {
-    res.set('Cache-Control', 'no-store, max-age=0');
-    const rawProducts = (await readSmart('products.json')).filter(p => p.status === 'active');
-    const settings = await readFresh('settings.json');
-    const mode = ['live','hybrid','local'].includes(settings.dripstore?.fulfillmentMode)
-      ? settings.dripstore.fulfillmentMode : 'live';
-    let snapshot = null;
-    if ((mode === 'live' || mode === 'hybrid') && settings.dripstore?.apiToken) {
-      snapshot = getCachedDripstoreCatalogSnapshot(settings);
-      if (!snapshot) snapshot = await getDripstoreCatalogSnapshot(settings);
-    }
-    const items = rawProducts.map(raw => {
-      const summary = buildProductStockSummary(raw, settings, snapshot);
-      return {
-        productId: String(raw.id),
-        stockCount: summary.stockCount,
-        providerStockUnknown: summary.providerStockUnknown,
-        items: summary.stockByOption.map(view => ({
-          stock: view.stock,
-          localStock: view.localStock,
-          providerStock: view.providerStock,
-          providerKnown: view.providerKnown,
-          providerBacked: view.providerBacked,
-          variantId: view.variantId
-        }))
-      };
-    });
-    return res.json({ success: true, mode, items });
-  } catch (e) {
-    return res.status(500).json({ success: false, message: e.message });
-  }
-});
-
 // Public stock refresh endpoint used by the buy page when the first render
 // could not verify provider data quickly enough. Never returns actual local keys.
 app.get('/api/products/:id/stock', async (req, res) => {
-  if (!checkApiRateLimit(req.ip)) return res.status(429).json({ success: false, message: 'Terlalu banyak permintaan. Coba lagi nanti.' });
   try {
     res.set('Cache-Control', 'no-store, max-age=0');
     const rawProducts = await readFresh('products.json');
@@ -5073,12 +5009,6 @@ app.get('/admin', requireAdmin, async (req, res) => {
   let adminProviderSnapshot = null;
   if ((adminDsMode === 'live' || adminDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     adminProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
-    if (!adminProviderSnapshot) {
-      adminProviderSnapshot = await Promise.race([
-        getDripstoreCatalogSnapshot(settings),
-        new Promise(resolve => setTimeout(() => resolve(null), 5000))
-      ]).catch(() => null);
-    }
     warmDripstoreCatalog(settings);
   }
   const adminProducts = products.map(rawProduct => {

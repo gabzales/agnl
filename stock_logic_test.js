@@ -8,7 +8,7 @@ const wanted = [
   '_dsFirst','_dsNormalizeName','_dsProviderNameCandidates','_dsNameMatch','_dsNameMatchWithAliases',
   'parseKeyDuration','isUsableLocalKey','isGenericKey','keyMatchesDuration','normalizeUsableLocalKeys',
   'countLocalDurationStock','countUsableLocalKeys','getLocalOptionStock','parseDurationLabel','formatDurationLabel',
-  '_dsDurationFromText','_dsParseMoney','_dsMoneyCents','_dsFindVariantCost','_dsFindVariantExplicitStock','_dsExtractProductItems',
+  '_dsDurationFromText','_dsParseMoney','_dsMoneyCents','_dsFindVariantCost','_dsExtractProductItems',
   'resolveDripstoreVariantFromCatalog','getDripstoreVirtualStock','findDripstoreVariantForOption',
   'getOptionStockView','normalizeProductBuyOptions','buildProductStockSummary'
 ];
@@ -55,6 +55,8 @@ const snapshot = {balance:'$1.34',products:provider};
 assert(ctx.getDripstoreVirtualStock(snapshot,'v3')===1,'AIM 3d capacity 1');
 assert(ctx.getDripstoreVirtualStock(snapshot,'v7')===0,'AIM 7d capacity 0');
 assert(ctx.getDripstoreVirtualStock(snapshot,'v30')===0,'AIM 30d capacity 0');
+const mappedOpt = {days:7,unit:'d',dripstoreVariantId:'v7'};
+assert(ctx.getOptionStockView({name:'PATO BLUE — 7 hari',keys:[]},mappedOpt,snapshot,'live',true).stock===0,'mapped variant is resolved from current catalog even when product name formatting differs');
 
 const product = {name:'XREG APK MOD',status:'active',keys:['AAA=3d','BBB=3d','CCC=7d','Stok tidak tersedia:3'],pricingOptions:[
   {days:3,unit:'d',price:10000,dripstoreVariantId:'v3'},
