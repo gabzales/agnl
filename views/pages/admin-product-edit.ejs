@@ -37,6 +37,22 @@ const noIndex = true; // halaman admin, jangan di-index Google
     </a>
   </div>
 
+  <!-- BUG FIX (audit 20 Sep 2026): sebelumnya nama produk cuma ditampilkan
+       sebagai teks label doang (productNameLabel di atas), TIDAK ADA kolom
+       input buat ganti nama sama sekali -- dan saveProduct() juga tidak
+       pernah mengirim field `name` ke server. Jadi nama produk memang
+       betul-betul tidak bisa diganti dari halaman ini, bukan cuma
+       kerasa gitu. Ditambahkan input + dikirim di saveProduct(), dan di
+       server /admin/product/:id sekarang menerima & menyimpan field name. -->
+  <div class="section-card">
+    <h2 class="text-sm font-black text-white mb-4 flex items-center gap-2">
+      <iconify-icon icon="mdi:tag-text" class="text-red-400 text-lg"></iconify-icon> Nama Produk
+    </h2>
+    <input type="text" id="productNameInput" placeholder="Nama produk"
+      class="w-full bg-black/30 border border-white/10 rounded-xl px-4 py-3 text-sm text-white focus:border-red-500/50 focus:outline-none">
+    <p class="text-[11px] text-zinc-500 mt-2">Perubahan nama tidak otomatis mengganti alias mapping DripStore kalau nama lama sudah dipakai di daftar alias — kasih tau kalau produk ini sebelumnya butuh alias khusus.</p>
+  </div>
+
   <!-- ── GAMBAR PRODUK ── -->
   <div class="section-card">
     <h2 class="text-sm font-black text-white mb-4 flex items-center gap-2">
@@ -297,6 +313,7 @@ async function loadProduct() {
 
   currentProduct = data.data;
   document.getElementById('productNameLabel').textContent = currentProduct.name;
+  document.getElementById('productNameInput').value = currentProduct.name || '';
 
   // Gambar
   const img = currentProduct.image || currentProduct.bannerUrl || '';
@@ -745,6 +762,7 @@ async function clearAllKeys() {
 
 // ─── Simpan ───
 async function saveProduct() {
+  const nameVal  = document.getElementById('productNameInput').value.trim();
   const imgUrl  = document.getElementById('imgUrlInput').value.trim();
   const keysRaw = document.getElementById('keysInput').value.trim();
   const description = document.getElementById('descriptionInput').value.trim();
@@ -754,6 +772,12 @@ async function saveProduct() {
   const channelUrl = document.getElementById('channelUrlInput').value.trim();
   const downloadUrl = document.getElementById('downloadUrlInput').value.trim();
   const fakeSoldRaw = document.getElementById('fakeSoldInput').value.replace(/[^0-9]/g,'');
+
+  // Validasi nama produk
+  if (!nameVal) {
+    showToast('Nama produk tidak boleh kosong', 'error');
+    return;
+  }
 
   // Validasi harga
   const validPricing = pricingOptions.filter(o => o.days > 0);
@@ -797,6 +821,7 @@ async function saveProduct() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      name: nameVal,
       bannerUrl: imgUrl,
       status: selectedStatus,
       keys: keysRaw,
@@ -816,6 +841,7 @@ async function saveProduct() {
   if (data.success) {
     showToast('Produk berhasil disimpan!', 'success');
     currentProduct = data.data;
+    document.getElementById('productNameLabel').textContent = currentProduct.name;
     document.getElementById('keysInput').value = '';
     renderKeyInfo();
   } else {

@@ -1376,7 +1376,14 @@ const DRIPSTORE_PRODUCT_ALIASES = {
   'xreg apk mod': ['aim hack', 'aim hack android+ ios', 'aim hack android ios'],
   // Typo/casing mismatch that exists between the AGHA product name and
   // DripStore catalog; use an explicit alias instead of broad fuzzy matching.
-  'drip clint apk mod': ['drip client apk mod']
+  'drip clint apk mod': ['drip client apk mod'],
+  // BUG FIX (audit 20 Sep 2026): produk lokal ditulis "HG SAVE APK MOD"
+  // tapi nama asli di katalog DripStore adalah "HG SAFE VERSION APKMOD"
+  // (typo SAVE vs SAFE + urutan kata beda), jadi auto-match by name gagal
+  // total dan produk selalu jatuh ke CEK MANUAL / stok 0 walau ownernya
+  // bilang stok ada. Alias di bawah nutup celah tanpa perlu ganti nama
+  // produk yang sudah kadung dipromosikan.
+  'hg save apk mod': ['hg safe version apkmod', 'hg safe version apk mod', 'hg safe apkmod', 'hg safe apk mod']
 };
 
 function _dsProviderNameCandidates(localName) {
@@ -6412,11 +6419,17 @@ app.get('/admin/product/:id', requireAdmin, async (req, res) => {
 app.post('/admin/product/:id', requireAdmin, async (req, res) => {
   try {
     const result = await withPersistentProductStockLock(req.params.id, async () => {
-      const { items, bannerUrl, status, keys, keysMode, categories, channelUrl, downloadUrl, fakeSold, description, videoUrl, compatibility, featureList } = req.body;
+      const { items, name, bannerUrl, status, keys, keysMode, categories, channelUrl, downloadUrl, fakeSold, description, videoUrl, compatibility, featureList } = req.body;
       const products = await readFresh('products.json');
       const productIndex = products.findIndex(p => p.id === req.params.id);
       if (productIndex === -1) throw new Error('Produk tidak ditemukan');
       const p = products[productIndex];
+
+      // BUG FIX (audit 20 Sep 2026): sebelumnya field `name` tidak pernah
+      // dibaca/disimpan di sini sama sekali, jadi nama produk memang tidak
+      // bisa diubah dari admin panel (lihat juga fix di admin-product-edit.ejs
+      // yang baru menambahkan kolom inputnya).
+      if (typeof name === 'string' && name.trim()) p.name = name.trim();
 
       if (bannerUrl && bannerUrl.trim()) { p.image = bannerUrl.trim(); p.bannerUrl = bannerUrl.trim(); }
       if (status) p.status = status;
