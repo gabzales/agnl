@@ -1391,6 +1391,21 @@ html.dark .badge-featured { color:#fca5a5 !important; }
             <div id="dripstoreAutoMapResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
             <div id="dripstoreBalanceResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
             <div id="dripstoreAvailabilityResult" class="hidden text-[11px] p-2.5 rounded-lg max-h-64 overflow-auto"></div>
+
+            <!-- FITUR BARU (audit 20 Sep 2026): cari nama produk & ID variant
+                 PERSIS seperti tersimpan di katalog mentah DripStore, supaya
+                 tidak lagi tebak-tebakan kalau nama di sini beda dengan nama
+                 promosi/caption yang dikasih owner DripStore lewat chat. -->
+            <div class="mt-3 flex gap-2">
+                <input type="text" id="dripstoreCatalogSearchInput" placeholder="Cari nama produk di katalog DripStore (mis. hg safe)"
+                    class="flex-1 bg-black/30 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500/50 focus:outline-none"
+                    onkeydown="if(event.key==='Enter'){event.preventDefault();searchDripstoreCatalog();}">
+                <button type="button" onclick="searchDripstoreCatalog()" class="px-3 py-2 rounded-xl text-xs font-bold text-emerald-300 border border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all shrink-0">
+                    <iconify-icon icon="mdi:magnify"></iconify-icon> Cari
+                </button>
+            </div>
+            <div id="dripstoreCatalogSearchResult" class="hidden text-[11px] p-2.5 rounded-lg max-h-64 overflow-auto mt-2"></div>
+
             <div class="mt-3 p-3 rounded-xl" style="background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15)">
                 <div class="flex items-center justify-between gap-2 mb-2">
                     <div class="text-[11px] font-bold text-blue-300 flex items-center gap-1.5"><iconify-icon icon="mdi:clipboard-clock-outline"></iconify-icon> Pending Restock Approval</div>
@@ -2827,6 +2842,37 @@ async function scanDripstoreAvailability() {
         box.innerHTML = head + (body || '<div>Belum ada variant yang ter-mapping.</div>') + truncatedNote;
     } catch (err) {
         box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
+        box.textContent = '❌ ' + err.message;
+    }
+}
+
+// FITUR BARU (audit 20 Sep 2026): cari nama produk & ID variant PERSIS
+// seperti tersimpan di katalog mentah DripStore (lihat GET
+// /admin/dripstore/catalog-search) -- dipakai kalau nama yang dikasih owner
+// DripStore lewat chat/promosi ternyata beda dengan nama asli di sistemnya.
+async function searchDripstoreCatalog() {
+    const q = document.getElementById('dripstoreCatalogSearchInput').value.trim();
+    const box = document.getElementById('dripstoreCatalogSearchResult');
+    box.classList.remove('hidden');
+    box.className = 'text-[11px] p-2.5 rounded-lg bg-white/5 text-zinc-400 border border-white/10 mt-2';
+    box.textContent = 'Mencari...';
+    try {
+        const r = await fetch('/admin/dripstore/catalog-search?q=' + encodeURIComponent(q));
+        const d = await r.json();
+        if (!d.success) throw new Error(d.message || 'Gagal mencari');
+        const names = Object.keys(d.products || {});
+        if (names.length === 0) {
+            box.className = 'text-[11px] p-2.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/25 mt-2';
+            box.textContent = q ? `Tidak ada produk DripStore yang cocok dengan "${q}".` : 'Katalog kosong.';
+            return;
+        }
+        box.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/5 text-zinc-300 border border-emerald-500/20 mt-2';
+        box.innerHTML = names.map(name => {
+            const variants = d.products[name].map(v => `${v.variantName || (v.days + (v.unit==='h'?'jam':'hari'))} <span class="text-zinc-500">(ID: ${v.variantId})</span>`).join(', ');
+            return `<div class="py-1.5 border-b border-white/5"><div class="font-bold text-emerald-300">${name}</div><div class="text-zinc-400 mt-0.5">${variants}</div></div>`;
+        }).join('');
+    } catch (err) {
+        box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25 mt-2';
         box.textContent = '❌ ' + err.message;
     }
 }

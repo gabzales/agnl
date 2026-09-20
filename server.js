@@ -5700,6 +5700,38 @@ app.get('/admin/dripstore/balance', requireAdmin, async (req, res) => {
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
+// FITUR BARU (audit 20 Sep 2026): dibuat karena berulang kali nama produk
+// yang diketik manual di AGHA NL beda dengan nama ASLI di sistem DripStore
+// (typo, urutan kata, kata tambahan seperti "VERSION"), dan sejauh ini
+// satu-satunya cara mendeteksi itu adalah tebak-tebakan lewat Cek Kemampuan
+// Saldo. Endpoint ini membongkar katalog mentah DripStore (products.php)
+// dan mengembalikan nama produk + nama variant + ID variant PERSIS seperti
+// tersimpan di sistem mereka, supaya admin bisa cari & kasih tau Claude
+// nama yang benar untuk didaftarkan ke DRIPSTORE_PRODUCT_ALIASES.
+app.get('/admin/dripstore/catalog-search', requireAdmin, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const settings = await readFresh('settings.json');
+    const snapshot = await getDripstoreCatalogSnapshot(settings);
+    if (!snapshot.products) {
+      return res.json({ success: false, message: 'Katalog DripStore belum bisa dibaca (cek token API di Settings).' });
+    }
+    const items = _dsExtractProductItems(snapshot.products);
+    const filtered = q ? items.filter(it => (it.productName + ' ' + it.variantName).toLowerCase().includes(q)) : items;
+    // Group per productName biar gampang dibaca, bukan satu baris per variant durasi.
+    const grouped = {};
+    for (const it of filtered) {
+      const key = it.productName || '(tanpa nama)';
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push({ variantId: it.variantId, variantName: it.variantName, days: it.days, unit: it.unit });
+    }
+    res.json({ success: true, count: filtered.length, products: grouped });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Gagal cari katalog: ' + error.message });
+  }
+});
+
+
 app.get('/admin/dripstore/availability', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
