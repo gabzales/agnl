@@ -1377,18 +1377,20 @@ const DRIPSTORE_PRODUCT_ALIASES = {
   // Typo/casing mismatch that exists between the AGHA product name and
   // DripStore catalog; use an explicit alias instead of broad fuzzy matching.
   'drip clint apk mod': ['drip client apk mod'],
-  // BUG FIX (audit 20 Sep 2026): nama produk ini sempat gonta-ganti antara
-  // "HG SAVE APK MOD" (typo) dan "HG SAFE APK MOD" (benar), sementara nama
-  // asli di katalog DripStore tetap "HG SAFE VERSION APKMOD". Kata "version"
-  // di tengah bikin containment match gagal walau ejaannya sudah benar
-  // ("hg safe apk mod" bukan substring dari "hg safe version apkmod" karena
-  // ada "version" menyelip di antara "safe" dan "apk mod"). Kedua ejaan
-  // (save & safe) sengaja didaftarkan sekaligus di sini supaya matching
-  // tetap jalan biarpun nama produknya diganti-ganti lagi ke depannya --
-  // tapi kalau namanya diubah ke sesuatu yang beda sama sekali (bukan cuma
-  // save/safe), key baru tetap wajib ditambahkan manual di sini.
-  'hg save apk mod': ['hg safe version apkmod', 'hg safe version apk mod', 'hg safe apkmod'],
-  'hg safe apk mod': ['hg safe version apkmod', 'hg safe version apk mod', 'hg safe apkmod']
+  // BUG FIX (audit 20 Sep 2026, dikoreksi setelah cari langsung ke katalog
+  // DripStore lewat /admin/dripstore/catalog-search): nama yang dikasih
+  // owner DripStore lewat caption Telegram ("HG SAFE VERSION APKMOD")
+  // TERNYATA BUKAN nama asli di sistemnya. Nama asli yang benar-benar
+  // tersimpan di katalog API DripStore adalah "HG CHEAT SAFE VERSION MOD"
+  // (ID variant 1 hari: 193, 10 hari: 194) -- beda kata "CHEAT" nyempil di
+  // depan "SAFE", dan tidak ada kata "APKMOD" sama sekali. Pelajaran: kalau
+  // ke depan ada produk baru yang tetap CEK MANUAL padahal ownernya bilang
+  // ada stok, JANGAN percaya caption promosi -- selalu cek nama asli lewat
+  // fitur pencarian katalog dulu sebelum menambah alias di sini.
+  // Ejaan lokal "save" dan "safe" tetap didaftarkan sekaligus supaya aman
+  // biarpun nama produk di admin panel diganti-ganti lagi ke depannya.
+  'hg save apk mod': ['hg cheat safe version mod'],
+  'hg safe apk mod': ['hg cheat safe version mod']
 };
 
 function _dsProviderNameCandidates(localName) {
