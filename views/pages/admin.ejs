@@ -2799,7 +2799,20 @@ async function scanDripstoreAvailability() {
         const unknown = rows.filter(x => x.available === null).length;
         box.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/5 text-zinc-300 border border-emerald-500/20';
         const head = `<div class="font-bold text-emerald-300 mb-2">Saldo provider: $${d.balance == null ? '?' : Number(d.balance).toFixed(2)} • ${available} tersedia • ${unavailable} tidak cukup • ${unknown} belum terbaca</div>`;
-        const body = rows.slice(0,80).map(x => {
+        // BUG FIX (audit 19 Sep 2026): sebelumnya cuma rows.slice(0,80) TANPA
+        // keterangan apapun kalau ada baris yang kepotong. Produk baru selalu
+        // numpuk di urutan paling akhir (mengikuti urutan produk di
+        // products.json), jadi begitu total baris produk x durasi di seluruh
+        // toko sudah lewat 80, produk yang BARU ditambahkan otomatis tidak
+        // pernah ke-render sama sekali di sini -- padahal datanya sebenarnya
+        // ada dan terhitung di ringkasan "tersedia/tidak cukup/belum terbaca"
+        // di atas (yang dihitung dari `rows` penuh, bukan dari hasil slice).
+        // Ini persis laporan "add produk baru tapi nggak ada nama produknya".
+        // Fix: naikkan batas tampil jauh lebih tinggi + kasih catatan eksplisit
+        // kalau memang masih ada sisa yang tidak ditampilkan.
+        const DISPLAY_LIMIT = 500;
+        const shown = rows.slice(0, DISPLAY_LIMIT);
+        const body = shown.map(x => {
             const label = `${x.productName} — ${x.days}${x.unit==='h'?' jam':' hari'}`;
             const price = x.cost == null ? 'harga ?' : `$${Number(x.cost).toFixed(2)}`;
             const cap = x.providerCapacity == null ? 'kapasitas ?' : `provider ${x.providerCapacity}`;
@@ -2808,7 +2821,10 @@ async function scanDripstoreAvailability() {
             const state = x.available === true ? '<span class="text-emerald-300">BISA</span>' : x.available === false ? '<span class="text-red-300">TIDAK CUKUP</span>' : '<span class="text-amber-300">CEK MANUAL</span>';
             return `<div class="flex items-center justify-between gap-2 py-1 border-b border-white/5"><span class="truncate">${label}</span><span class="shrink-0">${price} • lokal ${local} + ${cap} = ${total} total • ${state}</span></div>`;
         }).join('');
-        box.innerHTML = head + (body || '<div>Belum ada variant yang ter-mapping.</div>');
+        const truncatedNote = rows.length > DISPLAY_LIMIT
+            ? `<div class="text-amber-300 mt-2">+ ${rows.length - DISPLAY_LIMIT} baris lainnya tidak ditampilkan (terlalu banyak untuk 1 layar).</div>`
+            : '';
+        box.innerHTML = head + (body || '<div>Belum ada variant yang ter-mapping.</div>') + truncatedNote;
     } catch (err) {
         box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
         box.textContent = '❌ ' + err.message;
