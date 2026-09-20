@@ -1377,13 +1377,18 @@ const DRIPSTORE_PRODUCT_ALIASES = {
   // Typo/casing mismatch that exists between the AGHA product name and
   // DripStore catalog; use an explicit alias instead of broad fuzzy matching.
   'drip clint apk mod': ['drip client apk mod'],
-  // BUG FIX (audit 20 Sep 2026): produk lokal ditulis "HG SAVE APK MOD"
-  // tapi nama asli di katalog DripStore adalah "HG SAFE VERSION APKMOD"
-  // (typo SAVE vs SAFE + urutan kata beda), jadi auto-match by name gagal
-  // total dan produk selalu jatuh ke CEK MANUAL / stok 0 walau ownernya
-  // bilang stok ada. Alias di bawah nutup celah tanpa perlu ganti nama
-  // produk yang sudah kadung dipromosikan.
-  'hg save apk mod': ['hg safe version apkmod', 'hg safe version apk mod', 'hg safe apkmod', 'hg safe apk mod']
+  // BUG FIX (audit 20 Sep 2026): nama produk ini sempat gonta-ganti antara
+  // "HG SAVE APK MOD" (typo) dan "HG SAFE APK MOD" (benar), sementara nama
+  // asli di katalog DripStore tetap "HG SAFE VERSION APKMOD". Kata "version"
+  // di tengah bikin containment match gagal walau ejaannya sudah benar
+  // ("hg safe apk mod" bukan substring dari "hg safe version apkmod" karena
+  // ada "version" menyelip di antara "safe" dan "apk mod"). Kedua ejaan
+  // (save & safe) sengaja didaftarkan sekaligus di sini supaya matching
+  // tetap jalan biarpun nama produknya diganti-ganti lagi ke depannya --
+  // tapi kalau namanya diubah ke sesuatu yang beda sama sekali (bukan cuma
+  // save/safe), key baru tetap wajib ditambahkan manual di sini.
+  'hg save apk mod': ['hg safe version apkmod', 'hg safe version apk mod', 'hg safe apkmod'],
+  'hg safe apk mod': ['hg safe version apkmod', 'hg safe version apk mod', 'hg safe apkmod']
 };
 
 function _dsProviderNameCandidates(localName) {
