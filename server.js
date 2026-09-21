@@ -868,6 +868,9 @@ const requireAuth = (req, res, next) => {
   next();
 };
 
+// Semua route admin bersifat dinamis & privat: jangan pernah di-cache browser/proxy.
+app.use('/admin', (req, res, next) => { res.set('Cache-Control', 'no-store, max-age=0'); next(); });
+
 const requireAdmin = async (req, res, next) => {
   if (!req.session?.isAdmin && req.session?.userId !== 'admin') {
     // Balas 404 bukan 403 agar penyerang tidak tahu route admin ada
@@ -1023,7 +1026,7 @@ const createQRISPaymentPakasir = (orderId, amount, settings) => {
       });
     });
     req.on('timeout', () => { req.destroy(); reject(new Error('PakKasir timeout')); });
-    req.on('error', e => reject(new Error('Network error: ' + e.message)));
+    req.on('error', e => reject(_dsTransientError('Network error: ' + e.message)));
     req.write(body); req.end();
   });
 };
@@ -1098,7 +1101,27 @@ const createQRISPaymentGenspay = (orderId, amount, settings) => {
 // beberapa bentuk response yang umum (data.keys, data.key, dst) --
 // kalau ternyata bentuknya beda, error akan nunjukkin RAW response biar
 // gampang di-debug, bukan gagal diam-diam.
-function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _retried = false) {
+// Error sementara (timeout / network / 5xx / respons non-JSON dari proxy) ditandai
+// `transient` supaya GET boleh diulang SEKALI. POST (generate_key.php) TIDAK
+// pernah diulang otomatis karena bisa membeli key dua kali.
+function _dsTransientError(message) {
+  const err = new Error(message);
+  err.transient = true;
+  return err;
+}
+
+async function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _retried = false) {
+  const isGet = String(method).toUpperCase() === 'GET';
+  try {
+    return await _dripstoreCallOnce(settings, endpoint, params, method, _retried);
+  } catch (e) {
+    if (!isGet || !e?.transient || _retried) throw e;
+    await new Promise(r => setTimeout(r, 250));
+    return _dripstoreCallOnce(settings, endpoint, params, method, true);
+  }
+}
+
+function _dripstoreCallOnce(settings, endpoint, params = {}, method = 'GET', _retried = false) {
   return new Promise((resolve, reject) => {
     const token = (settings.dripstore?.apiToken || '').trim();
     const baseUrl = (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1').trim();
@@ -1119,13 +1142,13 @@ function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _retried
     const req = https.request({
       hostname: url.hostname, port: url.port || 443,
       path: url.pathname + url.search, method: method.toUpperCase(),
-      headers, timeout: 5000
+      headers, timeout: isGet ? 4000 : 5000
     }, (res) => {
       let data = '';
       res.on('data', c => data += c);
       res.on('end', async () => {
         let parsed;
-        try { parsed = JSON.parse(data); } catch (e) { return reject(new Error(`Respons DripStore bukan JSON valid (HTTP ${res.statusCode}): ${data.slice(0, 200)}`)); }
+        try { parsed = JSON.parse(data); } catch (e) { return reject(_dsTransientError(`Respons DripStore bukan JSON valid (HTTP ${res.statusCode}): ${data.slice(0, 200)}`)); }
         if (res.statusCode === 401) return reject(new Error(parsed.error || 'Token DripStore tidak valid / sudah dicabut'));
         if (res.statusCode === 403) return reject(new Error(parsed.error || 'Akses ditolak DripStore (kemungkinan IP server kamu diblokir)'));
         if (res.statusCode === 423) return reject(new Error(parsed.error || 'Batas reset key tercapai (maks 3x seumur hidup per key)'));
@@ -1139,17 +1162,17 @@ function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _retried
           // cache/last-known-good atau menampilkan status sementara.
           if (!_retried && wait <= 2) {
             await new Promise(r => setTimeout(r, wait * 1000));
-            try { resolve(await dripstoreCall(settings, endpoint, params, method, true)); } catch (e) { reject(e); }
+            try { resolve(await _dripstoreCallOnce(settings, endpoint, params, method, true)); } catch (e) { reject(e); }
             return;
           }
           return reject(new Error(`${parsed.error || 'Rate limit DripStore tercapai'} (retry-after ${wait}s)`));
         }
-        if (res.statusCode >= 500) return reject(new Error(`DripStore server error ${res.statusCode}: ${parsed.error || 'coba lagi nanti'}`));
+        if (res.statusCode >= 500) return reject(_dsTransientError(`DripStore server error ${res.statusCode}: ${parsed.error || 'coba lagi nanti'}`));
         if (parsed.success === false) return reject(new Error(parsed.error || parsed.message || 'DripStore mengembalikan success:false tanpa pesan error'));
         resolve(parsed);
       });
     });
-    req.on('timeout', () => { req.destroy(); reject(new Error('DripStore timeout (5 detik)')); });
+    req.on('timeout', () => { req.destroy(); reject(_dsTransientError('DripStore timeout (' + (isGet ? 4 : 5) + ' detik)')); });
     req.on('error', e => reject(new Error('Network error: ' + e.message)));
     if (!isGet && body) req.write(body);
     req.end();
@@ -1705,8 +1728,16 @@ let _dripstoreCatalogCache = null;
 let _dripstoreCatalogCacheAt = 0;
 let _dripstoreCatalogInflight = null;
 let _dripstoreCatalogCacheSignature = '';
+// Last-known-good: dipakai HANYA untuk TAMPILAN stok (katalog / halaman beli)
+// ketika provider sedang lambat/gagal. Checkout dan fulfillment tetap memanggil
+// provider secara LIVE (checkDripstoreOptionAvailability), jadi stok tampilan
+// yang agak basi tidak pernah bisa menghasilkan pembelian tanpa saldo.
+let _dripstoreLastGood = null; // { signature, balance, balanceAt, products, productsAt, at }
 const DRIPSTORE_CATALOG_CACHE_TTL = 30000;
 const DRIPSTORE_CATALOG_TIMEOUT_MS = 4500;
+const DRIPSTORE_SNAPSHOT_FILE = 'dripstore_snapshot.json';
+const DRIPSTORE_STALE_BALANCE_MAX_MS = 10 * 60 * 1000;   // saldo basi maks 10 menit utk tampilan
+const DRIPSTORE_STALE_PRODUCTS_MAX_MS = 60 * 60 * 1000;  // katalog/harga jarang berubah
 
 function _getDripstoreCatalogSignature(settings) {
   const ds = settings?.dripstore || {};
@@ -1716,26 +1747,95 @@ function _getDripstoreCatalogSignature(settings) {
   return `${String(ds.baseUrl || 'https://dripclientstore.shop/api/v1').trim()}|${tokenHash}`;
 }
 
-async function getDripstoreCatalogSnapshot(settings) {
+// Ambil last-known-good dari memori instance ini, atau dari snapshot yang
+// disimpan di Supabase (dibagi lintas instance Vercel).
+function _dsLastGood(settings) {
+  const signature = _getDripstoreCatalogSignature(settings);
+  if (!signature) return null;
+  let lg = _dripstoreLastGood;
+  if (lg && lg.signature !== signature) lg = null;
+  if (!lg) {
+    const persisted = readDB(DRIPSTORE_SNAPSHOT_FILE);
+    if (persisted && persisted.signature === signature && persisted.products) lg = persisted;
+  }
+  return lg || null;
+}
+
+function getLastGoodDripstoreSnapshot(settings) {
+  const lg = _dsLastGood(settings);
+  if (!lg) return null;
+  const now = Date.now();
+  const balance = (lg.balance !== null && lg.balance !== undefined && (now - Number(lg.balanceAt || 0)) < DRIPSTORE_STALE_BALANCE_MAX_MS) ? lg.balance : null;
+  const products = (lg.products && (now - Number(lg.productsAt || 0)) < DRIPSTORE_STALE_PRODUCTS_MAX_MS) ? lg.products : null;
+  if (balance === null || !products) return null;
+  return { balance, products, stale: true, ageMs: now - Number(lg.balanceAt || 0) };
+}
+
+async function _loadPersistedDripstoreSnapshot(settings, maxWaitMs = 1200) {
+  const signature = _getDripstoreCatalogSignature(settings);
+  if (!signature) return null;
+  let persisted = null;
+  try {
+    persisted = await Promise.race([
+      readFresh(DRIPSTORE_SNAPSHOT_FILE),
+      new Promise(resolve => setTimeout(() => resolve(readDB(DRIPSTORE_SNAPSHOT_FILE)), maxWaitMs))
+    ]);
+  } catch (_) { persisted = readDB(DRIPSTORE_SNAPSHOT_FILE); }
+  if (!persisted || persisted.signature !== signature || !persisted.products) return null;
+  if (persisted.balance === null || persisted.balance === undefined) return null;
+  return persisted;
+}
+
+// Dipanggil setelah pembelian key / perubahan token: cache segar dibuang dan
+// saldo lama tidak boleh dipakai lagi sebagai fallback.
+function _invalidateDripstoreSnapshot({ full = false } = {}) {
+  _dripstoreCatalogCache = null;
+  _dripstoreCatalogCacheAt = 0;
+  if (full) {
+    _dripstoreLastGood = null;
+    _dripstoreCatalogInflight = null;
+    _dripstoreCatalogCacheSignature = '';
+    writeDB(DRIPSTORE_SNAPSHOT_FILE, {}).catch(() => {});
+    return;
+  }
+  if (_dripstoreLastGood) _dripstoreLastGood = { ..._dripstoreLastGood, balanceAt: 0, at: 0 };
+  const persisted = readDB(DRIPSTORE_SNAPSHOT_FILE);
+  if (persisted && persisted.signature) writeDB(DRIPSTORE_SNAPSHOT_FILE, { ...persisted, balanceAt: 0, at: 0 }).catch(() => {});
+}
+
+async function getDripstoreCatalogSnapshot(settings, opts = {}) {
   const ds = settings.dripstore || {};
   if (!ds.apiToken) return { balance: null, products: null };
+  const maxWaitMs = Number(opts.maxWaitMs) > 0 ? Number(opts.maxWaitMs) : DRIPSTORE_CATALOG_TIMEOUT_MS;
+  const force = !!opts.force;
   const signature = _getDripstoreCatalogSignature(settings);
   if (signature !== _dripstoreCatalogCacheSignature) {
     _dripstoreCatalogCache = null;
     _dripstoreCatalogCacheAt = 0;
+    _dripstoreLastGood = null;
     _dripstoreCatalogCacheSignature = signature;
   }
   const now = Date.now();
-  if (_dripstoreCatalogCache && (now - _dripstoreCatalogCacheAt) < DRIPSTORE_CATALOG_CACHE_TTL) return _dripstoreCatalogCache;
+  if (!force && _dripstoreCatalogCache && (now - _dripstoreCatalogCacheAt) < DRIPSTORE_CATALOG_CACHE_TTL) return _dripstoreCatalogCache;
 
-  if (_dripstoreCatalogInflight) {
-    return Promise.race([
-      _dripstoreCatalogInflight,
-      // Cache yang sudah melewati TTL TIDAK boleh dipakai sebagai fallback.
-      // Kalau refresh supplier belum selesai, fail-closed supaya frontend
-      // menampilkan `Cek stok provider`, bukan stok lama yang bisa salah.
-      new Promise(resolve => setTimeout(() => resolve({ balance: null, products: null, stale: true }), DRIPSTORE_CATALOG_TIMEOUT_MS))
-    ]);
+  const fallback = () => getLastGoodDripstoreSnapshot(settings) || { balance: null, products: null, stale: true };
+  const timeoutFallback = new Promise(resolve => setTimeout(() => resolve(fallback()), maxWaitMs));
+
+  if (_dripstoreCatalogInflight) return Promise.race([_dripstoreCatalogInflight, timeoutFallback]);
+
+  // Instance Vercel lain mungkin baru saja mengambil snapshot: pakai itu kalau
+  // masih segar, jadi cold-start tidak selalu memanggil provider dari nol.
+  if (!force) {
+    const persisted = await _loadPersistedDripstoreSnapshot(settings);
+    if (persisted) {
+      if (!_dripstoreLastGood || Number(persisted.balanceAt || 0) > Number(_dripstoreLastGood.balanceAt || 0)) _dripstoreLastGood = persisted;
+      if ((Date.now() - Number(persisted.at || 0)) < DRIPSTORE_CATALOG_CACHE_TTL) {
+        _dripstoreCatalogCache = { balance: persisted.balance, products: persisted.products };
+        _dripstoreCatalogCacheAt = Number(persisted.at);
+        return _dripstoreCatalogCache;
+      }
+    }
+    if (_dripstoreCatalogInflight) return Promise.race([_dripstoreCatalogInflight, timeoutFallback]);
   }
 
   const refresh = (async () => {
@@ -1744,34 +1844,45 @@ async function getDripstoreCatalogSnapshot(settings) {
         getDripstoreBalanceValue(settings),
         dripstoreCall(settings, 'products.php')
       ]);
-      const balance = results[0].status === 'fulfilled' ? results[0].value : null;
-      const products = results[1].status === 'fulfilled' ? results[1].value : null;
-      // Cache hanya diperbarui jika balance DAN products sama-sama terbaca.
-      // Setelah TTL habis, kegagalan refresh tidak boleh menjadikan saldo/harga
-      // lama sebagai sumber kebenaran stok baru.
-      if (balance !== null && products) {
-        _dripstoreCatalogCache = { balance, products };
-        _dripstoreCatalogCacheAt = Date.now();
+      const freshBalance = results[0].status === 'fulfilled' ? results[0].value : null;
+      const freshProducts = results[1].status === 'fulfilled' ? results[1].value : null;
+      const t = Date.now();
+      const prev = _dsLastGood(settings) || {};
+      const record = {
+        signature,
+        balance: freshBalance !== null ? freshBalance : (prev.balance ?? null),
+        balanceAt: freshBalance !== null ? t : Number(prev.balanceAt || 0),
+        products: freshProducts || prev.products || null,
+        productsAt: freshProducts ? t : Number(prev.productsAt || 0),
+        at: (freshBalance !== null && freshProducts) ? t : Number(prev.at || 0)
+      };
+      _dripstoreLastGood = record;
+      if (freshBalance !== null && freshProducts) {
+        _dripstoreCatalogCache = { balance: freshBalance, products: freshProducts };
+        _dripstoreCatalogCacheAt = t;
+        // Simpan supaya instance lain (dan cold-start berikutnya) punya data.
+        // Dibatasi 800ms supaya tidak menahan respons kalau Supabase lambat.
+        await Promise.race([
+          writeDB(DRIPSTORE_SNAPSHOT_FILE, record).catch(() => {}),
+          new Promise(r => setTimeout(r, 800))
+        ]);
         return _dripstoreCatalogCache;
       }
-      // Kalau cache terakhir sudah expired dan refresh gagal, FAIL CLOSED.
-      // Lebih aman menampilkan "Cek stok provider" daripada menjual berdasarkan
-      // saldo/harga yang mungkin sudah kedaluwarsa.
-      return { balance: null, products: null, stale: true };
+      // Sebagian gagal: tampilkan last-known-good (ditandai stale), jangan
+      // langsung "Cek stok". Cache segar TIDAK diisi, jadi request berikutnya
+      // mencoba provider lagi.
+      const reason = results.find(r => r.status === 'rejected')?.reason?.message || 'provider tidak merespons';
+      console.warn('[dripstore snapshot] refresh gagal sebagian:', reason);
+      return getLastGoodDripstoreSnapshot(settings) || { balance: null, products: null, stale: true, error: reason };
     } finally {
       _dripstoreCatalogInflight = null;
     }
   })();
   _dripstoreCatalogInflight = refresh;
-  return Promise.race([
-    refresh,
-    new Promise(resolve => setTimeout(() => resolve(_dripstoreCatalogCache || { balance: null, products: null }), DRIPSTORE_CATALOG_TIMEOUT_MS))
-  ]);
+  return Promise.race([refresh, timeoutFallback]);
 }
 
-// Fast path untuk halaman publik: jangan menunggu API supplier. Kalau cache belum
-// tersedia, halaman tetap dirender memakai stok lokal; refresh provider dijalankan
-// di background untuk request berikutnya. Checkout tetap melakukan guard live.
+// Fast path untuk halaman publik: hanya cache memori yang masih segar.
 function getCachedDripstoreCatalogSnapshot(settings) {
   const ds = settings?.dripstore || {};
   if (!ds.apiToken || !_dripstoreCatalogCache) return null;
@@ -2103,8 +2214,7 @@ async function dripstoreGenerateKey(settings, variantId, quantity) {
     const transactionId = resp?.data?.transaction_id || resp?.data?.transactionId || resp?.transaction_id || resp?.transactionId || resp?.data?.purchase_id || resp?.purchase_id || null;
     // Saldo provider berubah setelah generate_key. Jangan biarkan halaman publik
     // memakai snapshot sebelum pembelian selama TTL cache penuh.
-    _dripstoreCatalogCache = null;
-    _dripstoreCatalogCacheAt = 0;
+    _invalidateDripstoreSnapshot();
     return { keys, transactionId };
   });
 }
@@ -2494,10 +2604,8 @@ app.get('/', async (req, res) => {
     // like stock=0 even though DripStore has balance/variants. Fetch one
     // catalog snapshot for the first render; later requests use the cache.
     if (!homeProviderSnapshot) {
-      homeProviderSnapshot = await Promise.race([
-        getDripstoreCatalogSnapshot(settings),
-        new Promise(resolve => setTimeout(() => resolve(null), 5000))
-      ]).catch(() => null);
+      homeProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 3500 }).catch(() => null);
+      if (!homeProviderSnapshot?.products) homeProviderSnapshot = getLastGoodDripstoreSnapshot(settings) || homeProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -3485,10 +3593,8 @@ app.get('/buy/:id', async (req, res) => {
     // Ini mencegah menu durasi kosong sekaligus mencegah request menggantung.
     buyProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
     if (!buyProviderSnapshot) {
-      buyProviderSnapshot = await Promise.race([
-        getDripstoreCatalogSnapshot(settings),
-        new Promise(resolve => setTimeout(() => resolve(null), 1800))
-      ]).catch(() => null);
+      buyProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 2500 }).catch(() => null);
+      if (!buyProviderSnapshot?.products) buyProviderSnapshot = getLastGoodDripstoreSnapshot(settings) || buyProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -3580,7 +3686,7 @@ app.get('/api/catalog/stock', async (req, res) => {
         }))
       };
     });
-    return res.json({ success: true, mode, items });
+    return res.json({ success: true, mode, stale: !!snapshot?.stale, items });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
   }
@@ -3611,7 +3717,7 @@ app.get('/api/products/:id/stock', async (req, res) => {
       providerBacked: view.providerBacked,
       variantId: view.variantId
     }));
-    return res.json({ success: true, mode, items, stockCount: summary.stockCount, providerStockUnknown: summary.providerStockUnknown });
+    return res.json({ success: true, mode, stale: !!snapshot?.stale, items, stockCount: summary.stockCount, providerStockUnknown: summary.providerStockUnknown });
   } catch (e) {
     return res.status(500).json({ success: false, message: e.message });
   }
@@ -5164,10 +5270,8 @@ app.get('/admin', requireAdmin, async (req, res) => {
   if ((adminDsMode === 'live' || adminDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     adminProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
     if (!adminProviderSnapshot) {
-      adminProviderSnapshot = await Promise.race([
-        getDripstoreCatalogSnapshot(settings),
-        new Promise(resolve => setTimeout(() => resolve(null), 5000))
-      ]).catch(() => null);
+      adminProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 4500 }).catch(() => null);
+      if (!adminProviderSnapshot?.products) adminProviderSnapshot = getLastGoodDripstoreSnapshot(settings) || adminProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -5645,10 +5749,7 @@ app.post('/admin/settings/dripstore', requireAdmin, async (req, res) => {
     };
     await writeDB('settings.json', settings);
     // Token/base URL provider berubah => snapshot provider lama harus dibuang.
-    _dripstoreCatalogCache = null;
-    _dripstoreCatalogCacheAt = 0;
-    _dripstoreCatalogInflight = null;
-    _dripstoreCatalogCacheSignature = '';
+    _invalidateDripstoreSnapshot({ full: true });
 
     // Saat Auto-Restock diaktifkan + token tersedia, sinkronkan
     // product -> variant DripStore. Stok rendah hanya membuat proposal pending.
@@ -5695,11 +5796,21 @@ app.post('/admin/dripstore/restock-one', requireAdmin, async (req, res) => {
 
 // Cek saldo DripStore langsung dari admin (buat preview sebelum restock manual)
 app.get('/admin/dripstore/balance', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
   try {
     const settings = await readFresh('settings.json');
-    const resp = await dripstoreCall(settings, 'balance.php');
+    const resp = await dripstoreCall(settings, 'balance.php'); // GET: sudah auto-retry 1x utk error sementara
     res.json({ success: true, data: resp.data || resp });
-  } catch (e) { res.json({ success: false, message: e.message }); }
+  } catch (e) {
+    // Provider gagal sesaat: tampilkan saldo terakhir yang berhasil dibaca
+    // (ditandai jelas sebagai data lama) daripada error kosong.
+    const settings = await readFresh('settings.json').catch(() => ({}));
+    const last = getLastGoodDripstoreSnapshot(settings);
+    if (last && last.balance !== null) {
+      return res.json({ success: true, stale: true, ageSeconds: Math.round((last.ageMs || 0) / 1000), data: { balance: last.balance }, message: 'Provider tidak merespons: ini saldo terakhir yang berhasil dibaca (' + e.message + ')' });
+    }
+    res.json({ success: false, message: e.message });
+  }
 });
 
 // FITUR BARU (audit 20 Sep 2026): dibuat karena berulang kali nama produk
@@ -5714,7 +5825,7 @@ app.get('/admin/dripstore/catalog-search', requireAdmin, async (req, res) => {
   try {
     const q = String(req.query.q || '').trim().toLowerCase();
     const settings = await readFresh('settings.json');
-    const snapshot = await getDripstoreCatalogSnapshot(settings);
+    const snapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 9000 });
     if (!snapshot.products) {
       return res.json({ success: false, message: 'Katalog DripStore belum bisa dibaca (cek token API di Settings).' });
     }
@@ -5737,7 +5848,11 @@ app.get('/admin/dripstore/catalog-search', requireAdmin, async (req, res) => {
 app.get('/admin/dripstore/availability', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
-    const snapshot = await getDripstoreCatalogSnapshot(settings);
+    // Admin butuh angka akurat: paksa refresh dan tunggu lebih lama (bukan cache).
+    const snapshot = await getDripstoreCatalogSnapshot(settings, { force: true, maxWaitMs: 9000 });
+    if (!snapshot?.products || snapshot.balance == null) {
+      return res.json({ success: false, message: 'Provider DripStore tidak merespons (timeout/error). Coba klik lagi beberapa detik lagi; tidak ada data yang diubah.' });
+    }
     const balance = snapshot?.balance ?? null;
     const products = await readFresh('products.json');
     const rows = [];
@@ -5762,7 +5877,7 @@ app.get('/admin/dripstore/availability', requireAdmin, async (req, res) => {
       unavailable: rows.filter(x => x.available === false).length,
       unknown: rows.filter(x => x.available === null).length
     };
-    res.json({ success: true, balance, rows, ...counts });
+    res.json({ success: true, balance, stale: !!snapshot.stale, rows, ...counts });
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
 

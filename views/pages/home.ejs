@@ -776,12 +776,16 @@ function renderTurnstileWidgets(){
 // Refresh stok katalog sekali setelah render. Server-side render tetap dipakai
 // untuk first paint, sedangkan endpoint bulk memperbaiki cold-start/cache miss
 // tanpa N request provider untuk setiap produk.
-(async function refreshCatalogStock(){
+(async function refreshCatalogStock(attempt){
+  attempt = attempt || 0;
+  let needRetry = false;
   try {
     const r = await fetch('/api/catalog/stock', { cache: 'no-store' });
-    if (!r.ok) return;
+    if (!r.ok) { needRetry = true; }
+    else {
     const d = await r.json();
-    if (!d?.success || !Array.isArray(d.items)) return;
+    if (!d?.success || !Array.isArray(d.items)) { needRetry = true; }
+    else {
     const byId = new Map(d.items.map(x => [String(x.productId), x]));
     document.querySelectorAll('[data-stock-product-id]').forEach(card => {
       const id = String(card.getAttribute('data-stock-product-id') || '');
@@ -797,14 +801,23 @@ function renderTurnstileWidgets(){
         btn.dataset.stockDisabled = '0';
         btn.innerHTML = '<iconify-icon icon="mdi:cart" style="font-size:12px;"></iconify-icon> Beli';
         btn.onclick = () => { window.location.href = '/buy/' + encodeURIComponent(id); };
+      } else if (unknown) {
+        // Provider belum bisa diverifikasi sesaat: JANGAN menurunkan tombol
+        // "Beli" yang sudah tampil menjadi "Cek stok" (penyebab tombol
+        // berubah-ubah tiap refresh). Cukup coba lagi sebentar.
+        needRetry = true;
+        if (btn.dataset.stockDisabled === '1') btn.textContent = 'Cek stok';
       } else {
         btn.disabled = true;
         btn.dataset.stockDisabled = '1';
-        btn.textContent = unknown ? 'Cek stok' : 'Habis';
+        btn.textContent = 'Habis';
         btn.onclick = null;
       }
     });
-  } catch (_) {}
+    }
+    }
+  } catch (_) { needRetry = true; }
+  if (needRetry && attempt < 2) setTimeout(() => refreshCatalogStock(attempt + 1), 2500);
 })();
 
 const PRODUCTS = <%- safeJson(products.map(({keys,...p}) => ({...p, stockCount: Number(p._catalogStock || 0), stockUnknown: !!p._providerStockUnknown}))) %>;

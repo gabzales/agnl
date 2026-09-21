@@ -2787,8 +2787,10 @@ async function checkDripstoreBalance() {
         const r = await fetch('/admin/dripstore/balance');
         const d = await r.json();
         if (d.success) {
-            box.className = 'text-[11px] p-2.5 rounded-lg bg-green-500/10 text-green-300 border border-green-500/25';
-            box.innerHTML = `<iconify-icon icon="mdi:check-circle" style="vertical-align:-2px;"></iconify-icon> Saldo DripStore: <b>${JSON.stringify(d.data)}</b>`;
+            box.className = d.stale
+                ? 'text-[11px] p-2.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/25'
+                : 'text-[11px] p-2.5 rounded-lg bg-green-500/10 text-green-300 border border-green-500/25';
+            box.innerHTML = `<iconify-icon icon="mdi:check-circle" style="vertical-align:-2px;"></iconify-icon> Saldo DripStore: <b>${JSON.stringify(d.data)}</b>` + (d.stale ? `<div class="mt-1">⚠️ Data lama (${Number(d.ageSeconds||0)} dtk lalu) — provider sedang tidak merespons. Klik lagi sebentar.</div>` : '');
         } else {
             box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
             box.textContent = '❌ ' + d.message;
