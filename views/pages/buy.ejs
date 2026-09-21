@@ -303,7 +303,26 @@ const schemaProduct = {
                             Rp <%= displayPrice.toLocaleString('id-ID') %>
                         </div>
                         <div id="pkg-stock-<%= idx %>" class="text-[10px] font-semibold mt-1 <%= isOutOfStock ? (item.providerBacked && !item.providerStockKnown ? 'text-amber-500' : 'text-zinc-500') : 'text-emerald-400' %>">
-                            <% if (isOutOfStock && item.providerBacked && !item.providerStockKnown) { %>Cek stok provider<% } else if (isOutOfStock) { %>Habis<% } else { %><%= itemStock %> stok<% } %>
+                            <% if (itemStock > 0) { %>
+                                <%= itemStock %> stok
+                            <% } else if (item.providerBacked && !item.providerStockKnown) { %>
+                                Cek stok provider
+                            <% } else { %>
+                                Habis
+                            <% } %>
+                        </div>
+                        <div id="pkg-source-<%= idx %>" class="text-[9px] text-zinc-500 mt-0.5">
+                            <% const localQty = Math.max(0, Number(item.localStock || 0)); %>
+                            <% const providerQty = Math.max(0, Number(item.providerStock || 0)); %>
+                            <% if (localQty > 0 && providerQty > 0) { %>
+                                Lokal <%= localQty %> • DripStore <%= providerQty %>
+                            <% } else if (localQty > 0) { %>
+                                Stok Lokal AGHA: <%= localQty %>
+                            <% } else if (providerQty > 0) { %>
+                                DripStore: <%= providerQty %>
+                            <% } else if (item.providerBacked && !item.providerStockKnown) { %>
+                                Stok lokal: 0 • Provider belum diverifikasi
+                            <% } %>
                         </div>
                         <% if (isReseller && item.reseller_price) { %>
                             <div class="text-[9px] text-zinc-500 line-through">Rp <%= item.p.toLocaleString('id-ID') %></div>
@@ -588,8 +607,25 @@ const schemaProduct = {
 </div>
 
 <script>
-    const INITIAL_PKG_INDEX = <%= Math.max(0, (product.items || []).findIndex(it => Number(it.stok || 0) > 0)) %>;
+    <%
+    // BUG FIX (audit 19 Sep 2026): baris INITIAL_PKG_INDEX / INITIAL_PKG di
+    // sini SEBELUMNYA ditulis tanpa tag EJS pembungkus sama sekali, jadi
+    // dikirim mentah-mentah sebagai teks JS untuk BROWSER. Masalahnya:
+    // 1) `product` tidak pernah ada di scope browser (itu variabel server
+    //    EJS), jadi baris itu pasti error di console browser duluan.
+    // 2) Yang lebih fatal: baris-baris DI BAWAH sini (selPkg.label, .price,
+    //    dst) dieksekusi di SERVER saat render, dan butuh INITIAL_PKG sudah
+    //    ada sebagai variabel EJS. Karena baris const INITIAL_PKG tadi tidak
+    //    pernah masuk tag EJS, INITIAL_PKG TIDAK PERNAH benar-benar
+    //    dideklarasikan di sisi server. Akibatnya SETIAP kali halaman
+    //    /buy/:id dibuka, render EJS langsung crash "ReferenceError:
+    //    INITIAL_PKG is not defined" jadi Internal Server Error, untuk semua
+    //    produk, tanpa kecuali. Fix: hitung semuanya di sisi server (dalam
+    //    tag EJS ini), tidak perlu dikirim ke browser sama sekali karena
+    //    cuma dipakai untuk membangun object selPkg di bawah.
+    const INITIAL_PKG_INDEX = Math.max(0, (product.items || []).findIndex(it => Number(it.stok || 0) > 0));
     const INITIAL_PKG = (product.items || [])[INITIAL_PKG_INDEX] || (product.items || [])[0] || {};
+    %>
     let selPkg = {
         label: <%- JSON.stringify(INITIAL_PKG.l || '') %>,
         price: <%= (isReseller && (INITIAL_PKG.reseller_price != null)) ? Number(INITIAL_PKG.reseller_price || 0) : Number(INITIAL_PKG.p || 0) %>,
@@ -668,6 +704,7 @@ const schemaProduct = {
                 const item = data.items[idx];
                 const label = document.getElementById('pkg-label-' + idx);
                 const status = document.getElementById('pkg-stock-' + idx);
+                const source = document.getElementById('pkg-source-' + idx);
                 if (!radio || !label || !status) return;
 
                 // Backend harus mengembalikan satu entry per pricing option.
@@ -689,6 +726,15 @@ const schemaProduct = {
                 label.style.opacity = stock <= 0 ? '0.5' : '';
                 label.style.cursor = stock <= 0 ? 'not-allowed' : '';
                 status.classList.remove('text-emerald-400','text-zinc-500','text-amber-500');
+                const localQty = Math.max(0, Number(item.localStock || 0));
+                const providerQty = Math.max(0, Number(item.providerStock || 0));
+                if (source) {
+                    if (localQty > 0 && providerQty > 0) source.textContent = 'Lokal ' + localQty + ' • DripStore ' + providerQty;
+                    else if (localQty > 0) source.textContent = 'Stok Lokal AGHA: ' + localQty;
+                    else if (providerQty > 0) source.textContent = 'DripStore: ' + providerQty;
+                    else if (item.providerBacked && !item.providerKnown) source.textContent = 'Stok lokal: 0 • Provider belum diverifikasi';
+                    else source.textContent = '';
+                }
                 if (stock > 0) {
                     status.classList.add('text-emerald-400');
                     status.textContent = stock + ' stok';

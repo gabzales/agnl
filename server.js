@@ -1092,6 +1092,74 @@ const createQRISPaymentGenspay = (orderId, amount, settings) => {
 // Rate limit: retry SEKALI kalau kena 429, hormati header Retry-After
 // (persis seperti client Node.js resmi dari DripStore).
 //
+// FITUR BARU (audit 21 Sep 2026): dibuat karena tombol "Cek Saldo" cuma
+// bilang "DripStore timeout (5 detik)" tanpa detail apapun, sementara owner
+// DripStore bersikeras server mereka tidak down -- jadi kita butuh bukti
+// konkret di fase mana koneksi macet (DNS? TCP connect? TLS handshake?
+// nunggu response body?) sebelum lempar-lemparan tanggung jawab. Timeout
+// sengaja dinaikkan ke 15 detik (BUKAN dipakai di jalur checkout customer,
+// cuma dipakai tombol diagnostic admin) supaya kalau DripStore-nya cuma
+// lambat (bukan mati total), kita tetap dapat jawaban lengkap alih-alih
+// keburu dianggap gagal di detik ke-5.
+function dripstoreDiagnose(settings) {
+  return new Promise((resolve) => {
+    const token = (settings.dripstore?.apiToken || '').trim();
+    const baseUrl = (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1').trim();
+    const timeline = [];
+    const t0 = Date.now();
+    const mark = (label) => timeline.push({ phase: label, ms: Date.now() - t0 });
+
+    if (!token) {
+      return resolve({ ok: false, timeline, summary: 'API Token DripStore belum diisi di Settings.' });
+    }
+    let url;
+    try { url = new URL(baseUrl.replace(/\/+$/, '') + '/balance.php'); }
+    catch (e) { return resolve({ ok: false, timeline, summary: 'Base URL DripStore tidak valid: ' + baseUrl }); }
+
+    mark('mulai_request');
+    const req = https.request({
+      hostname: url.hostname, port: url.port || 443,
+      path: url.pathname + url.search, method: 'GET',
+      headers: { 'X-API-Token': token, 'Accept': 'application/json' },
+      timeout: 15000,
+    }, (res) => {
+      mark('header_diterima_HTTP_' + res.statusCode);
+      let data = '';
+      res.on('data', c => { if (!data) mark('byte_pertama_diterima'); data += c; });
+      res.on('end', () => {
+        mark('response_selesai');
+        let parsed = null, parseError = null;
+        try { parsed = JSON.parse(data); } catch (e) { parseError = e.message; }
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300 && parsed && parsed.success !== false,
+          timeline, httpStatus: res.statusCode,
+          rawBodyPreview: data.slice(0, 300),
+          parseError,
+          summary: parseError
+            ? `Server DripStore merespons (HTTP ${res.statusCode}) tapi body-nya bukan JSON valid.`
+            : `Server DripStore merespons HTTP ${res.statusCode} dalam ${Date.now() - t0}ms.`,
+        });
+      });
+    });
+    req.on('socket', (socket) => {
+      mark('socket_dibuat');
+      socket.on('lookup', (err) => mark(err ? 'dns_gagal: ' + err.message : 'dns_selesai'));
+      socket.on('connect', () => mark('tcp_connect_selesai'));
+      socket.on('secureConnect', () => mark('tls_handshake_selesai'));
+    });
+    req.on('timeout', () => {
+      mark('TIMEOUT_15_DETIK');
+      req.destroy();
+      resolve({ ok: false, timeline, summary: `Macet di fase terakhir yang tercatat: "${timeline[timeline.length - 2]?.phase || 'belum ada fase apapun'}". Tidak ada respons sama sekali dari DripStore dalam 15 detik.` });
+    });
+    req.on('error', (e) => {
+      mark('ERROR: ' + e.message);
+      resolve({ ok: false, timeline, summary: 'Network error di fase "' + (timeline[timeline.length - 2]?.phase || '?') + '": ' + e.message });
+    });
+    req.end();
+  });
+}
+
 // CATATAN JUJUR: dokumentasi yang kami terima cuma nunjukkin CONTOH
 // ERROR (401/403/423/429/5xx) secara detail, TIDAK ada contoh response
 // SUKSES generate_key.php. extractDripstoreKeys() di bawah nyoba
@@ -1376,7 +1444,21 @@ const DRIPSTORE_PRODUCT_ALIASES = {
   'xreg apk mod': ['aim hack', 'aim hack android+ ios', 'aim hack android ios'],
   // Typo/casing mismatch that exists between the AGHA product name and
   // DripStore catalog; use an explicit alias instead of broad fuzzy matching.
-  'drip clint apk mod': ['drip client apk mod']
+  'drip clint apk mod': ['drip client apk mod'],
+  // BUG FIX (audit 20 Sep 2026, dikoreksi setelah cari langsung ke katalog
+  // DripStore lewat /admin/dripstore/catalog-search): nama yang dikasih
+  // owner DripStore lewat caption Telegram ("HG SAFE VERSION APKMOD")
+  // TERNYATA BUKAN nama asli di sistemnya. Nama asli yang benar-benar
+  // tersimpan di katalog API DripStore adalah "HG CHEAT SAFE VERSION MOD"
+  // (ID variant 1 hari: 193, 10 hari: 194) -- beda kata "CHEAT" nyempil di
+  // depan "SAFE", dan tidak ada kata "APKMOD" sama sekali. Pelajaran: kalau
+  // ke depan ada produk baru yang tetap CEK MANUAL padahal ownernya bilang
+  // ada stok, JANGAN percaya caption promosi -- selalu cek nama asli lewat
+  // fitur pencarian katalog dulu sebelum menambah alias di sini.
+  // Ejaan lokal "save" dan "safe" tetap didaftarkan sekaligus supaya aman
+  // biarpun nama produk di admin panel diganti-ganti lagi ke depannya.
+  'hg save apk mod': ['hg cheat safe version mod'],
+  'hg safe apk mod': ['hg cheat safe version mod']
 };
 
 function _dsProviderNameCandidates(localName) {
@@ -1717,7 +1799,10 @@ async function getDripstoreCatalogSnapshot(settings) {
   if (_dripstoreCatalogInflight) {
     return Promise.race([
       _dripstoreCatalogInflight,
-      new Promise(resolve => setTimeout(() => resolve(_dripstoreCatalogCache || { balance: null, products: null }), DRIPSTORE_CATALOG_TIMEOUT_MS))
+      // Cache yang sudah melewati TTL TIDAK boleh dipakai sebagai fallback.
+      // Kalau refresh supplier belum selesai, fail-closed supaya frontend
+      // menampilkan `Cek stok provider`, bukan stok lama yang bisa salah.
+      new Promise(resolve => setTimeout(() => resolve({ balance: null, products: null, stale: true }), DRIPSTORE_CATALOG_TIMEOUT_MS))
     ]);
   }
 
@@ -1729,6 +1814,15 @@ async function getDripstoreCatalogSnapshot(settings) {
       ]);
       const balance = results[0].status === 'fulfilled' ? results[0].value : null;
       const products = results[1].status === 'fulfilled' ? results[1].value : null;
+      // BUG FIX (audit 21 Sep 2026): sebelumnya alasan kegagalan (balanceError/
+      // productsError) dibuang begitu saja -- kalau salah satu/kedua panggilan
+      // API DripStore gagal, admin cuma lihat "CEK MANUAL" di semua baris tanpa
+      // tau kenapa (token invalid? rate limit? timeout? server DripStore down?).
+      // Sekarang pesan errornya ikut disimpan supaya bisa ditampilkan ke admin.
+      const balanceError = results[0].status === 'rejected' ? (results[0].reason?.message || String(results[0].reason)) : null;
+      const productsError = results[1].status === 'rejected' ? (results[1].reason?.message || String(results[1].reason)) : null;
+      if (balanceError) console.error('[dripstore] gagal ambil saldo:', balanceError);
+      if (productsError) console.error('[dripstore] gagal ambil katalog:', productsError);
       // Cache hanya diperbarui jika balance DAN products sama-sama terbaca.
       // Setelah TTL habis, kegagalan refresh tidak boleh menjadikan saldo/harga
       // lama sebagai sumber kebenaran stok baru.
@@ -1740,7 +1834,7 @@ async function getDripstoreCatalogSnapshot(settings) {
       // Kalau cache terakhir sudah expired dan refresh gagal, FAIL CLOSED.
       // Lebih aman menampilkan "Cek stok provider" daripada menjual berdasarkan
       // saldo/harga yang mungkin sudah kedaluwarsa.
-      return { balance: null, products: null, stale: true };
+      return { balance: null, products: null, stale: true, balanceError, productsError };
     } finally {
       _dripstoreCatalogInflight = null;
     }
@@ -1831,6 +1925,18 @@ function resolveDripstoreVariantFromCatalog(productsResp, productName, opt) {
 
 function findDripstoreVariantForOption(snapshot, productName, opt) {
   if (!snapshot?.products || !productName || !opt) return null;
+
+  // Prefer the explicitly auto-mapped Variant ID, but NEVER trust it blindly:
+  // the current provider catalog must still contain that ID and its current
+  // price. This avoids the old bug where a perfectly valid mapping became
+  // invisible because the provider's product/variant name formatting changed
+  // (for example `PATO BLUE — 7 hari` vs `7 hari`).
+  const mappedId = String(opt?.dripstoreVariantId || '').trim();
+  if (mappedId) {
+    const mappedStock = getDripstoreVirtualStock(snapshot, mappedId);
+    if (mappedStock !== null) return { variantId: mappedId, stock: mappedStock };
+  }
+
   const variantId = resolveDripstoreVariantFromCatalog(snapshot.products, productName, opt);
   if (!variantId) return null;
   const stock = getDripstoreVirtualStock(snapshot, variantId);
@@ -1871,24 +1977,31 @@ function getOptionStockView(product, opt, snapshot, mode, providerConfigured = f
   // LIVE berarti provider adalah satu-satunya sumber fulfillment. Jadi variant
   // yang belum ter-resolve TIDAK BOLEH terlihat punya stok lokal. Di HYBRID,
   // lokal tetap boleh tampil dan dipakai sebagai fallback.
+  // Stok lokal AGHA selalu merupakan stok nyata dan harus tetap dihitung,
+  // terlepas dari mode DripStore. DripStore hanya menjadi sumber tambahan /
+  // fallback. Sebelumnya mode `live` membuang localStock menjadi 0 sehingga
+  // key yang sebenarnya tersimpan di products.json (contoh XREG) dianggap
+  // kosong hanya karena tidak punya variant DripStore.
   const providerBacked = normalizedMode === 'live'
     ? !!providerConfigured
     : (!!opt?.dripstoreVariantId || !!resolved);
   if (!providerBacked) {
-    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: false, variantId: null };
+    return { stock: localStock, localStock, providerStock: 0, providerKnown: false, providerBacked: false, variantId: null };
   }
   if (!snapshot) {
-    // Provider belum terverifikasi. Jangan mengarang "1 stok" dan jangan
-    // menampilkan variant Habis sebagai fakta. Hybrid masih boleh memakai
-    // stok lokal yang benar-benar ada.
-    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
+    // Provider belum terverifikasi. Jangan mengarang stok provider; stok lokal
+    // tetap valid dan tetap tampil.
+    return { stock: localStock, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
   }
   if (!resolved) {
-    return { stock: normalizedMode === 'hybrid' ? localStock : 0, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
+    // Tidak ada variant provider yang cocok. Ini bukan berarti stok lokal habis.
+    return { stock: localStock, localStock, providerStock: 0, providerKnown: false, providerBacked: true, variantId: null };
   }
 
   const providerStock = Math.max(0, Number(resolved.stock) || 0);
-  const stock = normalizedMode === 'hybrid' ? localStock + providerStock : providerStock;
+  // Combined availability: stok lokal + stok provider. Fulfillment tetap
+  // local-first; provider dipakai sebagai fallback saat localStock = 0.
+  const stock = localStock + providerStock;
   return { stock, localStock, providerStock, providerKnown: true, providerBacked: true, variantId: resolved.variantId };
 }
 
@@ -1955,7 +2068,7 @@ function buildProductStockSummary(rawProduct, settings, snapshot = null) {
   }));
   const stockCount = stockByOption.length
     ? Math.max(...stockByOption.map(x => x.stock), 0)
-    : (mode === 'live' ? 0 : getLocalOptionStock(product, { days: null, unit: 'd' }));
+    : getLocalOptionStock(product, { days: null, unit: 'd' });
   return {
     product,
     mode,
@@ -2453,6 +2566,16 @@ app.get('/', async (req, res) => {
   const homeDsMode = settings.dripstore?.fulfillmentMode || 'live';
   if ((homeDsMode === 'live' || homeDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     homeProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    // IMPORTANT: on a Vercel cold start there is no in-memory provider cache.
+    // Rendering immediately with null snapshot makes every LIVE product look
+    // like stock=0 even though DripStore has balance/variants. Fetch one
+    // catalog snapshot for the first render; later requests use the cache.
+    if (!homeProviderSnapshot) {
+      homeProviderSnapshot = await Promise.race([
+        getDripstoreCatalogSnapshot(settings),
+        new Promise(resolve => setTimeout(() => resolve(null), 5000))
+      ]).catch(() => null);
+    }
     warmDripstoreCatalog(settings);
   }
   const homeProducts = products.map(rawProduct => {
@@ -2543,7 +2666,21 @@ app.post('/login', async (req, res) => {
   const users = readDB('users.json');
   const user = users.find(u => u.username === username);
 
-  if (user && await bcrypt.compare(password, user.password)) {
+  // BUG FIX (audit 19 Sep 2026): akun yang daftar via Google OAuth punya
+  // password: null (lihat GoogleStrategy callback di atas). bcrypt.compare()
+  // MELEMPAR error kalau hash-nya bukan string ("Illegal arguments: string,
+  // object"), bukan cuma balas false. Sebelumnya kode ini langsung
+  // await bcrypt.compare(password, user.password) tanpa cek user.password
+  // dulu -- kalau ada pengunjung (siapa saja, tidak perlu login) mengetik
+  // username akun Google-only ke form login manual ini, promise yang
+  // reject itu TIDAK PERNAH ditangkap (tidak ada try/catch di route ini),
+  // jadi jadi unhandled promise rejection: request menggantung tanpa
+  // respons sampai timeout, dan di Node modern proses server bisa ikut
+  // crash (unhandled rejection = uncaught exception secara default).
+  // Ini DoS trivial: attacker cukup tahu satu username akun Google buat
+  // bikin server down berulang kali. Fix: skip bcrypt.compare kalau akun
+  // ini tidak punya password lokal sama sekali.
+  if (user && user.password && await bcrypt.compare(password, user.password)) {
     clearLoginFail(ip);
     req.session.userId = user.id;
     req.session.isAdmin = (user.role === 'admin');
@@ -2600,7 +2737,12 @@ app.post('/api/auth/login', async (req, res) => {
   const users = readDB('users.json');
   const user = users.find(u => u.username === username);
 
-  if (user && await bcrypt.compare(password, user.password)) {
+  // BUG FIX (audit 19 Sep 2026): sama seperti /login -- lihat komentar
+  // panjang di route /login untuk penjelasan lengkap kenapa cek
+  // `user.password` wajib ada sebelum bcrypt.compare (akun Google OAuth
+  // punya password: null, dan bcrypt.compare(pw, null) throw, bukan
+  // balas false, sehingga tanpa guard ini request menggantung/crash).
+  if (user && user.password && await bcrypt.compare(password, user.password)) {
     clearLoginFail(ip);
     req.session.userId = user.id;
     req.session.isAdmin = (user.role === 'admin');
@@ -3072,15 +3214,15 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     let providerVariantId = null;
     let localInventoryCommitted = false;
 
-    // LOCAL/HYBRID: coba stok lokal exact dulu. Tidak pernah fallback ke
-    // durasi lain. Pada HYBRID, kalau lokal kosong BARU lanjut ke provider.
-    if ((fulfillmentMode === 'local' || fulfillmentMode === 'hybrid') && selectedDays != null) {
+    // Selalu coba stok lokal exact terlebih dahulu. Mode DripStore tidak boleh
+    // membuat key lokal yang sudah tersedia menjadi tidak terbaca.
+    if (selectedDays != null) {
       const local = await consumeLocalProductKey(product.id, selectedDays, selectedUnit);
       if (local.key) {
         key = local.key;
         localInventoryCommitted = !!local.committed;
       }
-    } else if (fulfillmentMode === 'local' && selectedDays == null) {
+    } else if (selectedDays == null) {
       const local = await consumeLocalProductKey(product.id, null, selectedUnit);
       if (local.key) {
         key = local.key;
@@ -3483,9 +3625,48 @@ app.get('/buy/:id', async (req, res) => {
   res.render('pages/buy', { product: productSafe, settings, user, isReseller, hasPurchased, categoryLabels: settings.categoryLabels || {} });
 });
 
+// Public catalog stock refresh: SATU request untuk seluruh kartu katalog.
+// Ini mencegah homepage harus memanggil /api/products/:id/stock satu per satu.
+// Provider tetap hanya dipanggil sekali lewat snapshot cache TTL pendek.
+app.get('/api/catalog/stock', async (req, res) => {
+  if (!checkApiRateLimit(req.ip)) return res.status(429).json({ success: false, message: 'Terlalu banyak permintaan. Coba lagi nanti.' });
+  try {
+    res.set('Cache-Control', 'no-store, max-age=0');
+    const rawProducts = (await readSmart('products.json')).filter(p => p.status === 'active');
+    const settings = await readFresh('settings.json');
+    const mode = ['live','hybrid','local'].includes(settings.dripstore?.fulfillmentMode)
+      ? settings.dripstore.fulfillmentMode : 'live';
+    let snapshot = null;
+    if ((mode === 'live' || mode === 'hybrid') && settings.dripstore?.apiToken) {
+      snapshot = getCachedDripstoreCatalogSnapshot(settings);
+      if (!snapshot) snapshot = await getDripstoreCatalogSnapshot(settings);
+    }
+    const items = rawProducts.map(raw => {
+      const summary = buildProductStockSummary(raw, settings, snapshot);
+      return {
+        productId: String(raw.id),
+        stockCount: summary.stockCount,
+        providerStockUnknown: summary.providerStockUnknown,
+        items: summary.stockByOption.map(view => ({
+          stock: view.stock,
+          localStock: view.localStock,
+          providerStock: view.providerStock,
+          providerKnown: view.providerKnown,
+          providerBacked: view.providerBacked,
+          variantId: view.variantId
+        }))
+      };
+    });
+    return res.json({ success: true, mode, items });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: e.message });
+  }
+});
+
 // Public stock refresh endpoint used by the buy page when the first render
 // could not verify provider data quickly enough. Never returns actual local keys.
 app.get('/api/products/:id/stock', async (req, res) => {
+  if (!checkApiRateLimit(req.ip)) return res.status(429).json({ success: false, message: 'Terlalu banyak permintaan. Coba lagi nanti.' });
   try {
     res.set('Cache-Control', 'no-store, max-age=0');
     const rawProducts = await readFresh('products.json');
@@ -3928,19 +4109,10 @@ async function finalizeOrder(refId, settings) {
   let providerVariantId = null;
 
   const fulfillmentMode = settings.dripstore?.fulfillmentMode || 'live';
-  const shouldTryLiveFirst = fulfillmentMode === 'live';
-  const shouldTryLocalFirst = fulfillmentMode === 'local' || fulfillmentMode === 'hybrid';
-
-  if (shouldTryLiveFirst) {
-    const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
-    if (liveProvider && !liveProvider.error) {
-      key = liveProvider.key; keySource = liveProvider.source;
-      providerTransactionId = liveProvider.providerTransactionId; providerVariantId = liveProvider.variantId;
-    } else if (liveProvider?.error) {
-      console.error('[DripStore live fulfillment]', transaction.code, liveProvider.error.message);
-      outOfStock = true;
-    }
-  }
+  // Local inventory is always tried first. This is intentional even when the
+  // setting is `live`: DripStore is a fallback source, not a replacement for
+  // keys already stored in AGHA.
+  const shouldTryLocalFirst = true;
 
   let products = await readFresh('products.json');
   let product = products.find(p => p.id === transaction.productId);
@@ -3961,7 +4133,7 @@ async function finalizeOrder(refId, settings) {
     }
   }
 
-  if (!key && !outOfStock && fulfillmentMode === 'hybrid') {
+  if (!key && !outOfStock && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid')) {
     const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
     if (liveProvider && !liveProvider.error) {
       key = liveProvider.key; keySource = liveProvider.source;
@@ -4262,6 +4434,65 @@ app.post('/invoice', async (req, res) => {
 app.post('/admin/session/heartbeat', requireAdmin, (req, res) => {
   res.json({ success: true });
 });
+
+// ══════════════════════════════════════════════════════════════════
+// BUG FIX (audit 19 Sep 2026): tombol "Export Database" / "Import Database"
+// di admin.ejs (lihat <a href="/admin/export"> dan fetch('/admin/import'))
+// SUDAH ADA di UI sejak lama, tapi endpoint server-nya TIDAK PERNAH dibuat
+// -- klik Export selalu 404 ("ga bisa export, error"), dan Import pasti
+// gagal juga karena fetch ke route yang tidak ada. Ini juga yang bikin
+// Mul tidak bisa narik daftar lengkap key produk (mis. 49 key XREG) lewat
+// fitur backup, karena satu-satunya jalan keluar (export per-produk lewat
+// tombol "Export Keys" di halaman edit produk) beda dari tombol backup
+// database penuh ini.
+//
+// Export: satu file JSON berisi SEMUA koleksi data (persis daftar
+// DB_FILES di supabase.js) -- format ini SENGAJA dibuat identik dengan
+// yang dibaca importDB() di admin.ejs, supaya file hasil export bisa
+// langsung dipakai lagi lewat tombol Import tanpa diedit.
+const EXPORTABLE_DB_FILES = ['users.json','products.json','transactions.json','testimonials.json','notifications.json','settings.json','keyspool.json','vouchers.json','admin-lock.json'];
+
+app.get('/admin/export', requireAdmin, async (req, res) => {
+  try {
+    const dump = {};
+    for (const file of EXPORTABLE_DB_FILES) {
+      dump[file] = await readFresh(file);
+    }
+    const settings = dump['settings.json'] || {};
+    const safeName = (settings.siteName || 'agha-nl').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="backup-${safeName || 'agha-nl'}-${stamp}.json"`);
+    res.send(JSON.stringify(dump, null, 2));
+  } catch (error) {
+    console.error('[admin/export] error:', error.message);
+    res.status(500).json({ success: false, message: 'Gagal export database: ' + error.message });
+  }
+});
+
+// Import: hanya menerima key yang memang dikenal (EXPORTABLE_DB_FILES) --
+// mencegah upload file JSON acak/berbahaya menimpa koleksi yang tidak
+// seharusnya bisa ditulis dari sini. Ditulis satu per satu (bukan
+// Promise.all) supaya kalau salah satu gagal di tengah jalan, pesan error
+// jelas menyebut file mana yang bermasalah alih-alih database jadi
+// campuran separuh lama-separuh baru tanpa penjelasan.
+app.post('/admin/import', requireAdmin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const incomingKeys = Object.keys(body).filter(k => EXPORTABLE_DB_FILES.includes(k));
+    if (incomingKeys.length === 0) {
+      return res.json({ success: false, message: 'File tidak berisi data yang dikenali (harus hasil export dari fitur ini).' });
+    }
+    for (const file of incomingKeys) {
+      await writeDB(file, body[file]);
+    }
+    res.json({ success: true, message: `${incomingKeys.length} koleksi berhasil di-restore (${incomingKeys.join(', ')})` });
+  } catch (error) {
+    console.error('[admin/import] error:', error.message);
+    res.json({ success: false, message: 'Gagal import database: ' + error.message });
+  }
+});
+
 
 // Status koneksi Supabase, dipakai widget "Status Database" di Settings.
 // BUG SEBELUMNYA: frontend sudah fetch('/admin/db-status') tapi route ini
@@ -5009,6 +5240,12 @@ app.get('/admin', requireAdmin, async (req, res) => {
   let adminProviderSnapshot = null;
   if ((adminDsMode === 'live' || adminDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     adminProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    if (!adminProviderSnapshot) {
+      adminProviderSnapshot = await Promise.race([
+        getDripstoreCatalogSnapshot(settings),
+        new Promise(resolve => setTimeout(() => resolve(null), 5000))
+      ]).catch(() => null);
+    }
     warmDripstoreCatalog(settings);
   }
   const adminProducts = products.map(rawProduct => {
@@ -5541,6 +5778,48 @@ app.get('/admin/dripstore/balance', requireAdmin, async (req, res) => {
     res.json({ success: true, data: resp.data || resp });
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
+
+// FITUR BARU (audit 21 Sep 2026): lihat komentar panjang di dripstoreDiagnose()
+// -- endpoint terpisah ini sengaja TIDAK dipakai jalur checkout/scan biasa,
+// khusus dipanggil tombol "Cek Saldo" di admin panel supaya root-cause macet
+// koneksi ke DripStore kelihatan jelas (fase per fase), bukan cuma "timeout".
+app.get('/admin/dripstore/diagnose', requireAdmin, async (req, res) => {
+  const settings = await readFresh('settings.json');
+  const result = await dripstoreDiagnose(settings);
+  res.json(result);
+});
+
+// FITUR BARU (audit 20 Sep 2026): dibuat karena berulang kali nama produk
+// yang diketik manual di AGHA NL beda dengan nama ASLI di sistem DripStore
+// (typo, urutan kata, kata tambahan seperti "VERSION"), dan sejauh ini
+// satu-satunya cara mendeteksi itu adalah tebak-tebakan lewat Cek Kemampuan
+// Saldo. Endpoint ini membongkar katalog mentah DripStore (products.php)
+// dan mengembalikan nama produk + nama variant + ID variant PERSIS seperti
+// tersimpan di sistem mereka, supaya admin bisa cari & kasih tau Claude
+// nama yang benar untuk didaftarkan ke DRIPSTORE_PRODUCT_ALIASES.
+app.get('/admin/dripstore/catalog-search', requireAdmin, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const settings = await readFresh('settings.json');
+    const snapshot = await getDripstoreCatalogSnapshot(settings);
+    if (!snapshot.products) {
+      return res.json({ success: false, message: 'Katalog DripStore belum bisa dibaca (cek token API di Settings).' });
+    }
+    const items = _dsExtractProductItems(snapshot.products);
+    const filtered = q ? items.filter(it => (it.productName + ' ' + it.variantName).toLowerCase().includes(q)) : items;
+    // Group per productName biar gampang dibaca, bukan satu baris per variant durasi.
+    const grouped = {};
+    for (const it of filtered) {
+      const key = it.productName || '(tanpa nama)';
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push({ variantId: it.variantId, variantName: it.variantName, days: it.days, unit: it.unit });
+    }
+    res.json({ success: true, count: filtered.length, products: grouped });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Gagal cari katalog: ' + error.message });
+  }
+});
+
 
 app.get('/admin/dripstore/availability', requireAdmin, async (req, res) => {
   try {
@@ -6266,11 +6545,17 @@ app.get('/admin/product/:id', requireAdmin, async (req, res) => {
 app.post('/admin/product/:id', requireAdmin, async (req, res) => {
   try {
     const result = await withPersistentProductStockLock(req.params.id, async () => {
-      const { items, bannerUrl, status, keys, keysMode, categories, channelUrl, downloadUrl, fakeSold, description, videoUrl, compatibility, featureList } = req.body;
+      const { items, name, bannerUrl, status, keys, keysMode, categories, channelUrl, downloadUrl, fakeSold, description, videoUrl, compatibility, featureList } = req.body;
       const products = await readFresh('products.json');
       const productIndex = products.findIndex(p => p.id === req.params.id);
       if (productIndex === -1) throw new Error('Produk tidak ditemukan');
       const p = products[productIndex];
+
+      // BUG FIX (audit 20 Sep 2026): sebelumnya field `name` tidak pernah
+      // dibaca/disimpan di sini sama sekali, jadi nama produk memang tidak
+      // bisa diubah dari admin panel (lihat juga fix di admin-product-edit.ejs
+      // yang baru menambahkan kolom inputnya).
+      if (typeof name === 'string' && name.trim()) p.name = name.trim();
 
       if (bannerUrl && bannerUrl.trim()) { p.image = bannerUrl.trim(); p.bannerUrl = bannerUrl.trim(); }
       if (status) p.status = status;

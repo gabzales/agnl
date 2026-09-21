@@ -1391,6 +1391,21 @@ html.dark .badge-featured { color:#fca5a5 !important; }
             <div id="dripstoreAutoMapResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
             <div id="dripstoreBalanceResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
             <div id="dripstoreAvailabilityResult" class="hidden text-[11px] p-2.5 rounded-lg max-h-64 overflow-auto"></div>
+
+            <!-- FITUR BARU (audit 20 Sep 2026): cari nama produk & ID variant
+                 PERSIS seperti tersimpan di katalog mentah DripStore, supaya
+                 tidak lagi tebak-tebakan kalau nama di sini beda dengan nama
+                 promosi/caption yang dikasih owner DripStore lewat chat. -->
+            <div class="mt-3 flex gap-2">
+                <input type="text" id="dripstoreCatalogSearchInput" placeholder="Cari nama produk di katalog DripStore (mis. hg safe)"
+                    class="flex-1 bg-black/30 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500/50 focus:outline-none"
+                    onkeydown="if(event.key==='Enter'){event.preventDefault();searchDripstoreCatalog();}">
+                <button type="button" onclick="searchDripstoreCatalog()" class="px-3 py-2 rounded-xl text-xs font-bold text-emerald-300 border border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all shrink-0">
+                    <iconify-icon icon="mdi:magnify"></iconify-icon> Cari
+                </button>
+            </div>
+            <div id="dripstoreCatalogSearchResult" class="hidden text-[11px] p-2.5 rounded-lg max-h-64 overflow-auto mt-2"></div>
+
             <div class="mt-3 p-3 rounded-xl" style="background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15)">
                 <div class="flex items-center justify-between gap-2 mb-2">
                     <div class="text-[11px] font-bold text-blue-300 flex items-center gap-1.5"><iconify-icon icon="mdi:clipboard-clock-outline"></iconify-icon> Pending Restock Approval</div>
@@ -2774,10 +2789,22 @@ async function checkDripstoreBalance() {
         if (d.success) {
             box.className = 'text-[11px] p-2.5 rounded-lg bg-green-500/10 text-green-300 border border-green-500/25';
             box.innerHTML = `<iconify-icon icon="mdi:check-circle" style="vertical-align:-2px;"></iconify-icon> Saldo DripStore: <b>${JSON.stringify(d.data)}</b>`;
-        } else {
-            box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
-            box.textContent = '❌ ' + d.message;
+            return;
         }
+        // FITUR BARU (audit 21 Sep 2026): kalau cek saldo biasa gagal, langsung
+        // susul dengan diagnose() supaya sekali klik langsung dapat root-cause
+        // (fase mana yang macet), bukan cuma pesan error generik.
+        box.className = 'text-[11px] p-2.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/25';
+        box.textContent = '⚠️ ' + d.message + ' — menjalankan diagnosa detail...';
+        const dr = await fetch('/admin/dripstore/diagnose');
+        const dd = await dr.json();
+        const rows = (dd.timeline || []).map(t => `<div>+${t.ms}ms — ${t.phase}</div>`).join('');
+        box.className = dd.ok
+            ? 'text-[11px] p-2.5 rounded-lg bg-green-500/10 text-green-300 border border-green-500/25'
+            : 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
+        box.innerHTML = `<div class="font-bold mb-1">${dd.ok ? '✅' : '❌'} ${dd.summary}</div>` +
+            (dd.rawBodyPreview ? `<div class="text-zinc-400 mb-1">Body: ${dd.rawBodyPreview.replace(/</g,'&lt;')}</div>` : '') +
+            `<div class="font-mono text-zinc-500">${rows}</div>`;
     } catch (err) {
         box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
         box.textContent = '❌ Gagal konek: ' + err.message;
@@ -2799,7 +2826,20 @@ async function scanDripstoreAvailability() {
         const unknown = rows.filter(x => x.available === null).length;
         box.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/5 text-zinc-300 border border-emerald-500/20';
         const head = `<div class="font-bold text-emerald-300 mb-2">Saldo provider: $${d.balance == null ? '?' : Number(d.balance).toFixed(2)} • ${available} tersedia • ${unavailable} tidak cukup • ${unknown} belum terbaca</div>`;
-        const body = rows.slice(0,80).map(x => {
+        // BUG FIX (audit 19 Sep 2026): sebelumnya cuma rows.slice(0,80) TANPA
+        // keterangan apapun kalau ada baris yang kepotong. Produk baru selalu
+        // numpuk di urutan paling akhir (mengikuti urutan produk di
+        // products.json), jadi begitu total baris produk x durasi di seluruh
+        // toko sudah lewat 80, produk yang BARU ditambahkan otomatis tidak
+        // pernah ke-render sama sekali di sini -- padahal datanya sebenarnya
+        // ada dan terhitung di ringkasan "tersedia/tidak cukup/belum terbaca"
+        // di atas (yang dihitung dari `rows` penuh, bukan dari hasil slice).
+        // Ini persis laporan "add produk baru tapi nggak ada nama produknya".
+        // Fix: naikkan batas tampil jauh lebih tinggi + kasih catatan eksplisit
+        // kalau memang masih ada sisa yang tidak ditampilkan.
+        const DISPLAY_LIMIT = 500;
+        const shown = rows.slice(0, DISPLAY_LIMIT);
+        const body = shown.map(x => {
             const label = `${x.productName} — ${x.days}${x.unit==='h'?' jam':' hari'}`;
             const price = x.cost == null ? 'harga ?' : `$${Number(x.cost).toFixed(2)}`;
             const cap = x.providerCapacity == null ? 'kapasitas ?' : `provider ${x.providerCapacity}`;
@@ -2808,9 +2848,43 @@ async function scanDripstoreAvailability() {
             const state = x.available === true ? '<span class="text-emerald-300">BISA</span>' : x.available === false ? '<span class="text-red-300">TIDAK CUKUP</span>' : '<span class="text-amber-300">CEK MANUAL</span>';
             return `<div class="flex items-center justify-between gap-2 py-1 border-b border-white/5"><span class="truncate">${label}</span><span class="shrink-0">${price} • lokal ${local} + ${cap} = ${total} total • ${state}</span></div>`;
         }).join('');
-        box.innerHTML = head + (body || '<div>Belum ada variant yang ter-mapping.</div>');
+        const truncatedNote = rows.length > DISPLAY_LIMIT
+            ? `<div class="text-amber-300 mt-2">+ ${rows.length - DISPLAY_LIMIT} baris lainnya tidak ditampilkan (terlalu banyak untuk 1 layar).</div>`
+            : '';
+        box.innerHTML = head + (body || '<div>Belum ada variant yang ter-mapping.</div>') + truncatedNote;
     } catch (err) {
         box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
+        box.textContent = '❌ ' + err.message;
+    }
+}
+
+// FITUR BARU (audit 20 Sep 2026): cari nama produk & ID variant PERSIS
+// seperti tersimpan di katalog mentah DripStore (lihat GET
+// /admin/dripstore/catalog-search) -- dipakai kalau nama yang dikasih owner
+// DripStore lewat chat/promosi ternyata beda dengan nama asli di sistemnya.
+async function searchDripstoreCatalog() {
+    const q = document.getElementById('dripstoreCatalogSearchInput').value.trim();
+    const box = document.getElementById('dripstoreCatalogSearchResult');
+    box.classList.remove('hidden');
+    box.className = 'text-[11px] p-2.5 rounded-lg bg-white/5 text-zinc-400 border border-white/10 mt-2';
+    box.textContent = 'Mencari...';
+    try {
+        const r = await fetch('/admin/dripstore/catalog-search?q=' + encodeURIComponent(q));
+        const d = await r.json();
+        if (!d.success) throw new Error(d.message || 'Gagal mencari');
+        const names = Object.keys(d.products || {});
+        if (names.length === 0) {
+            box.className = 'text-[11px] p-2.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/25 mt-2';
+            box.textContent = q ? `Tidak ada produk DripStore yang cocok dengan "${q}".` : 'Katalog kosong.';
+            return;
+        }
+        box.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/5 text-zinc-300 border border-emerald-500/20 mt-2';
+        box.innerHTML = names.map(name => {
+            const variants = d.products[name].map(v => `${v.variantName || (v.days + (v.unit==='h'?'jam':'hari'))} <span class="text-zinc-500">(ID: ${v.variantId})</span>`).join(', ');
+            return `<div class="py-1.5 border-b border-white/5"><div class="font-bold text-emerald-300">${name}</div><div class="text-zinc-400 mt-0.5">${variants}</div></div>`;
+        }).join('');
+    } catch (err) {
+        box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25 mt-2';
         box.textContent = '❌ ' + err.message;
     }
 }

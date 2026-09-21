@@ -1,5 +1,5 @@
 const fs = require('fs');
-const ts = require('/opt/nvm/versions/node/v22.16.0/lib/node_modules/typescript/lib/typescript.js');
+const ts = require('typescript');
 const vm = require('vm');
 
 const source = fs.readFileSync(__dirname + '/server.js', 'utf8');
@@ -55,6 +55,8 @@ const snapshot = {balance:'$1.34',products:provider};
 assert(ctx.getDripstoreVirtualStock(snapshot,'v3')===1,'AIM 3d capacity 1');
 assert(ctx.getDripstoreVirtualStock(snapshot,'v7')===0,'AIM 7d capacity 0');
 assert(ctx.getDripstoreVirtualStock(snapshot,'v30')===0,'AIM 30d capacity 0');
+const mappedOpt = {days:7,unit:'d',dripstoreVariantId:'v7'};
+assert(ctx.getOptionStockView({name:'PATO BLUE — 7 hari',keys:[]},mappedOpt,snapshot,'live',true).stock===0,'mapped variant is resolved from current catalog even when product name formatting differs');
 
 const product = {name:'XREG APK MOD',status:'active',keys:['AAA=3d','BBB=3d','CCC=7d','Stok tidak tersedia:3'],pricingOptions:[
   {days:3,unit:'d',price:10000,dripstoreVariantId:'v3'},
@@ -68,9 +70,9 @@ assert(hybrid.stockByOption[1].localStock===1 && hybrid.stockByOption[1].provide
 assert(hybrid.stockCount===3,'product stock uses max option, not sum');
 
 const liveUnmapped = ctx.getOptionStockView({name:'XREG APK MOD',keys:['AAA=3d']},{days:3,unit:'d',dripstoreVariantId:null},snapshot,'live',true);
-assert(liveUnmapped.stock===1,'live resolves via current provider catalog');
+assert(liveUnmapped.stock===2,'live combines local 1 with provider 1');
 const liveMissing = ctx.getOptionStockView({name:'UNKNOWN PRODUCT',keys:['AAA=3d']},{days:3,unit:'d',dripstoreVariantId:null},snapshot,'live',true);
-assert(liveMissing.stock===0 && liveMissing.providerBacked===true && liveMissing.providerKnown===false,'live unmapped never exposes local stock');
+assert(liveMissing.stock===1 && liveMissing.localStock===1 && liveMissing.providerBacked===true && liveMissing.providerKnown===false,'unmapped provider still exposes real local stock');
 
 const units = {name:'T',keys:['H=3h','D=3d'],pricingOptions:[{days:3,unit:'h',price:1},{days:3,unit:'d',price:2}]};
 assert(ctx.getLocalOptionStock(units,units.pricingOptions[0])===1,'hour local stock exact');
