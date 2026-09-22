@@ -292,6 +292,9 @@ const schemaProduct = {
                 <% const displayPrice = (isReseller && item.reseller_price) ? item.reseller_price : item.p; %>
                 <label id="pkg-label-<%= idx %>" class="pkg-option-label" style="<%= isOutOfStock ? 'opacity:0.5;cursor:not-allowed;' : '' %>">
                     <input id="pkg-radio-<%= idx %>" type="radio" name="pkg" value="<%= idx %>"
+                           autocomplete="off"
+                           data-label="<%= item.l || '' %>" data-price="<%= Number(displayPrice || 0) %>" data-stock="<%= itemStock %>"
+                           data-duration-value="<%= item.durationValue != null ? Number(item.durationValue) : '' %>" data-duration-unit="<%= item.durationUnit || 'd' %>"
                            onchange="selectPkg(<%- JSON.stringify(item.l || '') %>, <%= Number(displayPrice || 0) %>, <%= itemStock %>, <%= item.durationValue != null ? Number(item.durationValue) : 'null' %>, <%- JSON.stringify(item.durationUnit || 'd') %>)"
                            <%= idx===firstAvailableIndex ? 'checked' : '' %>
                            <%= isOutOfStock ? 'disabled' : '' %>>
@@ -684,6 +687,33 @@ const schemaProduct = {
 
     syncOrderButton();
 
+    // FIX (bug: refresh/back-forward bikin ringkasan "Durasi" & Total tidak
+    // sesuai kartu yang sebenarnya ke-checked): browser suka mempertahankan
+    // radio yang dipilih user lewat reload / navigasi back tanpa memicu
+    // event 'change', sementara ringkasan di render server pakai default
+    // (opsi pertama yang stok ada). Jadi di sini kita SELALU baca radio yang
+    // benar-benar checked di DOM saat halaman tampil, dan paksa ringkasan +
+    // total + tombol ikut itu -- bukan percaya begitu saja INITIAL_PKG dari server.
+    function syncSelectedFromCheckedRadio() {
+        const checked = document.querySelector('input[name="pkg"]:checked');
+        if (!checked) return;
+        const label = checked.dataset.label || '';
+        const price = Number(checked.dataset.price || 0);
+        const stock = Number(checked.dataset.stock || 0);
+        const durationValue = checked.dataset.durationValue !== '' ? Number(checked.dataset.durationValue) : null;
+        const durationUnit = checked.dataset.durationUnit || 'd';
+        if (selPkg.label === label && selPkg.price === price && selPkg.stock === stock) return; // sudah sinkron
+        selPkg = { label, price, stock, durationValue, durationUnit };
+        document.getElementById('selectedLabel').textContent = label;
+        updateTotalDisplay(price);
+        syncOrderButton();
+    }
+    syncSelectedFromCheckedRadio();
+    // 'pageshow' menangkap kasus browser mengembalikan halaman dari
+    // back-forward cache (bfcache), di mana script di atas TIDAK dijalankan
+    // ulang tapi state form (radio checked) sudah dikembalikan browser.
+    window.addEventListener('pageshow', syncSelectedFromCheckedRadio);
+
     async function refreshProviderStock() {
         // Untuk produk yang memakai provider, lakukan satu refresh ringan setelah
         // render supaya angka kartu tidak tertinggal dari snapshot server saat
@@ -755,6 +785,7 @@ const schemaProduct = {
                         // Tanpa ini tombol bisa tetap memakai angka stok dari
                         // render awal walaupun endpoint baru saja memperbarui card.
                         selPkg.stock = stock;
+                        radio.dataset.stock = String(stock);
                     }
                 }
             });
