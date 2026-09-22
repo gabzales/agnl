@@ -295,7 +295,7 @@ const schemaProduct = {
                            autocomplete="off"
                            data-label="<%= item.l || '' %>" data-price="<%= Number(displayPrice || 0) %>" data-stock="<%= itemStock %>"
                            data-duration-value="<%= item.durationValue != null ? Number(item.durationValue) : '' %>" data-duration-unit="<%= item.durationUnit || 'd' %>"
-                           onchange="selectPkg(<%- JSON.stringify(item.l || '') %>, <%= Number(displayPrice || 0) %>, <%= itemStock %>, <%= item.durationValue != null ? Number(item.durationValue) : 'null' %>, <%- JSON.stringify(item.durationUnit || 'd') %>)"
+                           onchange="selectPkg(<%= JSON.stringify(item.l || '') %>, <%= Number(displayPrice || 0) %>, <%= itemStock %>, <%= item.durationValue != null ? Number(item.durationValue) : 'null' %>, <%= JSON.stringify(item.durationUnit || 'd') %>)"
                            <%= idx===firstAvailableIndex ? 'checked' : '' %>
                            <%= isOutOfStock ? 'disabled' : '' %>>
                     <div class="pkg-card rounded-2xl p-3">
@@ -352,7 +352,7 @@ const schemaProduct = {
             <input type="tel" id="waInput" required
                 class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none transition-all"
                 style="background:var(--bg-section);border:1px solid var(--border);"
-                onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                onfocus="this.style.borderColor=<%= JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
                 placeholder="08xxxxxxxxxx"
                 value="<%= user?.wa || '' %>" maxlength="15">
         </div>
@@ -363,7 +363,7 @@ const schemaProduct = {
             <input type="text" id="customerName" required
                 class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none transition-all"
                 style="background:var(--bg-section);border:1px solid var(--border);"
-                onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                onfocus="this.style.borderColor=<%= JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
                 placeholder="Nama kamu"
                 value="<%= user?.username && !user?.isGuest ? user.username : '' %>" maxlength="60">
         </div>
@@ -375,7 +375,7 @@ const schemaProduct = {
                 <input type="text" id="voucherInput" placeholder="Masukkan kode voucher"
                     class="flex-1 px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none uppercase font-mono transition-all"
                     style="background:var(--bg-section);border:1px solid var(--border);"
-                    onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                    onfocus="this.style.borderColor=<%= JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
                     maxlength="30" oninput="this.value=this.value.toUpperCase(); clearVoucher()">
                 <button onclick="applyVoucher()" id="voucherBtn"
                     class="px-4 py-3 rounded-xl text-xs font-bold transition-all flex-shrink-0"
@@ -514,7 +514,7 @@ const schemaProduct = {
         <textarea id="reviewText"
             class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none resize-none mb-2 transition-all"
             style="background:var(--bg-section);border:1px solid var(--border);"
-            onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+            onfocus="this.style.borderColor=<%= JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
             rows="3" placeholder="Bagikan pengalaman kamu dengan produk ini..."></textarea>
         <button onclick="submitReview()"
             class="btn-ghost w-full py-2.5 rounded-xl text-xs font-bold text-red-400 flex items-center justify-center gap-2">
