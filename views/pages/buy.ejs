@@ -600,6 +600,18 @@ const schemaProduct = {
                     </div>
                 </div>
 
+                <!-- HUBUNGI CS (diminta client) -- beda dari #staticNote di atas
+                     yang CUMA muncul untuk mode QRIS statis. Tombol ini SELALU
+                     tampil apapun mode pembayarannya (statis maupun API
+                     Pakasir/GensPay/Stenly), supaya user yang nunggu QRIS
+                     dinamis pun tetap punya jalur kontak CS kalau ada kendala. -->
+                <a href="https://wa.me/<%= (settings.contact?.whatsapp || '6285181236886').replace(/\D/g,'') %>?text=<%= encodeURIComponent('Halo min, saya butuh bantuan untuk pesanan produk ' + (product?.name || '')) %>"
+                   target="_blank" rel="noopener"
+                   class="w-full py-2.5 rounded-xl text-xs font-bold text-center flex items-center justify-center gap-1.5 mt-2"
+                   style="background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:#4ade80;">
+                    <iconify-icon icon="mdi:whatsapp" class="text-sm"></iconify-icon> Ada Kendala? Hubungi CS
+                </a>
+
                 <!-- CEK ULANG -->
                 <button id="recheckBtn" onclick="recheckNow()" class="hidden w-full py-2.5 rounded-xl text-xs font-bold text-red-400 border border-red-500/25 bg-red-500/5 hover:bg-red-500/10 transition-all flex items-center justify-center gap-2">
                     <iconify-icon icon="mdi:refresh" class="text-sm"></iconify-icon> Cek Status Sekarang
