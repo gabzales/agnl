@@ -738,6 +738,9 @@ const schemaProduct = {
             if (!res.ok) return;
             const data = await res.json();
             if (!data?.success || !Array.isArray(data.items)) return;
+            // Provider sedang rate-limit: pertahankan tampilan hasil render server,
+            // jangan timpa dengan data stale/kosong dari fallback.
+            if (data.rateLimited) return;
 
             const radios = Array.from(document.querySelectorAll('input[name=\"pkg\"]'));
             let currentIndex = radios.findIndex(r => r.checked);

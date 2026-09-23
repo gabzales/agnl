@@ -248,17 +248,14 @@ const pageTitle = settings?.siteName || 'AGHA NL';
      kategori jadi terasa jadi bagian dari katalog, bukan section
      terpisah sendiri di awal halaman. -->
 
-<!-- ══ TOMBOL GABUNG GRUP TELEGRAM (diminta client 22 Agu 2026) ══ -->
-<% if (settings?.contact?.telegram) { %>
+<!-- ══ TOMBOL YOUTUBE ══ -->
 <div class="max-w-6xl mx-auto px-4 pt-4">
-  <a href="https://t.me/<%= settings.contact.telegram.replace('@','') %>" target="_blank"
-     style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:11px 0;border-radius:4px;background:#229ED9;color:#fff;text-decoration:none;font-size:12px;font-weight:800;">
-    <iconify-icon icon="mdi:telegram" style="font-size:16px;"></iconify-icon>
-    Gabung Grup Telegram
+  <a href="https://youtube.com/shorts/EQBM--1dZ8o?si=EcE0JZyYqx7BArH8" target="_blank"
+     style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:11px 0;border-radius:4px;background:#FF0000;color:#fff;text-decoration:none;font-size:12px;font-weight:800;">
+    <iconify-icon icon="mdi:youtube" style="font-size:16px;"></iconify-icon>
+    CARA BELI KEY DI WEB AGHA NL
   </a>
 </div>
-<% } %>
-
 <!-- ══ PRODUK POPULER (diminta client 23 Agu 2026) ══
      Diurutkan dari sold/fakeSold tertinggi, tampil sebagai row scroll
      horizontal di atas grid "Semua Produk" (bukan grid biasa, supaya
@@ -779,9 +776,13 @@ function renderTurnstileWidgets(){
   let needRetry = false;
   try {
     const r = await fetch('/api/catalog/stock', { cache: 'no-store' });
+    if (r.status === 429) { return; }
     if (!r.ok) { needRetry = true; }
     else {
     const d = await r.json();
+    // Server bilang provider lagi rate-limit: JANGAN retry (tiap retry = beban
+    // ke provider). Tampilan tetap pakai data yang sudah dirender server.
+    if (d && d.rateLimited) { return; }
     if (!d?.success || !Array.isArray(d.items)) { needRetry = true; }
     else {
     const byId = new Map(d.items.map(x => [String(x.productId), x]));
