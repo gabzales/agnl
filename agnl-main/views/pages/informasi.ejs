@@ -1,0 +1,138 @@
+<%
+const pageTitle = 'Informasi';
+%>
+
+<style>
+  /* FIX (dark mode, 23 Agu 2026): override class Tailwind text-zinc-*/
+     bg-zinc-50 hardcode supaya ikut var(--text-*)/var(--bg-*) sesuai tema. */
+  .text-zinc-900 { color: var(--text-1) !important; }
+  .text-zinc-400, .text-zinc-500 { color: var(--text-2) !important; }
+  .bg-zinc-50 { background: var(--bg-section) !important; }
+  .border-zinc-200 { border-color: var(--border) !important; }
+</style>
+
+<div class="min-h-screen pt-20 pb-24 px-4" style="background:var(--bg-main);">
+<div class="max-w-2xl mx-auto">
+
+  <div class="mb-6">
+    <h1 class="text-2xl font-black text-zinc-900">Informasi</h1>
+    <p class="text-zinc-500 text-sm mt-0.5">Semua yang perlu kamu tahu sebelum & sesudah belanja</p>
+  </div>
+
+  <!-- Tabs -->
+  <div class="flex gap-2 mb-6 overflow-x-auto" style="scrollbar-width:none;">
+    <a href="/informasi?tab=cara-beli" class="flex-shrink-0 px-4 py-2.5 rounded-xl text-xs font-bold transition-all <%= activeTab==='cara-beli' ? 'bg-red-600 text-white' : 'bg-zinc-50 text-zinc-500 border border-zinc-200' %>">
+      <iconify-icon icon="mdi:cart-outline" class="align-middle mr-1"></iconify-icon>Cara Beli
+    </a>
+    <a href="/informasi?tab=faq" class="flex-shrink-0 px-4 py-2.5 rounded-xl text-xs font-bold transition-all <%= activeTab==='faq' ? 'bg-red-600 text-white' : 'bg-zinc-50 text-zinc-500 border border-zinc-200' %>">
+      <iconify-icon icon="mdi:help-circle-outline" class="align-middle mr-1"></iconify-icon>FAQ / Bantuan
+    </a>
+    <a href="/informasi?tab=syarat" class="flex-shrink-0 px-4 py-2.5 rounded-xl text-xs font-bold transition-all <%= activeTab==='syarat' ? 'bg-red-600 text-white' : 'bg-zinc-50 text-zinc-500 border border-zinc-200' %>">
+      <iconify-icon icon="mdi:file-document-outline" class="align-middle mr-1"></iconify-icon>Syarat Ketentuan
+    </a>
+  </div>
+
+  <% if (activeTab === 'cara-beli') { %>
+  <!-- ── CARA BELI ── -->
+  <div class="space-y-4">
+    <div class="rounded-xl p-4" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">
+      <div class="flex gap-3 items-start">
+        <div class="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center font-black text-white text-sm flex-shrink-0">1</div>
+        <div>
+          <h3 class="font-bold text-zinc-900 text-sm mb-1">Pilih Produk & Durasi</h3>
+          <p class="text-xs text-zinc-400 leading-relaxed">Cari produk yang kamu mau di halaman utama, klik untuk buka detail, lalu pilih paket durasi (harian/mingguan/bulanan) yang tersedia.</p>
+        </div>
+      </div>
+    </div>
+    <div class="rounded-xl p-4" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">
+      <div class="flex gap-3 items-start">
+        <div class="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center font-black text-white text-sm flex-shrink-0">2</div>
+        <div>
+          <h3 class="font-bold text-zinc-900 text-sm mb-1">Isi Nama & Nomor WhatsApp</h3>
+          <p class="text-xs text-zinc-400 leading-relaxed">Cukup isi nama dan nomor WhatsApp aktif — tidak perlu daftar akun dulu. Nomor WA dipakai untuk kirim notifikasi kalau ada kendala transaksi.</p>
+        </div>
+      </div>
+    </div>
+    <div class="rounded-xl p-4" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">
+      <div class="flex gap-3 items-start">
+        <div class="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center font-black text-white text-sm flex-shrink-0">3</div>
+        <div>
+          <h3 class="font-bold text-zinc-900 text-sm mb-1">Bayar via QRIS</h3>
+          <p class="text-xs text-zinc-400 leading-relaxed">Scan kode QRIS yang muncul pakai e-wallet atau m-banking apa saja (Gopay, OVO, Dana, ShopeePay, semua bank). Pembayaran diproses otomatis.</p>
+        </div>
+      </div>
+    </div>
+    <div class="rounded-xl p-4" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-20)">
+      <div class="flex gap-3 items-start">
+        <div class="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center font-black text-white text-sm flex-shrink-0">4</div>
+        <div>
+          <h3 class="font-bold text-zinc-900 text-sm mb-1">Key Otomatis Terkirim</h3>
+          <p class="text-xs text-zinc-400 leading-relaxed">Begitu pembayaran terkonfirmasi, key produk langsung muncul di layar dan bisa kamu cek lagi lewat halaman <a href="/invoice" class="text-red-400 underline">Cek Pesanan</a> pakai kode invoice.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <% } %>
+
+  <% if (activeTab === 'faq') { %>
+  <!-- ── FAQ ── -->
+  <div class="space-y-3" id="faqList">
+    <% const faqs = [
+      { q: 'Apakah key yang dijual aman dari banned?', a: 'Semua produk melalui proses testing sebelum dijual. Meski begitu, penggunaan mod/cheat selalu punya risiko dari sistem anti-cheat game yang terus update — pakai secukupnya dan sesuai panduan yang kami berikan.' },
+      { q: 'Berapa lama proses pengiriman key?', a: 'Otomatis dan instan setelah pembayaran QRIS terkonfirmasi, biasanya di bawah 1 menit. Kalau lebih dari 5 menit belum masuk, hubungi kami via WhatsApp dengan menyertakan kode invoice.' },
+      { q: 'Key tidak bisa dipakai / error, bagaimana?', a: 'Hubungi admin via WhatsApp dengan menyertakan kode invoice dan screenshot error. Tim kami akan bantu cek dan ganti key kalau memang terbukti bermasalah dari sisi kami.' },
+      { q: 'Bisa refund kalau berubah pikiran?', a: 'Karena produk berupa key digital yang langsung aktif, refund hanya berlaku untuk key yang terbukti tidak berfungsi dari awal (bukan karena banned belakangan atau berubah pikiran).' },
+      { q: 'Bagaimana cara jadi reseller?', a: 'Buka halaman Reseller dari menu, daftar sesuai syarat yang berlaku. Reseller dapat harga khusus lebih murah dari harga normal.' },
+      { q: 'Metode pembayaran apa saja yang didukung?', a: 'QRIS — bisa dipakai lewat semua e-wallet (Gopay, OVO, Dana, ShopeePay, LinkAja) dan m-banking bank apapun yang mendukung QRIS.' }
+    ]; %>
+    <% faqs.forEach((f, i) => { %>
+    <div class="rounded-xl overflow-hidden" style="background:var(--bg-section);border:1px solid var(--border)">
+      <button onclick="toggleFaq(<%= i %>)" class="w-full flex items-center justify-between p-4 text-left">
+        <span class="text-sm font-bold text-zinc-900 pr-3"><%= f.q %></span>
+        <iconify-icon icon="mdi:chevron-down" id="faq-icon-<%= i %>" class="text-zinc-500 flex-shrink-0 transition-transform"></iconify-icon>
+      </button>
+      <div id="faq-body-<%= i %>" class="hidden px-4 pb-4">
+        <p class="text-xs text-zinc-400 leading-relaxed"><%= f.a %></p>
+      </div>
+    </div>
+    <% }) %>
+  </div>
+  <script>
+    function toggleFaq(i) {
+      const body = document.getElementById('faq-body-'+i);
+      const icon = document.getElementById('faq-icon-'+i);
+      const isOpen = !body.classList.contains('hidden');
+      body.classList.toggle('hidden');
+      icon.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(180deg)';
+    }
+  </script>
+  <% } %>
+
+  <% if (activeTab === 'syarat') { %>
+  <!-- ── SYARAT KETENTUAN ── -->
+  <div class="rounded-xl p-5 space-y-4" style="background:var(--bg-section);border:1px solid var(--border)">
+    <div>
+      <h3 class="font-bold text-zinc-900 text-sm mb-1.5">1. Ketentuan Umum</h3>
+      <p class="text-xs text-zinc-400 leading-relaxed">Dengan melakukan transaksi di platform ini, kamu dianggap telah membaca dan menyetujui seluruh syarat & ketentuan yang berlaku.</p>
+    </div>
+    <div>
+      <h3 class="font-bold text-zinc-900 text-sm mb-1.5">2. Produk Digital</h3>
+      <p class="text-xs text-zinc-400 leading-relaxed">Seluruh produk yang dijual berupa key/lisensi digital yang aktif otomatis setelah pembayaran. Karena sifatnya digital dan langsung aktif, tidak ada pengembalian dana kecuali key terbukti tidak berfungsi dari awal.</p>
+    </div>
+    <div>
+      <h3 class="font-bold text-zinc-900 text-sm mb-1.5">3. Risiko Penggunaan</h3>
+      <p class="text-xs text-zinc-400 leading-relaxed">Penggunaan modifikasi/cheat pada game selalu memiliki risiko terkena penalti dari pihak developer game (banned/suspend akun). Pembeli memahami dan menerima risiko ini sepenuhnya sebelum melakukan pembelian.</p>
+    </div>
+    <div>
+      <h3 class="font-bold text-zinc-900 text-sm mb-1.5">4. Kerahasiaan Akun</h3>
+      <p class="text-xs text-zinc-400 leading-relaxed">Jaga kerahasiaan key yang kamu terima. Kami tidak bertanggung jawab atas penyalahgunaan key yang terjadi akibat kelalaian pembeli membagikan key ke pihak lain.</p>
+    </div>
+    <div>
+      <h3 class="font-bold text-zinc-900 text-sm mb-1.5">5. Perubahan Ketentuan</h3>
+      <p class="text-xs text-zinc-400 leading-relaxed">Kami berhak mengubah syarat & ketentuan ini sewaktu-waktu tanpa pemberitahuan sebelumnya. Perubahan berlaku efektif sejak dipublikasikan di halaman ini.</p>
+    </div>
+  </div>
+  <% } %>
+
+</div>
+</div>

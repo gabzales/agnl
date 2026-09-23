@@ -1,0 +1,139 @@
+<%
+const pageTitle = 'Aktifkan Key';
+const noIndex = true; // halaman privat user, jangan di-index Google
+%>
+
+<style>
+    .text-white { color: #18181b !important; }
+    .text-white\/70 { color: rgba(24,24,27,.75) !important; }
+    .text-white\/60 { color: rgba(24,24,27,.65) !important; }
+    .text-white\/40 { color: rgba(24,24,27,.45) !important; }
+    .hover\:text-white:hover { color: #18181b !important; }
+    .border-white\/10 { border-color: #ececee !important; }
+    .border-white\/5 { border-color: #f4f4f5 !important; }
+    .hover\:bg-white\/5:hover { background: #f4f4f5 !important; }
+
+    /* FIX (dark mode, 23 Agu 2026) */
+    html.dark .text-white,
+    html.dark .text-white\/70,
+    html.dark .text-white\/60,
+    html.dark .text-white\/40 { color: var(--text-1) !important; }
+    html.dark .hover\:text-white:hover { color: var(--text-1) !important; }
+    html.dark .border-white\/10,
+    html.dark .border-white\/5 { border-color: var(--border) !important; }
+    html.dark .hover\:bg-white\/5:hover { background: var(--bg-hover) !important; }
+    .text-zinc-300, .text-zinc-400, .text-zinc-500 { color: var(--text-2) !important; }
+    .border-zinc-200 { border-color: var(--border) !important; }
+    .bg-white { background: var(--bg-card) !important; }
+</style>
+
+<nav id="navbar" class="fixed top-0 left-0 right-0 z-50 backdrop-blur-md border-b border-zinc-200" style="background:var(--bg-main);">
+    <div class="max-w-lg mx-auto px-4">
+        <div class="flex items-center justify-between h-14">
+            <a href="/" class="flex items-center gap-2.5">
+                <img src="<%= settings?.logoUrl || '/uploads/logo-main.png' %>" alt="Logo" class="object-contain" style="height:38px;width:38px;">
+                <span class="font-bold text-base font-bold" style="color:var(--accent-color);"><%= settings.siteName || 'AGHA NL' %></span>
+            </a>
+            <a href="/" class="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white px-3 py-1.5 rounded-lg border border-white/10 hover:bg-white/5 transition-all">
+                <iconify-icon icon="mdi:arrow-left" class="text-sm"></iconify-icon> Kembali
+            </a>
+        </div>
+    </div>
+</nav>
+
+<div class="min-h-screen pt-20 pb-10 px-4">
+<div class="max-w-md mx-auto">
+
+    <div class="text-center mb-6 fade-in-up">
+        <div class="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-3"
+             style="background:var(--neon-purple-10);border:1.5px solid var(--neon-purple-25);">
+            <iconify-icon icon="mdi:key-chain" class="text-3xl text-red-400"></iconify-icon>
+        </div>
+        <h1 class="font-bold text-xl font-black text-white mb-1">Aktifkan Key</h1>
+        <p class="text-xs text-zinc-500">Masukkan kode lisensi yang kamu miliki</p>
+    </div>
+
+    <!-- FORM -->
+    <div class="neon-card p-5 fade-in-up mb-4">
+        <form method="POST" action="/activate-key" class="space-y-4">
+            <div>
+                <label class="block text-xs font-bold text-zinc-400 mb-2">Kode Lisensi</label>
+                <input type="text" name="code" required
+                    value="<%= code || '' %>"
+                    class="hm-input font-mono uppercase tracking-widest text-center text-base font-black"
+                    placeholder="Contoh: KEY-A1B2C3"
+                    maxlength="30" autofocus
+                    style="letter-spacing:.15em"
+                    oninput="this.value=this.value.toUpperCase()">
+                <p class="text-[10px] text-zinc-600 mt-1.5 text-center">Format: <code class="text-red-400">KODE - DURASI</code></p>
+            </div>
+
+            <% if (error) { %>
+            <div class="flex items-center gap-2 p-3 rounded-xl" style="background:var(--neon-purple-10);border:1px solid var(--neon-purple-25);">
+                <iconify-icon icon="mdi:alert-circle" class="text-red-400 text-lg flex-shrink-0"></iconify-icon>
+                <span class="text-xs text-red-400"><%= error %></span>
+            </div>
+            <% } %>
+
+            <button type="submit" class="btn-gaming w-full py-3 text-sm font-black flex items-center justify-center gap-2">
+                <iconify-icon icon="mdi:key-check" class="text-lg"></iconify-icon> Aktifkan Sekarang
+            </button>
+        </form>
+    </div>
+
+    <!-- RESULT — muncul setelah aktivasi berhasil -->
+    <% if (result) { %>
+    <div class="fade-in-up" style="animation-delay:.1s">
+        <div class="rounded-2xl overflow-hidden" style="background:rgba(16,185,129,.08);border:1.5px solid rgba(16,185,129,.3);">
+            <div class="h-1.5" style="background:#10b981;"></div>
+            <div class="p-6 text-center">
+                <div class="w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4"
+                     style="background:rgba(16,185,129,.2);border:2px solid rgba(16,185,129,.4);">
+                    <iconify-icon icon="mdi:check-circle" class="text-emerald-400 text-2xl"></iconify-icon>
+                </div>
+                <div class="text-xs font-bold text-emerald-400 uppercase tracking-widest mb-2">Aktivasi Berhasil!</div>
+                <!-- Format KEY - DURASI -->
+                <div class="font-bold text-2xl font-black text-white mb-1">
+                    <%= result.code %> — <%= result.duration %> Hari
+                </div>
+                <% if (result.label && result.label !== result.duration + ' Hari') { %>
+                <div class="text-xs text-zinc-400 mb-3"><%= result.label %></div>
+                <% } %>
+                <% if (result.note) { %>
+                <div class="mt-3 p-3 rounded-xl text-xs text-zinc-400" style="background:var(--bg-section);border:1px solid var(--border);">
+                    <iconify-icon icon="mdi:information" class="text-red-400 mr-1"></iconify-icon>
+                    <%= result.note %>
+                </div>
+                <% } %>
+                <div class="mt-4 p-3 rounded-xl text-xs text-zinc-500" style="background:var(--bg-section);border:1px solid var(--border);">
+                    <iconify-icon icon="mdi:clock-check" class="text-emerald-400/70 mr-1"></iconify-icon>
+                    Diaktifkan: <%= new Date().toLocaleDateString('id-ID', {day:'numeric',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'}) %>
+                </div>
+            </div>
+        </div>
+    </div>
+    <% } %>
+
+    <!-- Info cara penggunaan -->
+    <div class="neon-card p-4 mt-4 fade-in-up">
+        <div class="text-xs font-bold text-zinc-400 mb-3 flex items-center gap-2">
+            <iconify-icon icon="mdi:information-outline" class="text-red-400"></iconify-icon> Cara Penggunaan
+        </div>
+        <div class="space-y-2">
+            <div class="flex items-start gap-2.5">
+                <div class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white flex-shrink-0 mt-0.5" style="background:#a1a1aa">1</div>
+                <p class="text-xs text-zinc-500">Masukkan kode lisensi yang sudah kamu beli atau dapatkan dari admin</p>
+            </div>
+            <div class="flex items-start gap-2.5">
+                <div class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white flex-shrink-0 mt-0.5" style="background:#a1a1aa">2</div>
+                <p class="text-xs text-zinc-500">Sistem akan memvalidasi key dan menampilkan durasi akses</p>
+            </div>
+            <div class="flex items-start gap-2.5">
+                <div class="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black text-white flex-shrink-0 mt-0.5" style="background:#a1a1aa">3</div>
+                <p class="text-xs text-zinc-500">Satu key hanya bisa digunakan satu kali. Simpan bukti aktivasi kamu</p>
+            </div>
+        </div>
+    </div>
+
+</div>
+</div>
