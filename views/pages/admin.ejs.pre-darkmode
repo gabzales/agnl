@@ -193,160 +193,6 @@ textarea.hm-input{resize:vertical;min-height:80px;}
 .section-label::before{content:'';width:16px;height:2px;background:var(--accent);border-radius:2px;display:block;}
 .setting-row-label{font-size:11px;font-weight:700;color:#a1a1aa;margin-bottom:8px;}
 </style>
-<style>
-/* ═══════════════════════════════════════════════════════════════
-   ADMIN UI POLISH — DARK MODE + SEMANTIC BORDERS
-   Dark mode is a real dark theme (not CSS invert). Components keep
-   the existing layout/functionality; only presentation is normalized.
-   ═══════════════════════════════════════════════════════════════ */
-html.dark {
-  color-scheme: dark;
-  --bg:#0f1115;
-  --card:#151922;
-  --card2:#1b2029;
-  --border:#2b3340;
-  --accent:#a1a1aa;
-  --admin-text:#f4f4f5;
-  --admin-muted:#a1a1aa;
-  --admin-subtle:#71717a;
-  --admin-border:#2b3340;
-  --admin-border-accent:rgba(220,38,38,.34);
-  --admin-surface-hover:#202631;
-}
-
-html.dark body {
-  background:var(--bg) !important;
-  color:var(--admin-text) !important;
-}
-html.dark .text-zinc-300 { color:#d4d4d8 !important; }
-html.dark .text-zinc-400 { color:#a1a1aa !important; }
-html.dark .text-zinc-500 { color:#a1a1aa !important; }
-html.dark .text-zinc-600 { color:#71717a !important; }
-html.dark .text-zinc-700 { color:#52525b !important; }
-html.dark .text-white { color:#f4f4f5 !important; }
-html.dark .hover\:text-white:hover { color:#fff !important; }
-
-/* Shared surfaces */
-html.dark .page-top,
-html.dark #admin-nav {
-  background:rgba(15,17,21,.96) !important;
-  border-color:var(--admin-border-accent) !important;
-  box-shadow:0 8px 24px rgba(0,0,0,.22);
-}
-html.dark .neon-card,
-html.dark .prod-card,
-html.dark .stat-card,
-html.dark .modal-box,
-html.dark .toast {
-  background:var(--card) !important;
-  border-color:var(--admin-border) !important;
-}
-html.dark .neon-card:hover,
-html.dark .prod-card:hover,
-html.dark .stat-card:hover {
-  border-color:var(--admin-border-accent) !important;
-}
-
-/* Primary brand edge: recognizable without making every component red. */
-html.dark .neon-card,
-html.dark .prod-card {
-  border-left-color:rgba(220,38,38,.45) !important;
-}
-html.dark .stat-card {
-  border-top-color:rgba(220,38,38,.38) !important;
-}
-
-/* Inputs */
-html.dark .hm-input,
-html.dark .form-input,
-html.dark select.hm-input,
-html.dark textarea.hm-input {
-  background:#11151b !important;
-  color:#f4f4f5 !important;
-  border-color:#374151 !important;
-}
-html.dark .hm-input:focus,
-html.dark .form-input:focus {
-  border-color:rgba(220,38,38,.75) !important;
-  background:#151922 !important;
-  box-shadow:0 0 0 3px rgba(220,38,38,.10) !important;
-}
-html.dark .hm-input::placeholder,
-html.dark .form-input::placeholder { color:#71717a !important; }
-
-/* Tables */
-html.dark .data-table th {
-  background:rgba(220,38,38,.08) !important;
-  color:#fca5a5 !important;
-  border-bottom:1px solid rgba(220,38,38,.25) !important;
-}
-html.dark .data-table td {
-  color:#d4d4d8;
-  border-bottom-color:#2b3340 !important;
-}
-html.dark .data-table tr:hover td { background:rgba(220,38,38,.06) !important; }
-
-/* Bottom navigation: active item = brand red, inactive = neutral. */
-html.dark .nav-btn .n-icon,
-html.dark .nav-btn .n-label { color:#a1a1aa !important; }
-html.dark .nav-btn.active .n-icon,
-html.dark .nav-btn.active .n-label { color:#f87171 !important; }
-html.dark .nav-btn.active {
-  background:rgba(220,38,38,.10) !important;
-  border-color:rgba(220,38,38,.30) !important;
-}
-
-/* White utility classes used throughout the legacy admin markup. */
-html.dark .bg-white\/3 { background:#151922 !important; }
-html.dark .bg-white\/5 { background:#191e27 !important; }
-html.dark .bg-white\/8,
-html.dark .bg-white\/10 { background:#202631 !important; }
-html.dark .hover\:bg-white\/5:hover { background:#202631 !important; }
-html.dark .hover\:bg-white\/8:hover,
-html.dark .hover\:bg-white\/10:hover { background:#262d38 !important; }
-html.dark .border-white\/5 { border-color:#242b35 !important; }
-html.dark .border-white\/10 { border-color:#2b3340 !important; }
-html.dark .border-white\/15 { border-color:#374151 !important; }
-html.dark .border-white\/20 { border-color:#4b5563 !important; }
-
-/* Avoid pure-white inline surfaces becoming a light block in dark mode. */
-html.dark .page-top a { color:#a1a1aa !important; }
-html.dark .page-top a:hover { color:#f4f4f5 !important; }
-html.dark .section-label { color:#a1a1aa !important; }
-html.dark .setting-row-label { color:#a1a1aa !important; }
-html.dark .modal-handle { background:#4b5563 !important; }
-html.dark ::-webkit-scrollbar-track { background:#0f1115 !important; }
-html.dark ::-webkit-scrollbar-thumb { background:#374151 !important; }
-
-/* Dark toggle — visible and unambiguous in the top-right. */
-.admin-dark-toggle {
-  width:42px !important;
-  height:24px !important;
-  padding:2px;
-  border:1px solid #d4d4d8;
-  border-radius:999px;
-  background:#f4f4f5;
-  box-shadow:0 1px 3px rgba(0,0,0,.10);
-}
-.admin-dark-toggle-slider { background:#a1a1aa !important; inset:2px !important; }
-.admin-dark-toggle-slider::before {
-  width:16px !important;
-  height:16px !important;
-  left:2px !important;
-  bottom:2px !important;
-  box-shadow:0 1px 3px rgba(0,0,0,.25) !important;
-}
-.admin-dark-toggle input:checked + .admin-dark-toggle-slider { background:#dc2626 !important; }
-.admin-dark-toggle input:checked + .admin-dark-toggle-slider::before { transform:translateX(18px) !important; }
-html.dark .admin-dark-toggle { border-color:#374151 !important; background:#151922 !important; }
-
-/* Keep semantic status colors readable; do not let global text overrides
-   wash out success/warning/error information. */
-html.dark .badge-done { color:#6ee7b7 !important; }
-html.dark .badge-pending { color:#fde68a !important; }
-html.dark .badge-inactive { color:#fca5a5 !important; }
-html.dark .badge-featured { color:#fca5a5 !important; }
-</style>
 </head>
 <body class="font-inter">
 
@@ -485,10 +331,6 @@ html.dark .badge-featured { color:#fca5a5 !important; }
             <iconify-icon icon="mdi:plus-circle" class="text-xl text-pink-400"></iconify-icon>
             <span class="text-[10px] font-semibold text-pink-300">+Produk</span>
         </button>
-        <button onclick="location.href='/admin/logs'" class="flex flex-col items-center gap-1.5 p-3 rounded-xl bg-sky-500/10 border border-sky-500/20 hover:bg-sky-500/20 transition-all">
-            <iconify-icon icon="mdi:console-line" class="text-xl text-sky-400"></iconify-icon>
-            <span class="text-[10px] font-semibold text-sky-300">Log Live</span>
-        </button>
     </div>
 
     <div class="section-label">Transaksi Terbaru</div>
@@ -554,14 +396,11 @@ html.dark .badge-featured { color:#fca5a5 !important; }
             // Fallback untuk produk lama yang cuma punya 'items' tanpa 'pricingOptions'.
             // Regex sekarang tangkap unit juga (HARI/JAM), bukan cuma angka durasi.
             const pricing = p.pricingOptions || p.items?.map(i=>{
-                const m = (i.l||'').match(/(\d+)\s*(HARI|JAM|DAYS?|THN|TH|TAHUN|YEARS?|YEAR|YR|YRS)?/i);
-                const unitWord = (m?.[2]||'').toUpperCase();
-                const unit = /JAM/.test(unitWord) ? 'h' : 'd';
-                const daysRaw = parseInt(m?.[1]||0);
-                const days = /THN|TH|TAHUN|YEAR|YEARS?|YR|YRS/.test(unitWord) ? daysRaw * 365 : daysRaw;
-                return {days, unit, price:i.p};
+                const m = (i.l||'').match(/(\d+)\s*(HARI|JAM|DAYS?)?/i);
+                const unit = m && /JAM/i.test(m[2]||'') ? 'h' : 'd';
+                return {days:parseInt(m?.[1]||0), unit, price:i.p};
             }) || [];
-            const minPrice = pricing.length ? Math.min(...pricing.map(o=>Number(o.price)||0)) : 0;
+            const minPrice = pricing.length ? Math.min(...pricing.map(o=>o.price)) : 0;
             const pricingJson = JSON.stringify(pricing).replace(/"/g,'&quot;');
         %>
         <div class="prod-card fade-in" data-product-id="<%= p.id %>">
@@ -582,25 +421,20 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                 </div>
                 <div class="flex items-center gap-2 text-[10px] text-zinc-500 flex-wrap">
                     <span class="px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 font-bold uppercase"><%= p.category %></span>
-                    <% const hasProviderBacked = Array.isArray(p._adminStockByOption) && p._adminStockByOption.some(x => x.providerBacked); %>
-                    <% const adminStockUnknown = !!p._adminStockUnknown; %>
-                    <span class="prod-key-count <%= adminStockUnknown ? 'text-amber-400' : ((Number(p._adminStockCount||0)>0)?'text-emerald-400':'text-red-400') %>">
-                        <iconify-icon icon="<%= hasProviderBacked ? 'mdi:cloud-sync-outline' : 'mdi:key' %>" class="align-middle"></iconify-icon>
-                        <%= adminStockUnknown && Number(p._adminStockCount||0)===0 ? 'Cek stok provider' : (Number(p._adminStockCount||0) > 0 ? 'Ada · ' + Number(p._adminStockCount||0) + ' stok' : 'Habis') %>
+                    <% const hasLiveProvider = (pricing||[]).some(po => po?.dripstoreVariantId); %>
+                    <span class="prod-key-count <%= hasLiveProvider ? 'text-cyan-400' : ((p.keys?.length||0)>0?'text-emerald-400':'text-red-400') %>">
+                        <iconify-icon icon="<%= hasLiveProvider ? 'mdi:cloud-sync-outline' : 'mdi:key' %>" class="align-middle"></iconify-icon> <%= hasLiveProvider ? '∞ provider live' : ((p.keys?.length||0) + ' key') %>
                     </span>
                     <span><%= p.sold||0 %> terjual</span>
                     <span class="text-zinc-500 flex items-center gap-1 flex-wrap">
-                        <% pricing.forEach((po, poIdx) => { %>
+                        <% pricing.forEach(po => { %>
                         <% const poUnit = po.unit || 'd'; %>
-                        <% const info = Array.isArray(p._adminStockByOption) ? p._adminStockByOption[poIdx] : null; %>
-                        <% const poCount = info ? Number(info.stock || 0) : 0; %>
-                        <% const poUnknown = !!info?.providerBacked && !info?.providerKnown; %>
-                        <% const poLabel = (p.items?.[poIdx]?.l || `${po.days}${poUnit}`); %>
-                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold <%= poUnknown ? 'text-amber-400 bg-amber-500/10' : (poCount > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-zinc-600 bg-zinc-800/50') %>">
-                            <%= poLabel %>: <%= poUnknown ? '?' : poCount %>
+                        <% const poLive = !!po.dripstoreVariantId; const poCount = (p.keys||[]).filter(k => k.endsWith('='+po.days+poUnit)).length; %>
+                        <span class="px-1.5 py-0.5 rounded text-[9px] font-bold <%= poLive ? 'text-cyan-400 bg-cyan-500/10' : (poCount > 0 ? 'text-emerald-400 bg-emerald-500/10' : 'text-zinc-600 bg-zinc-800/50') %>">
+                            <%= po.days %><%= poUnit %>: <%= poLive ? '∞' : poCount %>
                         </span>
                         <% }) %>
-                        <% const genericCnt = Number(p._adminGenericKeyCount||0); if (genericCnt > 0) { %>
+                        <% const genericCnt = (p.keys||[]).filter(k => !k.includes('=')).length; if (genericCnt > 0) { %>
                         <span class="px-1.5 py-0.5 rounded text-[9px] font-bold text-yellow-400 bg-yellow-500/10">G: <%= genericCnt %></span>
                         <% } %>
                     </span>
@@ -616,7 +450,7 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                 <button
                     data-pid="<%= p.id %>"
                     data-name="<%= (p.name||'').replace(/\"/g,'&quot;') %>"
-                    data-count="<%= p._adminUsableKeyCount || 0 %>"
+                    data-count="<%= p.keys?.length||0 %>"
                     onclick="openAddKeysModal(this.dataset.pid, this.dataset.name, parseInt(this.dataset.count))"
                     class="btn-success py-1 px-2 text-[10px]">
                     <iconify-icon icon="mdi:key-plus"></iconify-icon> Key
@@ -1354,18 +1188,6 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                 <div class="setting-row-label">Base URL <span class="text-zinc-600 font-normal">(default: dripclientstore.shop/api/v1)</span></div>
                 <input type="text" name="baseUrl" value="<%= settings.dripstore?.baseUrl||'https://dripclientstore.shop/api/v1' %>" class="hm-input font-mono text-xs" placeholder="https://dripclientstore.shop/api/v1">
             </div>
-            <div>
-                <div class="setting-row-label">Mode penyaluran key</div>
-                <select name="fulfillmentMode" class="hm-input text-sm">
-                    <option value="live" <%= (settings.dripstore?.fulfillmentMode||'live')==='live'?'selected':'' %>>LIVE PROVIDER — beli 1 key saat order dibayar</option>
-                    <option value="hybrid" <%= settings.dripstore?.fulfillmentMode==='hybrid'?'selected':'' %>>HYBRID — pakai stok lokal dulu, provider jika kosong</option>
-                    <option value="local" <%= settings.dripstore?.fulfillmentMode==='local'?'selected':'' %>>LOCAL STOCK — jangan beli dari provider saat buyer</option>
-                </select>
-            </div>
-            <label class="flex items-center gap-2 text-xs cursor-pointer" style="color:var(--text-2);">
-                <input type="checkbox" name="balanceGuardEnabled" <%= settings.dripstore?.balanceGuardEnabled !== false ? 'checked' : '' %> class="w-4 h-4">
-                Aktifkan Balance Guard (blokir order kalau saldo provider tidak cukup)
-            </label>
             <label class="flex items-center gap-2 text-xs cursor-pointer" style="color:var(--text-2);">
                 <input type="checkbox" name="autoRestockEnabled" <%= settings.dripstore?.autoRestockEnabled ? 'checked' : '' %> class="w-4 h-4">
                 Aktifkan Auto-Restock (buat proposal saat stok rendah — WAJIB approval sebelum purchase)
@@ -1385,31 +1207,12 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                 <button type="button" onclick="checkDripstoreBalance()" class="py-2 rounded-xl text-xs font-bold text-blue-300 border border-blue-500/25 bg-blue-500/10 hover:bg-blue-500/20 transition-all flex items-center justify-center gap-1.5">
                     <iconify-icon icon="mdi:wallet-outline"></iconify-icon> Cek Saldo
                 </button>
-                <button type="button" onclick="scanDripstoreAvailability()" class="py-2 rounded-xl text-xs font-bold text-emerald-300 border border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all flex items-center justify-center gap-1.5">
-                    <iconify-icon icon="mdi:radar"></iconify-icon> Scan Kemampuan Stok
-                </button>
                 <button type="button" onclick="autoMapDripstore(false)" id="dripstoreAutoMapBtn" class="py-2 rounded-xl text-xs font-bold text-cyan-300 border border-cyan-500/25 bg-cyan-500/10 hover:bg-cyan-500/20 transition-all flex items-center justify-center gap-1.5">
                     <iconify-icon icon="mdi:link-variant"></iconify-icon> Sync & Auto Map
                 </button>
             </div>
             <div id="dripstoreAutoMapResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
             <div id="dripstoreBalanceResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
-            <div id="dripstoreAvailabilityResult" class="hidden text-[11px] p-2.5 rounded-lg max-h-64 overflow-auto"></div>
-
-            <!-- FITUR BARU (audit 20 Sep 2026): cari nama produk & ID variant
-                 PERSIS seperti tersimpan di katalog mentah DripStore, supaya
-                 tidak lagi tebak-tebakan kalau nama di sini beda dengan nama
-                 promosi/caption yang dikasih owner DripStore lewat chat. -->
-            <div class="mt-3 flex gap-2">
-                <input type="text" id="dripstoreCatalogSearchInput" placeholder="Cari nama produk di katalog DripStore (mis. hg safe)"
-                    class="flex-1 bg-black/30 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:border-emerald-500/50 focus:outline-none"
-                    onkeydown="if(event.key==='Enter'){event.preventDefault();searchDripstoreCatalog();}">
-                <button type="button" onclick="searchDripstoreCatalog()" class="px-3 py-2 rounded-xl text-xs font-bold text-emerald-300 border border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all shrink-0">
-                    <iconify-icon icon="mdi:magnify"></iconify-icon> Cari
-                </button>
-            </div>
-            <div id="dripstoreCatalogSearchResult" class="hidden text-[11px] p-2.5 rounded-lg max-h-64 overflow-auto mt-2"></div>
-
             <div class="mt-3 p-3 rounded-xl" style="background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15)">
                 <div class="flex items-center justify-between gap-2 mb-2">
                     <div class="text-[11px] font-bold text-blue-300 flex items-center gap-1.5"><iconify-icon icon="mdi:clipboard-clock-outline"></iconify-icon> Pending Restock Approval</div>
@@ -2671,10 +2474,6 @@ document.getElementById('dripstoreForm').addEventListener('submit', async functi
     e.preventDefault();
     const fd = new FormData(this);
     const data = Object.fromEntries(fd);
-    // Checkbox yang tidak dicentang tidak masuk FormData. Kirim boolean secara
-    // eksplisit supaya admin benar-benar bisa mematikan Balance Guard / Auto-Restock.
-    data.balanceGuardEnabled = this.querySelector('[name="balanceGuardEnabled"]')?.checked === true;
-    data.autoRestockEnabled = this.querySelector('[name="autoRestockEnabled"]')?.checked === true;
     const saveBtn = this.querySelector('button[type="submit"]');
     if (saveBtn) { saveBtn.disabled = true; saveBtn.dataset.oldText = saveBtn.innerHTML; saveBtn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Menyimpan + Auto Mapping...'; }
     try {
@@ -2791,10 +2590,8 @@ async function checkDripstoreBalance() {
         const r = await fetch('/admin/dripstore/balance');
         const d = await r.json();
         if (d.success) {
-            box.className = d.stale
-                ? 'text-[11px] p-2.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/25'
-                : 'text-[11px] p-2.5 rounded-lg bg-green-500/10 text-green-300 border border-green-500/25';
-            box.innerHTML = `<iconify-icon icon="mdi:check-circle" style="vertical-align:-2px;"></iconify-icon> Saldo DripStore: <b>${JSON.stringify(d.data)}</b>` + (d.stale ? `<div class="mt-1">⚠️ Data lama (${Number(d.ageSeconds||0)} dtk lalu) — provider sedang tidak merespons. Klik lagi sebentar.</div>` : '');
+            box.className = 'text-[11px] p-2.5 rounded-lg bg-green-500/10 text-green-300 border border-green-500/25';
+            box.innerHTML = `<iconify-icon icon="mdi:check-circle" style="vertical-align:-2px;"></iconify-icon> Saldo DripStore: <b>${JSON.stringify(d.data)}</b>`;
         } else {
             box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
             box.textContent = '❌ ' + d.message;
@@ -2804,85 +2601,6 @@ async function checkDripstoreBalance() {
         box.textContent = '❌ Gagal konek: ' + err.message;
     }
 }
-
-async function scanDripstoreAvailability() {
-    const box = document.getElementById('dripstoreAvailabilityResult');
-    box.className = 'text-[11px] p-2.5 rounded-lg bg-white/5 text-zinc-400';
-    box.textContent = 'Mengecek saldo provider + kapasitas per variant + gabungan stok lokal...';
-    box.classList.remove('hidden');
-    try {
-        const r = await fetch('/admin/dripstore/availability');
-        const d = await r.json();
-        if (!d.success) throw new Error(d.message || 'Gagal scan');
-        const rows = d.rows || [];
-        const available = rows.filter(x => x.available === true).length;
-        const unavailable = rows.filter(x => x.available === false).length;
-        const unknown = rows.filter(x => x.available === null).length;
-        box.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/5 text-zinc-300 border border-emerald-500/20';
-        const head = `<div class="font-bold text-emerald-300 mb-2">Saldo provider: $${d.balance == null ? '?' : Number(d.balance).toFixed(2)} • ${available} tersedia • ${unavailable} tidak cukup • ${unknown} belum terbaca</div>`;
-        // BUG FIX (audit 19 Sep 2026): sebelumnya cuma rows.slice(0,80) TANPA
-        // keterangan apapun kalau ada baris yang kepotong. Produk baru selalu
-        // numpuk di urutan paling akhir (mengikuti urutan produk di
-        // products.json), jadi begitu total baris produk x durasi di seluruh
-        // toko sudah lewat 80, produk yang BARU ditambahkan otomatis tidak
-        // pernah ke-render sama sekali di sini -- padahal datanya sebenarnya
-        // ada dan terhitung di ringkasan "tersedia/tidak cukup/belum terbaca"
-        // di atas (yang dihitung dari `rows` penuh, bukan dari hasil slice).
-        // Ini persis laporan "add produk baru tapi nggak ada nama produknya".
-        // Fix: naikkan batas tampil jauh lebih tinggi + kasih catatan eksplisit
-        // kalau memang masih ada sisa yang tidak ditampilkan.
-        const DISPLAY_LIMIT = 500;
-        const shown = rows.slice(0, DISPLAY_LIMIT);
-        const body = shown.map(x => {
-            const label = `${x.productName} — ${x.days}${x.unit==='h'?' jam':' hari'}`;
-            const price = x.cost == null ? 'harga ?' : `$${Number(x.cost).toFixed(2)}`;
-            const cap = x.providerCapacity == null ? 'kapasitas ?' : `provider ${x.providerCapacity}`;
-            const local = Number(x.localStock || 0);
-            const total = x.totalStock == null ? '?' : Number(x.totalStock);
-            const state = x.available === true ? '<span class="text-emerald-300">BISA</span>' : x.available === false ? '<span class="text-red-300">TIDAK CUKUP</span>' : '<span class="text-amber-300">CEK MANUAL</span>';
-            return `<div class="flex items-center justify-between gap-2 py-1 border-b border-white/5"><span class="truncate">${label}</span><span class="shrink-0">${price} • lokal ${local} + ${cap} = ${total} total • ${state}</span></div>`;
-        }).join('');
-        const truncatedNote = rows.length > DISPLAY_LIMIT
-            ? `<div class="text-amber-300 mt-2">+ ${rows.length - DISPLAY_LIMIT} baris lainnya tidak ditampilkan (terlalu banyak untuk 1 layar).</div>`
-            : '';
-        box.innerHTML = head + (body || '<div>Belum ada variant yang ter-mapping.</div>') + truncatedNote;
-    } catch (err) {
-        box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25';
-        box.textContent = '❌ ' + err.message;
-    }
-}
-
-// FITUR BARU (audit 20 Sep 2026): cari nama produk & ID variant PERSIS
-// seperti tersimpan di katalog mentah DripStore (lihat GET
-// /admin/dripstore/catalog-search) -- dipakai kalau nama yang dikasih owner
-// DripStore lewat chat/promosi ternyata beda dengan nama asli di sistemnya.
-async function searchDripstoreCatalog() {
-    const q = document.getElementById('dripstoreCatalogSearchInput').value.trim();
-    const box = document.getElementById('dripstoreCatalogSearchResult');
-    box.classList.remove('hidden');
-    box.className = 'text-[11px] p-2.5 rounded-lg bg-white/5 text-zinc-400 border border-white/10 mt-2';
-    box.textContent = 'Mencari...';
-    try {
-        const r = await fetch('/admin/dripstore/catalog-search?q=' + encodeURIComponent(q));
-        const d = await r.json();
-        if (!d.success) throw new Error(d.message || 'Gagal mencari');
-        const names = Object.keys(d.products || {});
-        if (names.length === 0) {
-            box.className = 'text-[11px] p-2.5 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/25 mt-2';
-            box.textContent = q ? `Tidak ada produk DripStore yang cocok dengan "${q}".` : 'Katalog kosong.';
-            return;
-        }
-        box.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/5 text-zinc-300 border border-emerald-500/20 mt-2';
-        box.innerHTML = names.map(name => {
-            const variants = d.products[name].map(v => `${v.variantName || (v.days + (v.unit==='h'?'jam':'hari'))} <span class="text-zinc-500">(ID: ${v.variantId})</span>`).join(', ');
-            return `<div class="py-1.5 border-b border-white/5"><div class="font-bold text-emerald-300">${name}</div><div class="text-zinc-400 mt-0.5">${variants}</div></div>`;
-        }).join('');
-    } catch (err) {
-        box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300 border border-red-500/25 mt-2';
-        box.textContent = '❌ ' + err.message;
-    }
-}
-
 
 // ── GATEWAY SELECTOR (PakKasir vs GensPay) ──
 function setApiGateway(gateway) {

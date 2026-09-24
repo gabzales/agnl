@@ -159,6 +159,18 @@ const noIndex = true; // halaman privat user, jangan di-index Google
                                         Gabung Grup <%= settings.buyerGroupName || 'Buyer VIP' %>
                                     </a>
                                     <% } %>
+
+                                    <!-- HUBUNGI CS (diminta client) -- beda dari tombol "Gabung Grup"
+                                         di atas (join komunitas). Ini untuk kalau ada kendala SPESIFIK
+                                         dengan transaksi/key yang baru diterima, pesan WA sudah terisi
+                                         kode pesanan otomatis. -->
+                                    <a href="https://wa.me/<%= (settings.contact?.whatsapp || '').replace(/\D/g,'') %>?text=<%= encodeURIComponent('Halo min, saya butuh bantuan untuk pesanan kode: ' + transaction.code) %>"
+                                        target="_blank" rel="noopener"
+                                        class="mt-2 w-full py-2.5 rounded-lg flex items-center justify-center gap-2 text-xs font-bold transition-all"
+                                        style="background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);color:#f87171;">
+                                        <iconify-icon icon="mdi:message-alert-outline" class="text-sm"></iconify-icon>
+                                        Ada Kendala dengan Pesanan? Hubungi CS
+                                    </a>
                                 </div>
                             <% } else if (transaction.status === 'done' && transaction.outOfStock) { %>
                                 <div class="pt-3 border-t border-zinc-100">
@@ -166,6 +178,15 @@ const noIndex = true; // halaman privat user, jangan di-index Google
                                         <iconify-icon icon="mdi:clock-alert-outline" class="text-amber-400 text-base mt-0.5"></iconify-icon>
                                         <span class="text-xs text-amber-300">Pembayaran sudah diterima, namun stok produk sedang kosong. Admin akan segera memproses dan mengirimkan key kamu manual via WhatsApp.</span>
                                     </div>
+                                    <!-- HUBUNGI CS -- khusus kasus outOfStock ini, tombol CS lebih
+                                         penting muncul karena user perlu tindak lanjut manual admin. -->
+                                    <a href="https://wa.me/<%= (settings.contact?.whatsapp || '').replace(/\D/g,'') %>?text=<%= encodeURIComponent('Halo min, pesanan saya kode ' + transaction.code + ' sudah dibayar tapi stok kosong. Mohon diproses ya.') %>"
+                                        target="_blank" rel="noopener"
+                                        class="mt-2 w-full py-2.5 rounded-lg flex items-center justify-center gap-2 text-xs font-bold transition-all"
+                                        style="background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:#4ade80;">
+                                        <iconify-icon icon="mdi:whatsapp" class="text-sm"></iconify-icon>
+                                        Hubungi CS via WhatsApp
+                                    </a>
                                 </div>
                             <% } %>
                         </div>

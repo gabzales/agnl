@@ -292,7 +292,10 @@ const schemaProduct = {
                 <% const displayPrice = (isReseller && item.reseller_price) ? item.reseller_price : item.p; %>
                 <label id="pkg-label-<%= idx %>" class="pkg-option-label" style="<%= isOutOfStock ? 'opacity:0.5;cursor:not-allowed;' : '' %>">
                     <input id="pkg-radio-<%= idx %>" type="radio" name="pkg" value="<%= idx %>"
-                           onchange="selectPkg(<%- JSON.stringify(item.l || '') %>, <%= Number(displayPrice || 0) %>, <%= itemStock %>, <%= item.durationValue != null ? Number(item.durationValue) : 'null' %>, <%- JSON.stringify(item.durationUnit || 'd') %>)"
+                           autocomplete="off"
+                           data-label="<%= item.l || '' %>" data-price="<%= Number(displayPrice || 0) %>" data-stock="<%= itemStock %>"
+                           data-duration-value="<%= item.durationValue != null ? Number(item.durationValue) : '' %>" data-duration-unit="<%= item.durationUnit || 'd' %>"
+                           onchange="selectPkg(<%= JSON.stringify(item.l || '') %>, <%= Number(displayPrice || 0) %>, <%= itemStock %>, <%= item.durationValue != null ? Number(item.durationValue) : 'null' %>, <%= JSON.stringify(item.durationUnit || 'd') %>)"
                            <%= idx===firstAvailableIndex ? 'checked' : '' %>
                            <%= isOutOfStock ? 'disabled' : '' %>>
                     <div class="pkg-card rounded-2xl p-3">
@@ -349,7 +352,7 @@ const schemaProduct = {
             <input type="tel" id="waInput" required
                 class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none transition-all"
                 style="background:var(--bg-section);border:1px solid var(--border);"
-                onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                onfocus="this.style.borderColor=<%= JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
                 placeholder="08xxxxxxxxxx"
                 value="<%= user?.wa || '' %>" maxlength="15">
         </div>
@@ -360,7 +363,7 @@ const schemaProduct = {
             <input type="text" id="customerName" required
                 class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none transition-all"
                 style="background:var(--bg-section);border:1px solid var(--border);"
-                onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                onfocus="this.style.borderColor=<%= JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
                 placeholder="Nama kamu"
                 value="<%= user?.username && !user?.isGuest ? user.username : '' %>" maxlength="60">
         </div>
@@ -372,7 +375,7 @@ const schemaProduct = {
                 <input type="text" id="voucherInput" placeholder="Masukkan kode voucher"
                     class="flex-1 px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none uppercase font-mono transition-all"
                     style="background:var(--bg-section);border:1px solid var(--border);"
-                    onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+                    onfocus="this.style.borderColor=<%= JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
                     maxlength="30" oninput="this.value=this.value.toUpperCase(); clearVoucher()">
                 <button onclick="applyVoucher()" id="voucherBtn"
                     class="px-4 py-3 rounded-xl text-xs font-bold transition-all flex-shrink-0"
@@ -511,7 +514,7 @@ const schemaProduct = {
         <textarea id="reviewText"
             class="w-full px-4 py-3 rounded-xl text-sm text-white placeholder-white/25 outline-none resize-none mb-2 transition-all"
             style="background:var(--bg-section);border:1px solid var(--border);"
-            onfocus="this.style.borderColor=<%- JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
+            onfocus="this.style.borderColor=<%= JSON.stringify(hexToRgba(settings?.theme?.primaryColor || '#dc2626', 0.6)) %>" onblur="this.style.borderColor='var(--border)'"
             rows="3" placeholder="Bagikan pengalaman kamu dengan produk ini..."></textarea>
         <button onclick="submitReview()"
             class="btn-ghost w-full py-2.5 rounded-xl text-xs font-bold text-red-400 flex items-center justify-center gap-2">
@@ -596,6 +599,18 @@ const schemaProduct = {
                         </a>
                     </div>
                 </div>
+
+                <!-- HUBUNGI CS (diminta client) -- beda dari #staticNote di atas
+                     yang CUMA muncul untuk mode QRIS statis. Tombol ini SELALU
+                     tampil apapun mode pembayarannya (statis maupun API
+                     Pakasir/GensPay/Stenly), supaya user yang nunggu QRIS
+                     dinamis pun tetap punya jalur kontak CS kalau ada kendala. -->
+                <a href="https://wa.me/<%= (settings.contact?.whatsapp || '6285181236886').replace(/\D/g,'') %>?text=<%= encodeURIComponent('Halo min, saya butuh bantuan untuk pesanan produk ' + (product?.name || '')) %>"
+                   target="_blank" rel="noopener"
+                   class="w-full py-2.5 rounded-xl text-xs font-bold text-center flex items-center justify-center gap-1.5 mt-2"
+                   style="background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.3);color:#4ade80;">
+                    <iconify-icon icon="mdi:whatsapp" class="text-sm"></iconify-icon> Ada Kendala? Hubungi CS
+                </a>
 
                 <!-- CEK ULANG -->
                 <button id="recheckBtn" onclick="recheckNow()" class="hidden w-full py-2.5 rounded-xl text-xs font-bold text-red-400 border border-red-500/25 bg-red-500/5 hover:bg-red-500/10 transition-all flex items-center justify-center gap-2">
@@ -684,6 +699,33 @@ const schemaProduct = {
 
     syncOrderButton();
 
+    // FIX (bug: refresh/back-forward bikin ringkasan "Durasi" & Total tidak
+    // sesuai kartu yang sebenarnya ke-checked): browser suka mempertahankan
+    // radio yang dipilih user lewat reload / navigasi back tanpa memicu
+    // event 'change', sementara ringkasan di render server pakai default
+    // (opsi pertama yang stok ada). Jadi di sini kita SELALU baca radio yang
+    // benar-benar checked di DOM saat halaman tampil, dan paksa ringkasan +
+    // total + tombol ikut itu -- bukan percaya begitu saja INITIAL_PKG dari server.
+    function syncSelectedFromCheckedRadio() {
+        const checked = document.querySelector('input[name="pkg"]:checked');
+        if (!checked) return;
+        const label = checked.dataset.label || '';
+        const price = Number(checked.dataset.price || 0);
+        const stock = Number(checked.dataset.stock || 0);
+        const durationValue = checked.dataset.durationValue !== '' ? Number(checked.dataset.durationValue) : null;
+        const durationUnit = checked.dataset.durationUnit || 'd';
+        if (selPkg.label === label && selPkg.price === price && selPkg.stock === stock) return; // sudah sinkron
+        selPkg = { label, price, stock, durationValue, durationUnit };
+        document.getElementById('selectedLabel').textContent = label;
+        updateTotalDisplay(price);
+        syncOrderButton();
+    }
+    syncSelectedFromCheckedRadio();
+    // 'pageshow' menangkap kasus browser mengembalikan halaman dari
+    // back-forward cache (bfcache), di mana script di atas TIDAK dijalankan
+    // ulang tapi state form (radio checked) sudah dikembalikan browser.
+    window.addEventListener('pageshow', syncSelectedFromCheckedRadio);
+
     async function refreshProviderStock() {
         // Untuk produk yang memakai provider, lakukan satu refresh ringan setelah
         // render supaya angka kartu tidak tertinggal dari snapshot server saat
@@ -696,6 +738,9 @@ const schemaProduct = {
             if (!res.ok) return;
             const data = await res.json();
             if (!data?.success || !Array.isArray(data.items)) return;
+            // Provider sedang rate-limit: pertahankan tampilan hasil render server,
+            // jangan timpa dengan data stale/kosong dari fallback.
+            if (data.rateLimited) return;
 
             const radios = Array.from(document.querySelectorAll('input[name=\"pkg\"]'));
             let currentIndex = radios.findIndex(r => r.checked);
@@ -755,6 +800,7 @@ const schemaProduct = {
                         // Tanpa ini tombol bisa tetap memakai angka stok dari
                         // render awal walaupun endpoint baru saja memperbarui card.
                         selPkg.stock = stock;
+                        radio.dataset.stock = String(stock);
                     }
                 }
             });
