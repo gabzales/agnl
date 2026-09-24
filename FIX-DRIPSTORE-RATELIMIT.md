@@ -34,3 +34,30 @@
   tetap lewat dripstore_snapshot.json di Supabase seperti sebelumnya.
 - Kalau limit tetap sering kena, tanya owner DripStore kuota harian akun lo, lalu
   pertimbangkan naikin DRIPSTORE_CATALOG_CACHE_TTL (sekarang 30000 ms).
+
+## Update (23 Sep 2026): tombol "Cek stok" di banyak produk
+Gejala: saat kuota DripStore habis, produk provider-backed tanpa key lokal jadi
+"Cek stok" (putih), sementara produk dengan key lokal (mis. XREG) tetap "Beli".
+Penyebab: getLastGoodDripstoreSnapshot() membuang data kalau SALDO > 10 menit, padahal
+tampilan tombol cuma butuh katalog+stok, bukan saldo. Snapshot jadi kosong -> Cek stok.
+Fix: getDisplayDripstoreSnapshot() khusus tampilan (katalog basi maks 24 jam, tanpa syarat
+saldo). Guard checkout TETAP memakai varian ketat (saldo wajib <10 menit), jadi tombol
+"Beli" dari stok basi tidak bisa menembus checkout (diuji: order tetap ditolak).
+Batasan: kalau belum pernah ada snapshot sukses sama sekali (deploy baru + kuota sudah habis
++ snapshot Supabase kosong), tetap tampil "Cek stok" sampai kuota reset dan 1 refresh sukses.
+
+## Update (24 Sep 2026): produk yang namanya beda dari nama asli di DripStore
+Kasus: HG APK MOD GLOBAL (RANK) = "HG CHEAT SAFE SERVER" di DripStore, dan
+HG APK MOD CR (COSTUM ROOM) = "HG CHEAT BRUTAL". Nama beda -> tidak nyambung -> "Cek stok".
+Fix: DRIPSTORE_STRICT_ALIASES di server.js. Aturannya lebih ketat dari alias lama:
+nama provider harus SAMA dengan alias atau MENGANDUNG alias sebagai kata utuh, dan nama
+lokal tidak dipakai buat mencocokkan. Sebabnya: di kode lama, kedua nama itu bisa nyasar
+ke produk provider bernama "HG APK MOD" (saling-mengandung), yaitu produk yang SALAH.
+Produk lama tidak berubah (diuji 80 kombinasi nama x durasi, hasil lama = baru).
+
+Setelah deploy: Admin -> "Sync & Auto Map". Ini juga menimpa Variant ID lama yang mungkin
+kesimpan salah. Kalau kedua produk masih masuk daftar "unmatched", nama asli di API DripStore
+beda dari nama di chat: ketik "hg" di kotak "Cari katalog DripStore", baca nama aslinya,
+lalu ubah alias di DRIPSTORE_STRICT_ALIASES.
+Catatan: checkout live selalu resolve variant dari NAMA di katalog terkini (ID tersimpan
+cuma fallback), jadi mapping lama yang salah tidak bisa menyebabkan salah kirim key.

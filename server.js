@@ -12,6 +12,107 @@ const crypto = require('crypto');
 // Load .env FIRST before anything reads process.env
 require('dotenv').config();
 
+// ══════════════════════════════════════════════════════════════════
+// LIVE LOG VIEWER (admin) -- supaya log asli bisa dilihat dari web tanpa buka Vercel.
+//
+// Cara kerja:
+//  - console.log/warn/error DIBUNGKUS: output tetap ke stdout (Vercel logs tetap jalan),
+//    ditambah disalin ke ring buffer di memori (maks 600 entri, per instance).
+//  - Secret (token, key, password, cookie, JWT, header Bearer) di-REDACT otomatis.
+//  - Penyimpanan lintas instance: buffer di-flush ke Supabase (dripstore_logs.json) paling
+//    cepat tiap 60 dtk dan HANYA kalau ada entri warn/error baru. Log 'info' sifatnya
+//    memori saja. Ini disengaja: project ini pernah kena limit egress Supabase, jadi
+//    logging TIDAK boleh menulis ke DB tiap kejadian.
+//  - Halaman /admin/logs membaca gabungan: memori instance ini + log tersimpan.
+// ══════════════════════════════════════════════════════════════════
+const LOG_MAX = 600;
+const LOG_PERSIST_MAX = 300;
+const LOG_FLUSH_MS = Math.max(100, Number(process.env.LOG_FLUSH_MS) || 60000);
+let _logFlushTimer = null;
+const _logRing = [];
+let _logSeq = 0;
+let _logDirtyImportant = 0;
+let _logLastFlush = 0;
+const _logBoot = new Date().toISOString();
+const _logInstance = crypto.randomBytes(3).toString('hex');
+const { AsyncLocalStorage } = require('async_hooks');
+// Konteks request: supaya tiap panggilan ke provider DripStore tahu SIAPA pemicunya
+// (route mana / background). Ini kunci diagnosa "kenapa kuota habis".
+const _reqCtx = new AsyncLocalStorage();
+const _dsStats = { since: Date.now(), calls: {}, byWho: {}, ok: 0, rateLimited: 0, err: 0, last429At: 0 };
+const _reqCounts = new Map();
+const _gateStats = { redirected: 0, passed: 0, rejected: 0 };
+let _logFlushImpl = null; // diisi setelah modul DB siap
+
+const _SECRET_PATTERNS = [
+  [/(authorization["']?\s*[:=]\s*["']?)(bearer\s+)?[A-Za-z0-9._\-~+\/=]{8,}/gi, '$1[REDACTED]'],
+  [/(bearer\s+)[A-Za-z0-9._\-~+\/=]{8,}/gi, '$1[REDACTED]'],
+  [/((?:api[_-]?token|apitoken|api[_-]?key|apikey|secret(?:[_-]?key)?|password|passwd|pass|token|signature|sig|cookie|set-cookie|service[_-]?role[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|x-api-key|x-signature)["']?\s*[:=]\s*["']?)[^\s"',;&}]{4,}/gi, '$1[REDACTED]'],
+  [/(vpr_session(?:\.sig)?=)[^\s;]+/gi, '$1[REDACTED]'],
+  [/(cf_gate=)[^\s;]+/gi, '$1[REDACTED]'],
+  [/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[REDACTED_JWT]'],
+  [/\b(sb_secret_|sbp_|sk_live_|sk_test_|ghp_|gho_)[A-Za-z0-9_\-]{8,}/g, '[REDACTED_KEY]'],
+  [/\b[0-9a-f]{32,}\b/gi, '[REDACTED_HEX]'],
+];
+function _logRedact(str) {
+  let out = String(str);
+  for (const [re, rep] of _SECRET_PATTERNS) out = out.replace(re, rep);
+  return out;
+}
+function _logFormat(args) {
+  return args.map(a => {
+    if (a instanceof Error) return (a.stack || a.message || String(a)).split('\n').slice(0, 4).join(' | ');
+    if (typeof a === 'string') return a;
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }).join(' ');
+}
+function _logCategory(msg) {
+  const m = msg.toLowerCase();
+  if (/dripstore|drip-store|provider/.test(m)) return 'dripstore';
+  if (/webhook|genspay|pakasir|check-payment|payment|qris/.test(m)) return 'payment';
+  if (/site-gate|turnstile|cf-check|cloudflare/.test(m)) return 'security';
+  if (/supabase|\[db\]|writedb|readfresh/.test(m)) return 'database';
+  return 'app';
+}
+function pushLog(level, msg, extra) {
+  const text = _logRedact(msg).slice(0, 1200);
+  const entry = { id: ++_logSeq, t: Date.now(), lv: level, cat: (extra && extra.cat) || _logCategory(text), msg: text, inst: _logInstance };
+  if (extra && extra.meta) entry.meta = extra.meta;
+  _logRing.push(entry);
+  // Buffer penuh: buang entri 'info' tertua dulu, supaya warn/error tidak terdesak
+  // oleh banyaknya log info (mis. tiap panggilan provider).
+  while (_logRing.length > LOG_MAX) {
+    const i = _logRing.findIndex(e => e.lv === 'info');
+    _logRing.splice(i >= 0 ? i : 0, 1);
+  }
+  // Error dari penyimpanan log itu sendiri TIDAK boleh memicu flush lagi (feedback loop
+  // saat Supabase down: flush gagal -> error dicatat -> flush lagi -> ...).
+  if ((level === 'warn' || level === 'error') && !text.includes('app_logs.json')) {
+    _logDirtyImportant++;
+    if (_logFlushImpl) {
+      const wait = LOG_FLUSH_MS - (Date.now() - _logLastFlush);
+      if (wait <= 0) { try { _logFlushImpl(); } catch (_) {} }
+      else if (!_logFlushTimer) {
+        // Flush TRAILING: entri penting yang kena throttle tetap tersimpan begitu jendela
+        // lewat, walau tidak ada warn/error lagi setelahnya.
+        _logFlushTimer = setTimeout(() => { _logFlushTimer = null; try { _logFlushImpl(); } catch (_) {} }, wait + 50);
+        if (_logFlushTimer.unref) _logFlushTimer.unref();
+      }
+    }
+  }
+  return entry;
+}
+['log', 'info', 'warn', 'error'].forEach((fn) => {
+  const orig = console[fn].bind(console);
+  const level = fn === 'error' ? 'error' : fn === 'warn' ? 'warn' : 'info';
+  console[fn] = (...args) => {
+    try { pushLog(level, _logFormat(args)); } catch (_) {}
+    orig(...args);
+  };
+});
+process.on('unhandledRejection', (r) => { try { pushLog('error', 'UnhandledRejection: ' + (r && (r.stack || r.message) || String(r)), { cat: 'app' }); } catch (_) {} });
+process.on('uncaughtException', (e) => { try { pushLog('error', 'UncaughtException: ' + (e && (e.stack || e.message) || String(e)), { cat: 'app' }); } catch (_) {} });
+
 // PENTING — KEAMANAN: session cookie ditandatangani (signed) pakai secret ini.
 // Sebelumnya ada fallback string HARDCODED di source code
 // ('agha-nl-fallback-secret-2024-xK9mP3qR'). Itu lubang keamanan serius:
@@ -343,6 +444,39 @@ if (CLOUDFLARE_PROXY) {
     next();
   });
 }
+
+// ── REQUEST LOGGER (untuk /admin/logs) ──────────────────────────────────────
+// Tidak mencatat tiap page view (banjir). Yang dicatat sebagai entri: webhook, hasil
+// challenge gate, error 4xx/5xx (kecuali 404 biasa), request lambat. Sisanya hanya
+// dihitung per route. Juga membuka konteks request supaya panggilan provider tahu pemicunya.
+function _normPath(p) {
+  return String(p).replace(/\/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, '/:id').replace(/\/\d+/g, '/:id').slice(0, 60);
+}
+app.use((req, res, next) => {
+  const p = req.path;
+  if (/\.(?:css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|mp4|webm)$/i.test(p) || p.startsWith('/uploads/') || p.startsWith('/admin/logs')) return next();
+  const t0 = Date.now();
+  _reqCtx.run({ method: req.method, path: _normPath(p), ip: req.ip }, () => {
+    res.on('finish', () => {
+      try {
+        const st = res.statusCode, ms = Date.now() - t0;
+        const key = req.method + ' ' + _normPath(p);
+        if (_reqCounts.size < 300 || _reqCounts.has(key)) _reqCounts.set(key, (_reqCounts.get(key) || 0) + 1);
+        const loc = String(res.getHeader('location') || '');
+        if (st === 302 && loc.startsWith('/cf-check')) _gateStats.redirected++;
+        if (p === '/cf-check/verify') { if (st === 200) _gateStats.passed++; else if (st === 403) _gateStats.rejected++; }
+        const isAdminProbe = p.startsWith('/admin') || p.startsWith('/vpr-secure');
+        if (st === 404 && !isAdminProbe) return;
+        const important = st >= 400 || ms > 4000 || p.startsWith('/webhook/') || p.startsWith('/cf-check/verify') || p.startsWith('/cf-check/unavailable');
+        if (!important) return;
+        const cat = p.startsWith('/webhook/') ? 'payment' : p.startsWith('/cf-check') ? 'security' : /^\/api\/(catalog|products)\//.test(p) ? 'dripstore' : 'app';
+        const ua = String(req.headers['user-agent'] || '-').replace(/[\r\n\t]/g, ' ').slice(0, 60);
+        pushLog(st >= 500 ? 'error' : (st >= 400 ? 'warn' : 'info'), `${req.method} ${p.slice(0, 120)} -> ${st} ${ms}ms ip=${req.ip} ua="${ua}"`, { cat });
+      } catch (_) {}
+    });
+    next();
+  });
+});
 
 app.use(expressLayouts);
 // `verify` di sini nyimpen raw body string ke req.rawBody -- dibutuhkan
@@ -1137,7 +1271,7 @@ const requireAdmin = async (req, res, next) => {
 
 // Halaman admin yang dimuat lewat navigasi browser biasa (bukan fetch/XHR)
 // → kalau lock-nya hilang, redirect ke halaman login, bukan balas JSON.
-const ADMIN_PAGE_ROUTES = new Set(['/admin', '/admin/product-edit', '/admin/theme-settings']);
+const ADMIN_PAGE_ROUTES = new Set(['/admin', '/admin/product-edit', '/admin/theme-settings', '/admin/logs']);
 
 // Lock dianggap kosong/expired kalau tidak ada heartbeat selama ini
 // (mis: tab ditutup / koneksi putus tanpa logout resmi).
@@ -1427,7 +1561,30 @@ async function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _r
   return _dripstoreCallOnce(settings, endpoint, params, method, _retried);
 }
 
+// Wrapper pencatat: setiap request NYATA ke provider (bukan yang dilayani cache/breaker)
+// dicatat beserta pemicunya. Parameter TIDAK dicatat (bisa berisi data sensitif).
 function _dripstoreCallOnce(settings, endpoint, params = {}, method = 'GET', _retried = false) {
+  const t0 = Date.now();
+  const ctx = _reqCtx.getStore();
+  const who = ctx ? `${ctx.method} ${ctx.path}` : 'background/warm';
+  const m = String(method).toUpperCase();
+  const key = `${m} ${endpoint}`;
+  _dsStats.calls[key] = (_dsStats.calls[key] || 0) + 1;
+  const wk = (Object.keys(_dsStats.byWho).length < 40 || _dsStats.byWho[who] !== undefined) ? who : 'lainnya';
+  _dsStats.byWho[wk] = (_dsStats.byWho[wk] || 0) + 1;
+  return _dripstoreCallOnceRaw(settings, endpoint, params, m, _retried).then((v) => {
+    _dsStats.ok++;
+    pushLog('info', `[dripstore] ${key} OK ${Date.now() - t0}ms <- ${who}${_retried ? ' (retry)' : ''}`, { cat: 'dripstore' });
+    return v;
+  }, (e) => {
+    const rl = !!(e && e.rateLimited);
+    if (rl) { _dsStats.rateLimited++; _dsStats.last429At = Date.now(); } else { _dsStats.err++; }
+    pushLog(rl ? 'warn' : 'error', `[dripstore] ${key} GAGAL ${Date.now() - t0}ms <- ${who}: ${(e && e.message) || e}`, { cat: 'dripstore' });
+    throw e;
+  });
+}
+
+function _dripstoreCallOnceRaw(settings, endpoint, params = {}, method = 'GET', _retried = false) {
   return new Promise((resolve, reject) => {
     const token = (settings.dripstore?.apiToken || '').trim();
     const baseUrl = (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1').trim();
@@ -1726,6 +1883,43 @@ const DRIPSTORE_PRODUCT_ALIASES = {
   'hg safe apk mod': ['hg cheat safe version mod']
 };
 
+// ── ALIAS STRICT (dipakai untuk produk yang namanya di toko BEDA dari nama asli di DripStore) ──
+// Beda dari DRIPSTORE_PRODUCT_ALIASES di atas: pencocokan alias strict TIDAK dua arah.
+// Nama provider harus SAMA dengan alias, atau MENGANDUNG alias sebagai rangkaian kata utuh
+// (mis. "hg cheat brutal mod" cocok, "hg cheat" TIDAK). Nama lokal sendiri juga tidak
+// dipakai buat mencocokkan, karena nama marketing seperti "HG APK MOD GLOBAL (RANK)"
+// bisa salah nyangkut ke produk provider yang cuma bernama "HG APK MOD".
+// Alasan: false-positive = key produk yang salah terkirim ke pembeli; itu jauh lebih
+// buruk daripada status "Cek stok". Kalau nama asli di API DripStore ternyata beda dari
+// ini, produk tetap "Cek stok" -> cek nama aslinya lewat kotak "Cari katalog DripStore"
+// di admin, lalu perbarui alias di sini.
+// KEY = nama produk di toko, sudah dinormalisasi (huruf kecil, tanpa tanda baca).
+const DRIPSTORE_STRICT_ALIASES = {
+  // Nama di DripStore: HG CHEAT SAFE SERVER  (sumber: chat client 24 Sep 2026)
+  'hg apk mod global rank': ['hg cheat safe server'],
+  'hg apk mod global': ['hg cheat safe server'],
+  // Nama di DripStore: HG CHEAT BRUTAL
+  'hg apk mod cr costum room': ['hg cheat brutal'],
+  'hg apk mod cr custom room': ['hg cheat brutal'],
+  'hg apk mod cr': ['hg cheat brutal']
+};
+
+function _dsStrictAliasCandidates(localName) {
+  return (DRIPSTORE_STRICT_ALIASES[_dsNormalizeName(localName)] || []).map(_dsNormalizeName).filter(Boolean);
+}
+function _dsStrictAliasMatch(candidates, supplierName) {
+  const b = _dsNormalizeName(supplierName);
+  if (!b) return false;
+  const padded = ' ' + b + ' ';
+  return candidates.some(a => b === a || padded.includes(' ' + a + ' '));
+}
+// "Exact" untuk urutan prioritas: sama dengan nama lokal, ATAU sama persis dengan alias strict.
+function _dsIsExactNameMatch(localName, supplierName) {
+  const sup = _dsNormalizeName(supplierName);
+  if (!sup) return false;
+  return sup === _dsNormalizeName(localName) || _dsStrictAliasCandidates(localName).includes(sup);
+}
+
 function _dsProviderNameCandidates(localName) {
   const normalized = _dsNormalizeName(localName);
   const aliases = DRIPSTORE_PRODUCT_ALIASES[normalized] || [];
@@ -1733,6 +1927,8 @@ function _dsProviderNameCandidates(localName) {
 }
 
 function _dsNameMatchWithAliases(localName, supplierName) {
+  const strict = _dsStrictAliasCandidates(localName);
+  if (strict.length) return _dsStrictAliasMatch(strict, supplierName);
   return _dsProviderNameCandidates(localName).some(candidate => _dsNameMatch(candidate, supplierName));
 }
 
@@ -1809,8 +2005,8 @@ async function autoMapDripstoreProducts({ restockLowStock = false } = {}) {
         }
         // Prioritaskan kecocokan exact-normalized name, lalu yang paling panjang.
         candidates.sort((x, y) => {
-          const xe = _dsNormalizeName(x.productName) === _dsNormalizeName(product.name) ? 1 : 0;
-          const ye = _dsNormalizeName(y.productName) === _dsNormalizeName(product.name) ? 1 : 0;
+          const xe = _dsIsExactNameMatch(product.name, x.productName) ? 1 : 0;
+          const ye = _dsIsExactNameMatch(product.name, y.productName) ? 1 : 0;
           if (xe !== ye) return ye - xe;
           return String(y.productName).length - String(x.productName).length;
         });
@@ -2052,6 +2248,7 @@ const DRIPSTORE_CATALOG_TIMEOUT_MS = 4500;
 const DRIPSTORE_SNAPSHOT_FILE = 'dripstore_snapshot.json';
 const DRIPSTORE_STALE_BALANCE_MAX_MS = 10 * 60 * 1000;   // saldo basi maks 10 menit utk tampilan
 const DRIPSTORE_STALE_PRODUCTS_MAX_MS = 60 * 60 * 1000;  // katalog/harga jarang berubah
+const DRIPSTORE_STALE_DISPLAY_MAX_MS = 24 * 60 * 60 * 1000; // katalog basi maks 24 jam khusus utk tampilan stok
 
 function _getDripstoreCatalogSignature(settings) {
   const ds = settings?.dripstore || {};
@@ -2085,6 +2282,22 @@ function getLastGoodDripstoreSnapshot(settings) {
   return { balance, products, stale: true, ageMs: now - Number(lg.balanceAt || 0) };
 }
 
+// Untuk TAMPILAN stok (tombol Beli / Cek stok / Habis) yang dibutuhkan hanya katalog
+// + stok variant, BUKAN saldo. Versi ketat di atas (wajib saldo <10 menit) dipakai
+// untuk guard checkout. Tanpa varian ini, saat provider kena limit > 10 menit semua
+// produk provider-backed jatuh ke "Cek stok" walau katalog terakhir masih ada.
+// Stok di sini bisa basi; itu tidak berbahaya karena checkout tetap memverifikasi
+// ulang (guard + generate_key.php adalah otoritas akhir).
+function getDisplayDripstoreSnapshot(settings) {
+  const strict = getLastGoodDripstoreSnapshot(settings);
+  if (strict) return strict;
+  const lg = _dsLastGood(settings);
+  if (!lg || !lg.products) return null;
+  const now = Date.now();
+  if ((now - Number(lg.productsAt || 0)) >= DRIPSTORE_STALE_DISPLAY_MAX_MS) return null;
+  return { balance: null, products: lg.products, stale: true, displayOnly: true, ageMs: now - Number(lg.productsAt || 0) };
+}
+
 async function _loadPersistedDripstoreSnapshot(settings, maxWaitMs = 1200) {
   const signature = _getDripstoreCatalogSignature(settings);
   if (!signature) return null;
@@ -2096,7 +2309,6 @@ async function _loadPersistedDripstoreSnapshot(settings, maxWaitMs = 1200) {
     ]);
   } catch (_) { persisted = readDB(DRIPSTORE_SNAPSHOT_FILE); }
   if (!persisted || persisted.signature !== signature || !persisted.products) return null;
-  if (persisted.balance === null || persisted.balance === undefined) return null;
   return persisted;
 }
 
@@ -2137,14 +2349,14 @@ async function getDripstoreCatalogSnapshot(settings, opts = {}) {
   const now = Date.now();
   if (!force && _dripstoreCatalogCache && (now - _dripstoreCatalogCacheAt) < DRIPSTORE_CATALOG_CACHE_TTL) return _dripstoreCatalogCache;
 
-  const fallback = () => getLastGoodDripstoreSnapshot(settings) || { balance: null, products: null, stale: true };
+  const fallback = () => getDisplayDripstoreSnapshot(settings) || { balance: null, products: null, stale: true };
 
   // Provider sedang dibatasi / baru gagal: layani dari last-known-good TANPA
   // menyentuh provider. force=true (admin) tetap boleh mencoba, tapi tetap
   // dihentikan kalau breaker rate-limit sedang terbuka.
   const brk = dripstoreBreakerState();
   if (brk.open) {
-    const lg = getLastGoodDripstoreSnapshot(settings);
+    const lg = getDisplayDripstoreSnapshot(settings);
     return lg || { balance: null, products: null, stale: true, error: _dsBreakerError().message, rateLimited: true, retryAfterSec: brk.retryAfterSec };
   }
   if (!force && Date.now() < _dripstoreFailUntil) return fallback();
@@ -2159,7 +2371,7 @@ async function getDripstoreCatalogSnapshot(settings, opts = {}) {
     const persisted = await _loadPersistedDripstoreSnapshot(settings);
     if (persisted) {
       if (!_dripstoreLastGood || Number(persisted.balanceAt || 0) > Number(_dripstoreLastGood.balanceAt || 0)) _dripstoreLastGood = persisted;
-      if ((Date.now() - Number(persisted.at || 0)) < DRIPSTORE_CATALOG_CACHE_TTL) {
+      if (persisted.balance !== null && persisted.balance !== undefined && (Date.now() - Number(persisted.at || 0)) < DRIPSTORE_CATALOG_CACHE_TTL) {
         _dripstoreCatalogCache = { balance: persisted.balance, products: persisted.products };
         _dripstoreCatalogCacheAt = Number(persisted.at);
         return _dripstoreCatalogCache;
@@ -2205,7 +2417,7 @@ async function getDripstoreCatalogSnapshot(settings, opts = {}) {
       const reason = results.find(r => r.status === 'rejected')?.reason?.message || 'provider tidak merespons';
       _dripstoreFailUntil = Date.now() + DRIPSTORE_FAIL_COOLDOWN_MS;
       console.warn('[dripstore snapshot] refresh gagal sebagian:', reason);
-      return getLastGoodDripstoreSnapshot(settings) || { balance: null, products: null, stale: true, error: reason };
+      return getDisplayDripstoreSnapshot(settings) || { balance: null, products: null, stale: true, error: reason };
     } finally {
       _dripstoreCatalogInflight = null;
     }
@@ -2281,8 +2493,8 @@ function resolveDripstoreVariantFromCatalog(productsResp, productName, opt) {
   );
   if (matches.length) {
     matches.sort((a,b) => {
-      const ae = _dsNormalizeName(a.productName) === _dsNormalizeName(productName) ? 1 : 0;
-      const be = _dsNormalizeName(b.productName) === _dsNormalizeName(productName) ? 1 : 0;
+      const ae = _dsIsExactNameMatch(productName, a.productName) ? 1 : 0;
+      const be = _dsIsExactNameMatch(productName, b.productName) ? 1 : 0;
       return be - ae || String(b.productName).length - String(a.productName).length;
     });
     return matches[0].variantId;
@@ -2964,7 +3176,7 @@ app.get('/', async (req, res) => {
     // catalog snapshot for the first render; later requests use the cache.
     if (!homeProviderSnapshot) {
       homeProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 3500 }).catch(() => null);
-      if (!homeProviderSnapshot?.products) homeProviderSnapshot = getLastGoodDripstoreSnapshot(settings) || homeProviderSnapshot;
+      if (!homeProviderSnapshot?.products) homeProviderSnapshot = getDisplayDripstoreSnapshot(settings) || homeProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -3953,7 +4165,7 @@ app.get('/buy/:id', async (req, res) => {
     buyProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
     if (!buyProviderSnapshot) {
       buyProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 2500 }).catch(() => null);
-      if (!buyProviderSnapshot?.products) buyProviderSnapshot = getLastGoodDripstoreSnapshot(settings) || buyProviderSnapshot;
+      if (!buyProviderSnapshot?.products) buyProviderSnapshot = getDisplayDripstoreSnapshot(settings) || buyProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -5634,7 +5846,7 @@ app.get('/admin', requireAdmin, async (req, res) => {
     adminProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
     if (!adminProviderSnapshot) {
       adminProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 4500 }).catch(() => null);
-      if (!adminProviderSnapshot?.products) adminProviderSnapshot = getLastGoodDripstoreSnapshot(settings) || adminProviderSnapshot;
+      if (!adminProviderSnapshot?.products) adminProviderSnapshot = getDisplayDripstoreSnapshot(settings) || adminProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -6162,6 +6374,115 @@ app.get('/admin/dripstore/status', requireAdmin, (req, res) => {
   res.set('Cache-Control', 'no-store, max-age=0');
   const brk = dripstoreBreakerState();
   res.json({ success: true, breaker: brk, total429: _dsBreaker.hits429, microCacheEntries: _dsMicroCache.size, failCooldownSec: Math.max(0, Math.ceil((_dripstoreFailUntil - Date.now()) / 1000)) });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// LIVE LOG VIEWER -- endpoint + persistensi (lihat komentar di bagian atas file)
+// ══════════════════════════════════════════════════════════════════
+const LOG_FILE = 'app_logs.json';
+let _logPersistBase = null;   // riwayat tersimpan (dimuat SEKALI per instance)
+let _logFlushing = false;
+
+function _logDedupe(list) {
+  const seen = new Set(); const out = [];
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue;
+    const k = e.inst + ':' + e.id + ':' + e.t;
+    if (seen.has(k)) continue; seen.add(k); out.push(e);
+  }
+  return out.sort((a, b) => a.t - b.t);
+}
+
+// Flush: hanya warn/error, dibatasi 1x/60 dtk, dan hanya jika ada entri penting baru.
+// Baca DB cuma SEKALI per instance (untuk menggabung riwayat sebelum cold start),
+// setelah itu murni tulis -> tidak menambah egress Supabase.
+_logFlushImpl = async function () {
+  if (_logFlushing) return;
+  if (!_logDirtyImportant) return;
+  _logFlushing = true; _logLastFlush = Date.now(); _logDirtyImportant = 0;
+  try {
+    if (_logPersistBase === null) {
+      let prev = [];
+      try { prev = await Promise.race([db.readFresh(LOG_FILE), new Promise(r => setTimeout(() => r([]), 2500))]); } catch (_) {}
+      _logPersistBase = Array.isArray(prev) ? prev : [];
+    }
+    const mine = _logRing.filter(e => e.lv !== 'info').map(e => ({ ...e, msg: String(e.msg).slice(0, 500) }));
+    _logPersistBase = _logDedupe(_logPersistBase.concat(mine)).slice(-LOG_PERSIST_MAX);
+    await db.writeDB(LOG_FILE, _logPersistBase);
+  } catch (_) {
+    // jangan pernah console.* di sini (bisa memicu flush berulang)
+  } finally { _logFlushing = false; }
+};
+
+function _logStatus(settings) {
+  const brk = dripstoreBreakerState();
+  let snap = { fresh: false, ageSec: null, lastGoodAgeSec: null, hasCatalog: false };
+  try {
+    if (_dripstoreCatalogCache) {
+      snap.fresh = (Date.now() - _dripstoreCatalogCacheAt) < DRIPSTORE_CATALOG_CACHE_TTL;
+      snap.ageSec = Math.round((Date.now() - _dripstoreCatalogCacheAt) / 1000);
+    }
+    const lg = _dsLastGood(settings);
+    if (lg && lg.products) { snap.hasCatalog = true; snap.lastGoodAgeSec = Math.round((Date.now() - Number(lg.productsAt || 0)) / 1000); }
+  } catch (_) {}
+  const topCalls = Object.entries(_dsStats.byWho).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const topReq = Array.from(_reqCounts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  return {
+    now: Date.now(), boot: _logBoot, inst: _logInstance, buffered: _logRing.length,
+    breaker: { open: brk.open, retryAfterSec: brk.retryAfterSec, reason: brk.reason, total429: _dsBreaker.hits429 },
+    failCooldownSec: Math.max(0, Math.ceil((_dripstoreFailUntil - Date.now()) / 1000)),
+    snapshot: snap,
+    provider: {
+      sinceSec: Math.round((Date.now() - _dsStats.since) / 1000),
+      calls: _dsStats.calls, ok: _dsStats.ok, rateLimited: _dsStats.rateLimited, err: _dsStats.err,
+      last429AgeSec: _dsStats.last429At ? Math.round((Date.now() - _dsStats.last429At) / 1000) : null,
+      byTrigger: topCalls, microCache: _dsMicroCache.size
+    },
+    gate: { enabled: SITE_CHALLENGE_ON, redirected: _gateStats.redirected, passed: _gateStats.passed, rejected: _gateStats.rejected },
+    topRequests: topReq,
+    env: {
+      NODE_ENV: process.env.NODE_ENV || '-', vercel: !!process.env.VERCEL,
+      SITE_CHALLENGE_set: String(process.env.SITE_CHALLENGE || '') || '-',
+      turnstileKeys: !!(process.env.TURNSTILE_SITE_KEY && process.env.TURNSTILE_SECRET_KEY),
+      CLOUDFLARE_PROXY: CLOUDFLARE_PROXY,
+      supabase: !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
+      sessionSecret: !!process.env.SESSION_SECRET,
+      dripstoreToken: !!settings?.dripstore?.apiToken,
+      fulfillmentMode: settings?.dripstore?.fulfillmentMode || 'live'
+    }
+  };
+}
+
+app.get('/admin/logs', requireAdmin, (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
+  res.render('pages/admin-logs', { layout: false });
+});
+
+app.get('/admin/logs/data', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
+  const since = Math.max(0, parseInt(req.query.since, 10) || 0);
+  const out = { success: true, entries: _logRing.filter(e => e.id > since), lastId: _logSeq };
+  if (req.query.persisted === '1') {
+    let saved = [];
+    try { saved = await Promise.race([db.readFresh(LOG_FILE), new Promise(r => setTimeout(() => r(readDB(LOG_FILE)), 2500))]); } catch (_) { saved = readDB(LOG_FILE); }
+    out.persisted = Array.isArray(saved) ? saved.slice(-LOG_PERSIST_MAX) : [];
+  }
+  out.status = _logStatus(readDB('settings.json'));
+  res.json(out);
+});
+
+app.post('/admin/logs/clear', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
+  // Anti-CSRF: wajib JSON (browser lintas-situs tidak bisa kirim ini tanpa preflight)
+  // dan Origin, kalau ada, harus sama dengan host kita.
+  const origin = req.headers.origin;
+  if (!req.is('application/json') || (origin && (() => { try { return new URL(origin).host !== req.get('host'); } catch { return true; } })())) {
+    return res.status(403).json({ success: false, message: 'Ditolak' });
+  }
+  _logRing.length = 0; _logPersistBase = []; _logDirtyImportant = 0;
+  try { await db.writeDB(LOG_FILE, []); } catch (_) {}
+  pushLog('info', '[admin] log dibersihkan', { cat: 'app' });
+  res.json({ success: true });
 });
 
 // Cek saldo DripStore langsung dari admin (buat preview sebelum restock manual)

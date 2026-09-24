@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<title>Log Live</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#0b0d11;color:#dfe3ea;font-size:14px;padding-bottom:40px}
+.top{position:sticky;top:0;z-index:5;background:#0b0d11ee;backdrop-filter:blur(6px);border-bottom:1px solid #1d222b;padding:10px 12px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+h1{font-size:1.05rem;font-weight:700;margin-right:auto}
+a.back{color:#9aa3b2;text-decoration:none;font-size:.85rem}
+button{background:#1a1f29;color:#dfe3ea;border:1px solid #2a3140;border-radius:8px;padding:7px 11px;font-size:.8rem;cursor:pointer}
+button.on{background:#dc2626;border-color:#dc2626;color:#fff}
+button.warn{border-color:#7f1d1d;color:#fca5a5}
+input[type=search]{flex:1;min-width:120px;background:#12161d;color:#dfe3ea;border:1px solid #2a3140;border-radius:8px;padding:8px 10px;font-size:.85rem}
+.chips{display:flex;gap:6px;overflow-x:auto;padding:8px 0 2px;-webkit-overflow-scrolling:touch}
+.chip{white-space:nowrap;background:#12161d;border:1px solid #2a3140;border-radius:999px;padding:5px 11px;font-size:.75rem;color:#9aa3b2;cursor:pointer}
+.chip.on{background:#dc2626;border-color:#dc2626;color:#fff}
+.panel{margin:12px;background:#12161d;border:1px solid #1d222b;border-radius:12px;padding:12px}
+.panel h2{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:#7d8798;margin-bottom:9px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.kv{background:#0e1218;border:1px solid #1d222b;border-radius:9px;padding:8px 10px}
+.kv b{display:block;font-size:.7rem;color:#7d8798;font-weight:600;margin-bottom:3px}
+.kv span{font-size:.9rem;word-break:break-word}
+.ok{color:#4ade80}.bad{color:#f87171}.mid{color:#fbbf24}.dim{color:#7d8798}
+.list{margin:0 12px}
+.log{border-left:3px solid #2a3140;background:#0e1218;border-radius:6px;padding:7px 9px;margin-bottom:6px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.74rem;line-height:1.45;word-break:break-word}
+.log.error{border-color:#ef4444;background:#1a0f10}
+.log.warn{border-color:#f59e0b;background:#1a150c}
+.log.info{border-color:#3b82f6}
+.log .m{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:3px;font-size:.68rem;color:#7d8798}
+.tag{border-radius:4px;padding:0 5px;background:#1d222b;color:#c7cdd8}
+.tag.lv-error{background:#7f1d1d;color:#fecaca}.tag.lv-warn{background:#78350f;color:#fde68a}.tag.lv-info{background:#1e3a8a;color:#bfdbfe}
+.empty{text-align:center;color:#7d8798;padding:30px 12px}
+table{width:100%;border-collapse:collapse;font-size:.78rem}
+td{padding:4px 2px;border-bottom:1px solid #1d222b;vertical-align:top;word-break:break-word}
+td:last-child{text-align:right;color:#9aa3b2;white-space:nowrap;padding-left:8px}
+.note{font-size:.72rem;color:#7d8798;margin-top:8px;line-height:1.45}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="row">
+    <a class="back" href="/admin">&larr; Admin</a>
+    <h1>Log Live</h1>
+    <button id="bPause">Jeda</button>
+    <button id="bCopy">Salin</button>
+    <button id="bClear" class="warn">Bersihkan</button>
+  </div>
+  <div class="row" style="margin-top:8px"><input type="search" id="q" placeholder="Cari di log..."></div>
+  <div class="chips" id="chipsLv"></div>
+  <div class="chips" id="chipsCat"></div>
+</div>
+
+<div class="panel" id="diag"><h2>Diagnosa</h2><div class="dim">Memuat...</div></div>
+<div class="list" id="list"><div class="empty">Memuat log...</div></div>
+
+<script>
+(function(){
+  var LEVELS=[['all','Semua'],['error','Error'],['warn','Warn'],['info','Info']];
+  var CATS=[['all','Semua'],['dripstore','DripStore'],['payment','Pembayaran'],['security','Keamanan'],['database','Database'],['app','App']];
+  var state={lv:'all',cat:'all',q:'',paused:false,lastId:0,timer:null};
+  var store=new Map();          // key inst:id -> entry
+  var lastStatus=null;
+
+  function $(id){return document.getElementById(id);}
+  function el(tag,cls,text){var e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e;}
+  function pad(n){return n<10?'0'+n:''+n;}
+  function fmtTime(t){var d=new Date(t);return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());}
+  function fmtDur(s){if(s==null)return '-';if(s<60)return s+' dtk';if(s<3600)return Math.floor(s/60)+' mnt '+(s%60)+' dtk';return Math.floor(s/3600)+' jam '+Math.floor((s%3600)/60)+' mnt';}
+
+  function chips(root,items,key){
+    root.textContent='';
+    items.forEach(function(it){
+      var c=el('span','chip'+(state[key]===it[0]?' on':''),it[1]);
+      c.onclick=function(){state[key]=it[0];chips(root,items,key);render();};
+      root.appendChild(c);
+    });
+  }
+  chips($('chipsLv'),LEVELS,'lv');
+  chips($('chipsCat'),CATS,'cat');
+
+  function visible(){
+    var q=state.q.trim().toLowerCase();
+    var arr=Array.from(store.values()).filter(function(e){
+      if(state.lv!=='all'&&e.lv!==state.lv)return false;
+      if(state.cat!=='all'&&e.cat!==state.cat)return false;
+      if(q&&(e.msg||'').toLowerCase().indexOf(q)<0)return false;
+      return true;
+    });
+    arr.sort(function(a,b){return b.t-a.t||b.id-a.id;});
+    return arr;
+  }
+
+  function render(){
+    var root=$('list'); var arr=visible();
+    root.textContent='';
+    if(!arr.length){root.appendChild(el('div','empty','Belum ada log yang cocok.'));return;}
+    arr.slice(0,400).forEach(function(e){
+      var d=el('div','log '+e.lv);
+      var m=el('div','m');
+      m.appendChild(el('span','',fmtTime(e.t)));
+      m.appendChild(el('span','tag lv-'+e.lv,e.lv.toUpperCase()));
+      m.appendChild(el('span','tag',e.cat));
+      m.appendChild(el('span','',('#'+e.inst)));
+      d.appendChild(m);
+      d.appendChild(el('div','',e.msg));   // textContent: aman dari HTML/script di isi log
+      root.appendChild(d);
+    });
+  }
+
+  function addEntries(list){
+    (list||[]).forEach(function(e){store.set(e.inst+':'+e.id+':'+e.t,e);});
+  }
+
+  function renderDiag(s){
+    lastStatus=s;
+    var root=$('diag'); root.textContent='';
+    root.appendChild(el('h2','','Diagnosa'));
+    var g=el('div','grid'); root.appendChild(g);
+    function kv(label,val,cls){var k=el('div','kv');k.appendChild(el('b','',label));k.appendChild(el('span',cls||'',val));g.appendChild(k);}
+    var b=s.breaker;
+    kv('Breaker DripStore',b.open?('TERBUKA ('+fmtDur(b.retryAfterSec)+')'):'Tertutup (normal)',b.open?'bad':'ok');
+    kv('Cooldown gagal-refresh',s.failCooldownSec>0?fmtDur(s.failCooldownSec):'Tidak aktif',s.failCooldownSec>0?'mid':'ok');
+    kv('Cache katalog',s.snapshot.fresh?('Segar ('+fmtDur(s.snapshot.ageSec)+')'):(s.snapshot.hasCatalog?('Basi, ada cadangan ('+fmtDur(s.snapshot.lastGoodAgeSec)+')'):'KOSONG'),s.snapshot.fresh?'ok':(s.snapshot.hasCatalog?'mid':'bad'));
+    kv('Total kena 429 (instance ini)',String(b.total429),b.total429>0?'mid':'ok');
+    var p=s.provider;
+    kv('Request ke provider',p.ok+' ok / '+p.rateLimited+' limit / '+p.err+' error','');
+    kv('429 terakhir',p.last429AgeSec==null?'Belum ada':(fmtDur(p.last429AgeSec)+' lalu'),p.last429AgeSec==null?'ok':'mid');
+    var gt=s.gate;
+    kv('Gate challenge',gt.enabled?'AKTIF':'MATI',gt.enabled?'ok':'mid');
+    kv('Gate: redirect / lolos / ditolak',gt.redirected+' / '+gt.passed+' / '+gt.rejected,'');
+    var ev=s.env;
+    kv('Env',
+      'token DripStore: '+(ev.dripstoreToken?'ada':'TIDAK ADA')+', mode: '+ev.fulfillmentMode+', Supabase: '+(ev.supabase?'ok':'TIDAK'),
+      (ev.dripstoreToken&&ev.supabase)?'':'bad');
+    kv('Instance / uptime','#'+s.inst+' sejak '+new Date(s.boot).toLocaleTimeString(),'dim');
+
+    if(p.byTrigger&&p.byTrigger.length){
+      var t=el('table');
+      p.byTrigger.forEach(function(r){var tr=el('tr');tr.appendChild(el('td','',r[0]));tr.appendChild(el('td','',r[1]+'x'));t.appendChild(tr);});
+      var box=el('div');box.style.marginTop='12px';
+      box.appendChild(el('h2','','Siapa yang nembak provider (sejak instance ini hidup)'));
+      box.appendChild(t);root.appendChild(box);
+    }
+    if(s.topRequests&&s.topRequests.length){
+      var t2=el('table');
+      s.topRequests.forEach(function(r){var tr=el('tr');tr.appendChild(el('td','',r[0]));tr.appendChild(el('td','',r[1]+'x'));t2.appendChild(tr);});
+      var box2=el('div');box2.style.marginTop='12px';
+      box2.appendChild(el('h2','','Route paling sering diakses'));
+      box2.appendChild(t2);root.appendChild(box2);
+    }
+    root.appendChild(el('div','note','Data di panel ini per-instance Vercel dan reset saat cold start. Log warn/error disimpan ke database (maks tiap 60 dtk) dan digabung di daftar bawah. Kalau ada lebih dari satu instance aktif, sebagian entri bisa tidak muncul.'));
+  }
+
+  function poll(first){
+    if(state.paused)return schedule();
+    var url='/admin/logs/data?since='+(first?0:state.lastId)+(first?'&persisted=1':'');
+    fetch(url,{credentials:'same-origin',headers:{'Accept':'application/json'}})
+      .then(function(r){
+        if(r.status===401||r.status===404){location.href='/vpr-secure-panel-8x';throw new Error('sesi');}
+        return r.json();
+      })
+      .then(function(d){
+        if(!d||!d.success)return;
+        if(first&&d.persisted)addEntries(d.persisted);
+        addEntries(d.entries);
+        if(d.lastId>state.lastId)state.lastId=d.lastId;
+        renderDiag(d.status);
+        render();
+      })
+      .catch(function(){})
+      .then(schedule);
+  }
+  function schedule(){
+    clearTimeout(state.timer);
+    state.timer=setTimeout(function(){poll(false);},10000);   // 10 dtk; otomatis jeda saat tab disembunyikan
+  }
+  document.addEventListener('visibilitychange',function(){
+    if(document.hidden){clearTimeout(state.timer);}
+    else{poll(false);}
+  });
+
+  $('q').addEventListener('input',function(e){state.q=e.target.value;render();});
+  $('bPause').onclick=function(){
+    state.paused=!state.paused;
+    this.textContent=state.paused?'Lanjut':'Jeda';
+    this.className=state.paused?'on':'';
+    if(!state.paused)poll(false);
+  };
+  $('bCopy').onclick=function(){
+    var txt=visible().slice(0,300).map(function(e){return fmtTime(e.t)+' ['+e.lv.toUpperCase()+']['+e.cat+'] '+e.msg;}).join('\n');
+    var done=function(){var o=$('bCopy').textContent;$('bCopy').textContent='Tersalin';setTimeout(function(){$('bCopy').textContent=o;},1200);};
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done,function(){});}
+    else{var ta=document.createElement('textarea');ta.value=txt;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');done();}catch(_){}document.body.removeChild(ta);}
+  };
+  $('bClear').onclick=function(){
+    if(!confirm('Bersihkan semua log (memori + yang tersimpan)?'))return;
+    fetch('/admin/logs/clear',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:'{}'})
+      .then(function(r){return r.json();})
+      .then(function(d){if(d&&d.success){store.clear();state.lastId=0;poll(true);}});
+  };
+
+  poll(true);
+})();
+</script>
+</body>
+</html>
