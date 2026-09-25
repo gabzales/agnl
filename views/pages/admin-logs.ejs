@@ -128,7 +128,8 @@ td:last-child{text-align:right;color:#9aa3b2;white-space:nowrap;padding-left:8px
     kv('Cache katalog',s.snapshot.fresh?('Segar ('+fmtDur(s.snapshot.ageSec)+')'):(s.snapshot.hasCatalog?('Basi, ada cadangan ('+fmtDur(s.snapshot.lastGoodAgeSec)+')'):'KOSONG'),s.snapshot.fresh?'ok':(s.snapshot.hasCatalog?'mid':'bad'));
     kv('Total kena 429 (instance ini)',String(b.total429),b.total429>0?'mid':'ok');
     var p=s.provider;
-    kv('Request ke provider',p.ok+' ok / '+p.rateLimited+' limit / '+p.err+' error','');
+    kv('Request ke provider',p.ok+' ok / '+p.rateLimited+' limit / '+p.err+' error (dari situ '+(p.timeout||0)+' timeout)',(p.timeout||0)>3?'mid':'');
+    kv('Order menunggu retry otomatis',String(p.pendingRetryOrders||0)+' (bukan stok habis, provider lelet/limit)',(p.pendingRetryOrders||0)>0?'mid':'ok');
     kv('429 terakhir',p.last429AgeSec==null?'Belum ada':(fmtDur(p.last429AgeSec)+' lalu'),p.last429AgeSec==null?'ok':'mid');
     var gt=s.gate;
     kv('Gate challenge',gt.enabled?'AKTIF':'MATI',gt.enabled?'ok':'mid');

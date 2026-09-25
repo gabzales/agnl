@@ -26,7 +26,7 @@ require('dotenv').config();
 //  - Halaman /admin/logs membaca gabungan: memori instance ini + log tersimpan.
 // ══════════════════════════════════════════════════════════════════
 const LOG_MAX = 600;
-const LOG_PERSIST_MAX = 300;
+const LOG_PERSIST_MAX = 1500;
 const LOG_FLUSH_MS = Math.max(100, Number(process.env.LOG_FLUSH_MS) || 60000);
 let _logFlushTimer = null;
 const _logRing = [];
@@ -39,7 +39,7 @@ const { AsyncLocalStorage } = require('async_hooks');
 // Konteks request: supaya tiap panggilan ke provider DripStore tahu SIAPA pemicunya
 // (route mana / background). Ini kunci diagnosa "kenapa kuota habis".
 const _reqCtx = new AsyncLocalStorage();
-const _dsStats = { since: Date.now(), calls: {}, byWho: {}, ok: 0, rateLimited: 0, err: 0, last429At: 0 };
+const _dsStats = { since: Date.now(), calls: {}, byWho: {}, ok: 0, rateLimited: 0, err: 0, timeout: 0, last429At: 0, pendingRetryCount: 0 };
 const _reqCounts = new Map();
 const _gateStats = { redirected: 0, passed: 0, rejected: 0 };
 let _logFlushImpl = null; // diisi setelah modul DB siap
@@ -1432,7 +1432,7 @@ const createQRISPaymentGenspay = (orderId, amount, settings) => {
       });
     });
     req.on('timeout', () => { req.destroy(); reject(new Error('GensPay timeout')); });
-    req.on('error', e => reject(new Error('Network error: ' + e.message)));
+    req.on('error', e => reject(_dsTransientError('Network error: ' + e.message)));
     req.write(body); req.end();
   });
 };
@@ -1543,7 +1543,7 @@ async function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _r
         try {
           value = await _dripstoreCallOnce(settings, endpoint, params, method, _retried);
         } catch (e) {
-          if (!e?.transient || _retried) throw e;
+          if (!e?.transient || _retried || dripstoreBreakerState().open) throw e;
           await new Promise(r => setTimeout(r, 250));
           value = await _dripstoreCallOnce(settings, endpoint, params, method, true);
         }
@@ -1578,7 +1578,8 @@ function _dripstoreCallOnce(settings, endpoint, params = {}, method = 'GET', _re
     return v;
   }, (e) => {
     const rl = !!(e && e.rateLimited);
-    if (rl) { _dsStats.rateLimited++; _dsStats.last429At = Date.now(); } else { _dsStats.err++; }
+    if (rl) { _dsStats.rateLimited++; _dsStats.last429At = Date.now(); }
+    else { _dsStats.err++; if (/timeout/i.test((e && e.message) || '')) _dsStats.timeout++; }
     pushLog(rl ? 'warn' : 'error', `[dripstore] ${key} GAGAL ${Date.now() - t0}ms <- ${who}: ${(e && e.message) || e}`, { cat: 'dripstore' });
     throw e;
   });
@@ -1605,7 +1606,7 @@ function _dripstoreCallOnceRaw(settings, endpoint, params = {}, method = 'GET', 
     const req = https.request({
       hostname: url.hostname, port: url.port || 443,
       path: url.pathname + url.search, method: method.toUpperCase(),
-      headers, timeout: isGet ? 4000 : 5000
+      headers, timeout: isGet ? 8000 : 20000
     }, (res) => {
       let data = '';
       res.on('data', c => data += c);
@@ -1639,7 +1640,7 @@ function _dripstoreCallOnceRaw(settings, endpoint, params = {}, method = 'GET', 
         resolve(parsed);
       });
     });
-    req.on('timeout', () => { req.destroy(); reject(_dsTransientError('DripStore timeout (' + (isGet ? 4 : 5) + ' detik)')); });
+    req.on('timeout', () => { req.destroy(); reject(_dsTransientError('DripStore timeout (' + (isGet ? 8 : 20) + ' detik)')); });
     req.on('error', e => reject(new Error('Network error: ' + e.message)));
     if (!isGet && body) req.write(body);
     req.end();
@@ -1883,6 +1884,49 @@ const DRIPSTORE_PRODUCT_ALIASES = {
   'hg safe apk mod': ['hg cheat safe version mod']
 };
 
+// ── ALIAS STRICT (dipakai untuk produk yang namanya di toko BEDA dari nama asli di DripStore) ──
+// Beda dari DRIPSTORE_PRODUCT_ALIASES di atas: pencocokan alias strict TIDAK dua arah.
+// Nama provider harus SAMA dengan alias, atau MENGANDUNG alias sebagai rangkaian kata utuh
+// (mis. "hg cheat brutal mod" cocok, "hg cheat" TIDAK). Nama lokal sendiri juga tidak
+// dipakai buat mencocokkan, karena nama marketing seperti "HG APK MOD GLOBAL (RANK)"
+// bisa salah nyangkut ke produk provider yang cuma bernama "HG APK MOD".
+// Alasan: false-positive = key produk yang salah terkirim ke pembeli; itu jauh lebih
+// buruk daripada status "Cek stok". Kalau nama asli di API DripStore ternyata beda dari
+// ini, produk tetap "Cek stok" -> cek nama aslinya lewat kotak "Cari katalog DripStore"
+// di admin, lalu perbarui alias di sini.
+// KEY = nama produk di toko, sudah dinormalisasi (huruf kecil, tanpa tanda baca).
+const DRIPSTORE_STRICT_ALIASES = {
+  // Nama di DripStore: HG CHEAT SAFE SERVER  (sumber: chat client 24 Sep 2026)
+  'hg apk mod global rank': ['hg cheat safe server'],
+  'hg apk mod global': ['hg cheat safe server'],
+  // Nama di DripStore: HG CHEAT BRUTAL  (sumber: chat client 24-25 Sep 2026)
+  // Nama produk asli di web ternyata "HG APK MOD CR (COSTUM ROOM ONLY)" -- ada kata
+  // "ONLY" yang membuat key normalisasi berbeda dari dugaan awal. Semua variasi
+  // ejaan yang mungkin muncul (costum/custom, dengan/tanpa "only") didaftarkan di
+  // sini supaya salah ketik admin di masa depan tidak mengulang bug yang sama.
+  'hg apk mod cr costum room only': ['hg cheat brutal'],
+  'hg apk mod cr custom room only': ['hg cheat brutal'],
+  'hg apk mod cr costum room': ['hg cheat brutal'],
+  'hg apk mod cr custom room': ['hg cheat brutal'],
+  'hg apk mod cr': ['hg cheat brutal']
+};
+
+function _dsStrictAliasCandidates(localName) {
+  return (DRIPSTORE_STRICT_ALIASES[_dsNormalizeName(localName)] || []).map(_dsNormalizeName).filter(Boolean);
+}
+function _dsStrictAliasMatch(candidates, supplierName) {
+  const b = _dsNormalizeName(supplierName);
+  if (!b) return false;
+  const padded = ' ' + b + ' ';
+  return candidates.some(a => b === a || padded.includes(' ' + a + ' '));
+}
+// "Exact" untuk urutan prioritas: sama dengan nama lokal, ATAU sama persis dengan alias strict.
+function _dsIsExactNameMatch(localName, supplierName) {
+  const sup = _dsNormalizeName(supplierName);
+  if (!sup) return false;
+  return sup === _dsNormalizeName(localName) || _dsStrictAliasCandidates(localName).includes(sup);
+}
+
 function _dsProviderNameCandidates(localName) {
   const normalized = _dsNormalizeName(localName);
   const aliases = DRIPSTORE_PRODUCT_ALIASES[normalized] || [];
@@ -1890,6 +1934,8 @@ function _dsProviderNameCandidates(localName) {
 }
 
 function _dsNameMatchWithAliases(localName, supplierName) {
+  const strict = _dsStrictAliasCandidates(localName);
+  if (strict.length) return _dsStrictAliasMatch(strict, supplierName);
   return _dsProviderNameCandidates(localName).some(candidate => _dsNameMatch(candidate, supplierName));
 }
 
@@ -1966,8 +2012,8 @@ async function autoMapDripstoreProducts({ restockLowStock = false } = {}) {
         }
         // Prioritaskan kecocokan exact-normalized name, lalu yang paling panjang.
         candidates.sort((x, y) => {
-          const xe = _dsNormalizeName(x.productName) === _dsNormalizeName(product.name) ? 1 : 0;
-          const ye = _dsNormalizeName(y.productName) === _dsNormalizeName(product.name) ? 1 : 0;
+          const xe = _dsIsExactNameMatch(product.name, x.productName) ? 1 : 0;
+          const ye = _dsIsExactNameMatch(product.name, y.productName) ? 1 : 0;
           if (xe !== ye) return ye - xe;
           return String(y.productName).length - String(x.productName).length;
         });
@@ -2396,6 +2442,8 @@ function getCachedDripstoreCatalogSnapshot(settings) {
   if ((Date.now() - _dripstoreCatalogCacheAt) >= DRIPSTORE_CATALOG_CACHE_TTL) return null;
   return _dripstoreCatalogCache;
 }
+let _dripstoreLastWarmAttempt = 0;
+const DRIPSTORE_WARM_MIN_GAP_MS = 5000;
 function warmDripstoreCatalog(settings) {
   if (!settings?.dripstore?.apiToken) return;
   if (_dripstoreCatalogInflight) return;
@@ -2403,6 +2451,12 @@ function warmDripstoreCatalog(settings) {
   // warm kalau cache masih segar. Sebelumnya dipanggil di SETIAP page load.
   if (dripstoreBreakerState().open || Date.now() < _dripstoreFailUntil) return;
   if (getCachedDripstoreCatalogSnapshot(settings)) return;
+  // Throttle independen dari _dripstoreFailUntil (yang baru terisi SETELAH satu
+  // percobaan gagal). Tanpa ini, banyak pengunjung yang datang bersamaan sebelum
+  // cooldown resmi aktif bisa memicu beberapa percobaan warm sekaligus.
+  const now = Date.now();
+  if (now - _dripstoreLastWarmAttempt < DRIPSTORE_WARM_MIN_GAP_MS) return;
+  _dripstoreLastWarmAttempt = now;
   getDripstoreCatalogSnapshot(settings).catch(() => {});
 }
 
@@ -2454,8 +2508,8 @@ function resolveDripstoreVariantFromCatalog(productsResp, productName, opt) {
   );
   if (matches.length) {
     matches.sort((a,b) => {
-      const ae = _dsNormalizeName(a.productName) === _dsNormalizeName(productName) ? 1 : 0;
-      const be = _dsNormalizeName(b.productName) === _dsNormalizeName(productName) ? 1 : 0;
+      const ae = _dsIsExactNameMatch(productName, a.productName) ? 1 : 0;
+      const be = _dsIsExactNameMatch(productName, b.productName) ? 1 : 0;
       return be - ae || String(b.productName).length - String(a.productName).length;
     });
     return matches[0].variantId;
@@ -3131,13 +3185,15 @@ app.get('/', async (req, res) => {
   const homeDsMode = settings.dripstore?.fulfillmentMode || 'live';
   if ((homeDsMode === 'live' || homeDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     homeProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
-    // IMPORTANT: on a Vercel cold start there is no in-memory provider cache.
-    // Rendering immediately with null snapshot makes every LIVE product look
-    // like stock=0 even though DripStore has balance/variants. Fetch one
-    // catalog snapshot for the first render; later requests use the cache.
+    // STALE-WHILE-REVALIDATE: kalau tidak ada cache SEGAR, coba dulu katalog BASI
+    // (bisa umur berjam-jam, lihat DRIPSTORE_STALE_DISPLAY_MAX_MS) -- itu tidak
+    // butuh network sama sekali. Pengunjung TIDAK PERNAH nunggu provider kalau
+    // sudah pernah ada satu snapshot sukses sepanjang hidup instance ini.
+    // Fetch LIVE (nunggu sampai 3.5 dtk) HANYA kalau benar-benar tidak ada apa pun
+    // di cache -- itu cuma kejadian sekali per cold start Vercel, bukan tiap TTL habis.
+    if (!homeProviderSnapshot) homeProviderSnapshot = getDisplayDripstoreSnapshot(settings);
     if (!homeProviderSnapshot) {
       homeProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 3500 }).catch(() => null);
-      if (!homeProviderSnapshot?.products) homeProviderSnapshot = getDisplayDripstoreSnapshot(settings) || homeProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -4124,9 +4180,11 @@ app.get('/buy/:id', async (req, res) => {
     // lambat, lanjut render tanpa provider dan refresh berjalan di background.
     // Ini mencegah menu durasi kosong sekaligus mencegah request menggantung.
     buyProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    // Sama seperti home: coba katalog basi dulu (tanpa network), baru fetch live
+    // kalau instance ini belum pernah punya snapshot sama sekali.
+    if (!buyProviderSnapshot) buyProviderSnapshot = getDisplayDripstoreSnapshot(settings);
     if (!buyProviderSnapshot) {
       buyProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 2500 }).catch(() => null);
-      if (!buyProviderSnapshot?.products) buyProviderSnapshot = getDisplayDripstoreSnapshot(settings) || buyProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -4570,6 +4628,17 @@ async function incrementProductSold(productId) {
   });
 }
 
+async function releaseProductFulfillmentClaim(refId) {
+  const claimKey = `fulfillment-claim:${String(refId)}`;
+  const client = db.getClient();
+  try {
+    if (!client) { _localFulfillmentClaims.delete(claimKey); return; }
+    await client.from('keyvalue_store').delete().eq('key', claimKey);
+  } catch (e) {
+    console.error('[fulfillment] gagal melepas klaim', refId, e.message);
+  }
+}
+
 async function claimProductFulfillment(refId) {
   const claimKey = `fulfillment-claim:${String(refId)}`;
   const client = db.getClient();
@@ -4698,15 +4767,35 @@ async function finalizeOrder(refId, settings) {
     }
   }
 
+  let pendingRetry = false;
   if (!key && !outOfStock && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid')) {
     const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
     if (liveProvider && !liveProvider.error) {
       key = liveProvider.key; keySource = liveProvider.source;
       providerTransactionId = liveProvider.providerTransactionId; providerVariantId = liveProvider.variantId;
     } else if (liveProvider?.error) {
-      console.error('[DripStore hybrid fulfillment]', transaction.code, liveProvider.error.message);
-      outOfStock = true;
+      const err = liveProvider.error;
+      // Transient (timeout/network/5xx/rate-limit): PROVIDER-nya yang lelet/limit,
+      // bukan stoknya yang kosong. Jangan vonis "stok habis" -- itu memicu WA "proses
+      // manual" padahal beberapa detik lagi provider biasanya sudah pulih.
+      const isTransient = !!(err?.transient || err?.rateLimited);
+      if (isTransient) {
+        pendingRetry = true;
+        _dsStats.pendingRetryCount++;
+        console.warn('[DripStore hybrid fulfillment] transient, akan dicoba lagi:', transaction.code, err.message);
+      } else {
+        console.error('[DripStore hybrid fulfillment]', transaction.code, err.message);
+        outOfStock = true;
+      }
     }
+  }
+
+  if (pendingRetry) {
+    // Uang sudah dikonfirmasi masuk, TAPI belum difulfill. JANGAN tandai 'done' (nanti
+    // dianggap outOfStock permanen). Lepas klaim supaya panggilan check-payment
+    // berikutnya (polling client, biasanya tiap beberapa detik) boleh mencoba lagi.
+    if (!transaction.type || transaction.type === 'product') await releaseProductFulfillmentClaim(refId);
+    return { status: 'pending_retry', type: 'product', code: transaction.code };
   }
 
   if (key) {
@@ -4852,6 +4941,11 @@ app.get('/check-payment/:refId', requireAuth, async (req, res) => {
       // lain), jadi aman dipanggil langsung dari sini.
       const result = await finalizeOrder(refId, settings);
       if (result.status === 'not_found') return res.json({ success: false, message: 'Transaksi tidak ditemukan' });
+      if (result.status === 'pending_retry' || result.status === 'already_processing') {
+        // Uang sudah masuk, provider lagi lelet/limit -- client tetap polling normal,
+        // percobaan fulfillment berikutnya terjadi otomatis di panggilan check-payment ini juga.
+        return res.json({ success: true, status: 'pending' });
+      }
       if (result.type === 'reseller') return res.json({ success: true, status: 'done', type: 'reseller' });
       if (result.type === 'deposit') return res.json({ success: true, status: 'done', type: 'deposit', balance: result.balance });
       return res.json({ success: true, status: 'done', key: result.key, code: result.code, outOfStock: result.outOfStock });
@@ -4939,7 +5033,8 @@ app.post('/webhook/genspay', async (req, res) => {
     processingOrders.add(transaction.id);
     try {
       const result = await finalizeOrder(transaction.id, settings);
-      logWebhook('genspay', { result: 'finalized', orderId, type: result.type, key: result.key ? '(terkirim)' : (result.outOfStock ? '(kosong/out-of-stock)' : '(n/a)') });
+      const fulfillNote = result.status === 'pending_retry' ? '(provider lelet, akan dicoba ulang saat polling)' : (result.key ? '(terkirim)' : (result.outOfStock ? '(kosong/out-of-stock)' : '(n/a)'));
+      logWebhook('genspay', { result: 'finalized', orderId, type: result.type, key: fulfillNote });
       res.status(200).send('OK');
     } finally {
       processingOrders.delete(transaction.id);
@@ -5805,9 +5900,9 @@ app.get('/admin', requireAdmin, async (req, res) => {
   let adminProviderSnapshot = null;
   if ((adminDsMode === 'live' || adminDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     adminProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    if (!adminProviderSnapshot) adminProviderSnapshot = getDisplayDripstoreSnapshot(settings);
     if (!adminProviderSnapshot) {
       adminProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 4500 }).catch(() => null);
-      if (!adminProviderSnapshot?.products) adminProviderSnapshot = getDisplayDripstoreSnapshot(settings) || adminProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -6395,9 +6490,9 @@ function _logStatus(settings) {
     snapshot: snap,
     provider: {
       sinceSec: Math.round((Date.now() - _dsStats.since) / 1000),
-      calls: _dsStats.calls, ok: _dsStats.ok, rateLimited: _dsStats.rateLimited, err: _dsStats.err,
+      calls: _dsStats.calls, ok: _dsStats.ok, rateLimited: _dsStats.rateLimited, err: _dsStats.err, timeout: _dsStats.timeout,
       last429AgeSec: _dsStats.last429At ? Math.round((Date.now() - _dsStats.last429At) / 1000) : null,
-      byTrigger: topCalls, microCache: _dsMicroCache.size
+      byTrigger: topCalls, microCache: _dsMicroCache.size, pendingRetryOrders: _dsStats.pendingRetryCount
     },
     gate: { enabled: SITE_CHALLENGE_ON, redirected: _gateStats.redirected, passed: _gateStats.passed, rejected: _gateStats.rejected },
     topRequests: topReq,
