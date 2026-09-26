@@ -164,3 +164,92 @@ padahal alias sudah pernah ditambahkan, JANGAN asumsikan nama produknya sama sep
 yang tercatat di riwayat chat sebelumnya -- minta screenshot/nama PERSIS dari halaman
 produk sekali lagi, karena satu kata tambahan (seperti "ONLY") sudah cukup membuat
 strict-match gagal total, dan gejalanya identik dengan alias yang belum pernah dipasang.
+
+## Update (25 Sep 2026): BUG SERIUS -- pembeli XREG dapat key AIM HACK
+Laporan client: "buyer beli XREG tapi yang keluar key AIM HACK, sebagian doang bukan semua".
+
+### Akar penyebab
+Sejak awal (bukan dari perubahan gue), ada alias di DRIPSTORE_PRODUCT_ALIASES:
+`'xreg apk mod': ['aim hack', ...]` -- dengan komentar "XREG on AGHA NL is fulfilled
+from the provider's AIM HACK catalog". Ini SALAH. XREG APK MOD dan AIM HACK adalah
+DUA PRODUK BERBEDA yang dijual terpisah di toko (keduanya terdaftar sebagai item
+terpisah di kategori "APK MOD NO ROOT").
+
+Kenapa cuma "sebagian" yang kena: XREG punya STOK KEY LOKAL sendiri (puluhan key
+tersimpan langsung di products.json). Selama stok lokal masih ada, sistem pakai key
+lokal itu -- pembeli aman. begitu stok lokal XREG habis, sistem jatuh ke fulfillment
+LIVE provider, dan alias yang salah ini membuat sistem mengambil key dari katalog
+AIM HACK milik provider. Pembeli yang beli XREG di saat stok lokal kosong = dapat
+key AIM HACK yang salah.
+
+### Fix
+Alias 'xreg apk mod' -> 'aim hack' DIHAPUS TOTAL. Sekarang XREG APK MOD tidak
+dicocokkan ke produk provider mana pun (diuji: resolve selalu null). Kalau stok
+lokal XREG habis, produk akan tampil stok habis yang JUJUR -- ini jauh lebih baik
+daripada mengirim key produk lain ke pembeli.
+
+### Audit order lama -- WAJIB DICEK SETELAH DEPLOY
+Ditambahkan endpoint read-only (tidak mengubah data apa pun):
+  GET /admin/audit/xreg-aim-hack   (perlu login admin)
+Endpoint ini mencari SEMUA transaksi dengan productName mengandung "xreg" DAN
+keySource:'live' -- kriteria ini HAMPIR PASTI berarti key yang terkirim adalah
+AIM HACK, bukan XREG (karena XREG cuma bisa dapat keySource 'live' lewat alias
+yang baru dihapus). Untuk tiap order yang ke-flag: hubungi pembeli, kirim key XREG
+yang benar dari stok lokal (kalau ada), lalu perbarui field key transaksi lewat
+halaman admin. Hapus endpoint ini dari kode setelah audit selesai (cari komentar
+"AUDIT SEKALI-PAKAI" di server.js).
+
+### Pelajaran
+Alias produk-ke-provider yang dibuat berdasarkan ASUMSI (bukan verifikasi lewat
+pencarian katalog DripStore langsung, /admin/dripstore/catalog-search) berisiko
+tinggi salah -- terutama kalau produk lokal punya stok key sendiri, karena bug-nya
+"tersembunyi" sampai stok lokal habis dan baru kelihatan lewat laporan pembeli.
+
+## Update (26 Sep 2026): pembayaran GensPay "kebanyakan pending, gak otomatis"
+Client melapor banyak transaksi (bukan cuma satu channel bank tertentu) nyangkut
+pending walau sudah dibayar. Toko ini pakai GensPay, dan dari komentar kode sendiri:
+GensPay TIDAK PUNYA endpoint cek status manual -- webhook adalah SATU-SATUNYA cara
+toko tahu pembayaran sukses. (Dokumentasi GensPay tidak terindeks di internet publik,
+jadi analisis ini berdasarkan komentar developer sebelumnya di kode + perilaku
+webhook payment gateway pada umumnya: non-2xx -> retry, 2xx -> dianggap selesai.)
+
+### 3 celah yang ditemukan di /webhook/genspay (SEMUA bikin webhook "hilang" dari GensPay)
+1. **Transaksi belum ada saat webhook masuk** (race: webhook GensPay bisa sampai
+   sepersekian detik sebelum create-order selesai menulis ke Supabase) -- SEBELUMNYA
+   dibalas 200 OK. Sejak GensPay menerima 200, mereka TIDAK AKAN kirim ulang webhook
+   itu -- padahal transaksinya baru muncul sesaat kemudian. Order nyangkut pending
+   SELAMANYA, tidak ada mekanisme lain yang menyelamatkannya.
+2. **Error internal tak terduga** (Supabase drop koneksi, bug, apa pun) di dalam
+   proses finalisasi -- SEBELUMNYA selalu dibalas 200 dengan alasan di komentar lama
+   "biar GensPay tidak retry terus". Itu keliru: untuk GensPay (tidak ada endpoint
+   cek status manual), 200 di sini berarti webhook itu dianggap SELESAI DIPROSES,
+   padahal order belum ter-fulfill sama sekali.
+3. **Riwayat webhook (webhookLog) tidak pernah bisa dilihat admin** -- data terkumpul
+   di memori tapi tidak ada endpoint yang membacanya, jadi mustahil didiagnosis tanpa
+   akses langsung ke kode.
+
+### Fix
+- Transaksi belum ditemukan -> balas **503** (bukan 200) supaya GensPay retry sampai
+  transaksinya benar-benar ada.
+- Error internal tak terduga di catch block paling luar -> balas **500** (bukan 200).
+- `pending_retry` (fulfillment gagal transient karena provider DripStore, BUKAN
+  masalah pembayaran) tetap dibalas 200 ke GensPay -- uang sudah pasti masuk, cuma
+  fulfillment-nya yang perlu dicoba ulang lewat polling client/admin konfirmasi
+  manual, bukan lewat GensPay mengirim ulang notifikasi SUKSES yang sama.
+- `logWebhook()` sekarang tersambung ke Log Live (`/admin/logs`, kategori Pembayaran)
+  -- riwayat webhook (termasuk yang gagal/ditolak/retry) sekarang benar-benar bisa
+  dilihat, bukan cuma tersimpan sia-sia di memori.
+- Endpoint audit baru (read-only): `GET /admin/audit/pending-payments?minAgeMinutes=10`
+  (tombol "Cek Pending" di quick actions admin). Menampilkan transaksi GensPay yang
+  masih pending lebih dari N menit -- kandidat kuat "webhook tidak pernah sampai/
+  berhasil diproses". BUKAN otomatis berarti sudah lunas -- tetap cek bukti bayar
+  atau dashboard GensPay langsung sebelum klik "Konfirmasi Manual" (yang memaksa
+  fulfillment tanpa verifikasi ulang ke gateway).
+
+### Yang TIDAK bisa dipastikan tanpa dokumentasi resmi GensPay
+Kebijakan retry PERSIS milik GensPay (berapa kali, interval berapa lama) tidak
+diketahui karena tidak ada dokumentasi publik yang bisa diverifikasi. Fix di atas
+mengikuti pola industri standar (non-2xx = retry) yang berlaku di hampir semua
+payment gateway, tapi kalau GensPay ternyata TIDAK melakukan retry sama sekali
+untuk kasus tertentu, order yang webhook-nya benar-benar gagal terkirim (bukan
+gagal diproses) tetap harus diselesaikan lewat endpoint audit + Konfirmasi Manual.

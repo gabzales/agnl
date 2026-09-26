@@ -401,6 +401,14 @@ const webhookLog = [];
 function logWebhook(gateway, entry) {
   webhookLog.unshift({ gateway, time: new Date().toISOString(), ...entry });
   if (webhookLog.length > 30) webhookLog.length = 30;
+  // Sambungkan ke Log Live (/admin/logs) supaya kejadian webhook (termasuk yang
+  // gagal/ditolak) kelihatan di sana juga, bukan cuma di webhookLog yang tidak
+  // pernah diekspos endpoint mana pun (bug lama -- data ini terkumpul tapi tidak
+  // pernah bisa dibaca admin).
+  try {
+    const lv = /invalid_signature|no_apikey|no_raw_body|^error$/.test(entry?.result || '') ? 'warn' : 'info';
+    pushLog(lv, `[webhook/${gateway}] ${entry?.result || '?'} orderId=${entry?.orderId || '-'}${entry?.error ? ' error=' + entry.error : ''}`, { cat: 'payment' });
+  } catch (_) {}
 }
 
 const checkQrRateLimit = (ip) => {
@@ -1863,8 +1871,30 @@ function _dsExtractProductItems(resp) {
 }
 
 const DRIPSTORE_PRODUCT_ALIASES = {
-  // XREG on AGHA NL is fulfilled from the provider's AIM HACK catalog.
-  'xreg apk mod': ['aim hack', 'aim hack android+ ios', 'aim hack android ios'],
+  // BUG FIX (audit 25 Sep 2026): alias 'xreg apk mod' -> 'aim hack' yang ada di sini
+  // SEBELUMNYA (komentar lama: "XREG on AGHA NL is fulfilled from the provider's AIM
+  // HACK catalog") TERBUKTI SALAH. Laporan client: pembeli beli XREG APK MOD, yang
+  // terkirim malah key AIM HACK -- tapi cuma SEBAGIAN pembeli (bukan semua).
+  //
+  // Akar masalah: XREG APK MOD dan AIM HACK adalah DUA PRODUK BERBEDA yang dijual
+  // terpisah di toko (keduanya ada sebagai item terpisah di kategori "APK MOD NO
+  // ROOT", lihat AGHA_CATEGORY_FIX_PLAN). XREG punya stok KEY LOKAL sendiri
+  // (tersimpan di products.json, puluhan key, lihat komentar "49 key XREG" di
+  // /admin/export). Selama stok lokal XREG masih ada, sistem pakai key lokal itu
+  // -- pembeli aman, dapat key XREG asli. TAPI begitu stok lokal XREG habis, sistem
+  // jatuh ke fulfillment LIVE provider, dan alias yang salah ini membuatnya mengambil
+  // key dari katalog AIM HACK milik provider -- pembeli XREG dapat key produk lain.
+  // Itu sebabnya cuma "sebagian" yang kena: tergantung apakah stok lokal masih ada
+  // saat pesanan masuk.
+  //
+  // FIX: alias dihapus total. XREG APK MOD sekarang TIDAK dicocokkan ke produk
+  // provider mana pun (nama "XREG" tidak mirip apa pun di katalog DripStore).
+  // Kalau stok lokal XREG habis, produk akan tampil "Cek stok" / stok habis yang
+  // JUJUR -- itu jauh lebih baik daripada mengirim key produk yang salah ke pembeli.
+  // JANGAN kembalikan alias ini kecuali sudah dikonfirmasi LANGSUNG lewat pencarian
+  // katalog DripStore (/admin/dripstore/catalog-search) bahwa XREG memang dijual
+  // provider dengan nama lain -- jangan berdasarkan asumsi/dugaan kemiripan nama.
+
   // Typo/casing mismatch that exists between the AGHA product name and
   // DripStore catalog; use an explicit alias instead of broad fuzzy matching.
   'drip clint apk mod': ['drip client apk mod'],
@@ -5011,7 +5041,20 @@ app.post('/webhook/genspay', async (req, res) => {
     const orderId = data.order_id;
     const transactions = await readFresh('transactions.json');
     const transaction = transactions.find(t => t.orderId === orderId);
-    if (!transaction) { logWebhook('genspay', { result: 'transaction_not_found', orderId }); return res.status(200).send('OK'); }
+    if (!transaction) {
+      // PENTING: GensPay memanggil webhook segera setelah pembayaran sukses --
+      // dalam kondisi Supabase lelet/race jarang, ada kemungkinan webhook ini
+      // sampai SEBELUM create-order selesai menulis transaksi ke database.
+      // Membalas 200 di sini FATAL: GensPay menganggap webhook selesai diproses
+      // dan TIDAK AKAN mengirim ulang, padahal transaksinya baru akan muncul
+      // sesaat lagi -- order itu nyangkut pending SELAMANYA (GensPay tidak
+      // punya endpoint cek status manual buat rekonsiliasi belakangan).
+      // Balas 5xx supaya GensPay retry sesuai kebijakan mereka (biasanya
+      // beberapa kali dalam interval singkat) -- di percobaan retry berikutnya
+      // transaksi kemungkinan besar sudah ada.
+      logWebhook('genspay', { result: 'transaction_not_found', orderId });
+      return res.status(503).send('Transaction not found yet, please retry');
+    }
     if (transaction.status === 'done') { logWebhook('genspay', { result: 'already_done', orderId }); return res.status(200).send('OK'); }
 
     const status = (data.status || '').toUpperCase();
@@ -5029,20 +5072,50 @@ app.post('/webhook/genspay', async (req, res) => {
     }
     if (!paid) { logWebhook('genspay', { result: 'not_paid', orderId, statusFromWebhook: status || '(kosong)' }); return res.status(200).send('OK'); }
 
-    if (processingOrders.has(transaction.id)) { logWebhook('genspay', { result: 'already_processing', orderId }); return res.status(200).send('OK'); }
+    if (processingOrders.has(transaction.id)) {
+      // Request lain (mis. retry GensPay yang datang sangat cepat, atau polling
+      // client) sedang memproses order yang sama detik ini juga. Balas 200 di
+      // sini AMAN (bukan diam-diam gagal) -- proses yang sedang jalan itu akan
+      // tetap menuntaskan fulfillment; ini cuma mencegah dua proses fulfillment
+      // berjalan bersamaan untuk order yang sama.
+      logWebhook('genspay', { result: 'already_processing', orderId });
+      return res.status(200).send('OK');
+    }
     processingOrders.add(transaction.id);
     try {
       const result = await finalizeOrder(transaction.id, settings);
-      const fulfillNote = result.status === 'pending_retry' ? '(provider lelet, akan dicoba ulang saat polling)' : (result.key ? '(terkirim)' : (result.outOfStock ? '(kosong/out-of-stock)' : '(n/a)'));
+      if (result.status === 'pending_retry') {
+        // Fulfillment gagal transient (provider DripStore timeout/limit). Order
+        // TETAP 'pending' di database (lihat finalizeOrder), TAPI dari sudut
+        // pandang webhook GensPay ini, statusnya SUDAH "SUCCESS" (uang masuk) --
+        // kalau kita balas non-2xx di sini, GensPay akan mengira webhook gagal
+        // diproses dan mengirim ulang notifikasi SUKSES yang sama berkali-kali
+        // (percuma, provider DripStore-nya yang lelet, bukan webhook-nya).
+        // Retry fulfillment yang sebenarnya sudah ditangani lewat polling client
+        // (/check-payment) atau admin "Konfirmasi Manual" -- webhook GensPay
+        // sudah menyelesaikan tugasnya (mencatat uang sudah masuk).
+        logWebhook('genspay', { result: 'finalized_pending_retry', orderId, note: 'provider lelet, fulfillment akan dicoba ulang saat polling/konfirmasi manual' });
+        return res.status(200).send('OK');
+      }
+      const fulfillNote = result.key ? '(terkirim)' : (result.outOfStock ? '(kosong/out-of-stock)' : '(n/a)');
       logWebhook('genspay', { result: 'finalized', orderId, type: result.type, key: fulfillNote });
       res.status(200).send('OK');
     } finally {
       processingOrders.delete(transaction.id);
     }
   } catch (error) {
+    // Error internal TAK TERDUGA (bug, exception yang tidak ditangani cabang
+    // manapun di atas) -- ini KEMUNGKINAN BESAR transient (mis. Supabase drop
+    // koneksi di tengah proses). Balas 5xx supaya GensPay retry, BUKAN 200.
+    // Sebelumnya endpoint ini SELALU balas 200 bahkan di sini, dengan alasan
+    // "biar GensPay tidak retry terus" -- itu keliru: order yang gagal di-
+    // finalize karena error transient jadi TIDAK PERNAH dicoba ulang otomatis
+    // sama sekali, padahal itu justru SATU-SATUNYA jalan (GensPay tidak punya
+    // endpoint cek status manual). Order yang macet pending karena ini persis
+    // yang dilaporkan client.
     console.error('[webhook/genspay] error:', error.message);
     logWebhook('genspay', { result: 'error', error: error.message });
-    res.status(200).send('OK'); // tetap 200 biar GensPay tidak retry terus akibat error internal kita
+    res.status(500).send('Internal error, please retry');
   }
 });
 
@@ -6430,6 +6503,91 @@ app.get('/admin/dripstore/status', requireAdmin, (req, res) => {
   res.set('Cache-Control', 'no-store, max-age=0');
   const brk = dripstoreBreakerState();
   res.json({ success: true, breaker: brk, total429: _dsBreaker.hits429, microCacheEntries: _dsMicroCache.size, failCooldownSec: Math.max(0, Math.ceil((_dripstoreFailUntil - Date.now()) / 1000)) });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// AUDIT SEKALI-PAKAI (25 Sep 2026): cari order XREG lama yang salah kirim key
+// AIM HACK. Sebab: alias 'xreg apk mod' -> 'aim hack' yang SALAH (lihat komentar
+// panjang di DRIPSTORE_PRODUCT_ALIASES) baru saja dihapus. SELAMA alias itu
+// masih ada, satu-satunya cara transaksi XREG bisa punya keySource:'live' adalah
+// lewat alias itu -- jadi sekarang alias sudah dihapus, order LAMA yang cocok
+// kriteria ini HAMPIR PASTI berisi key AIM HACK yang salah, walau di database
+// namanya tetap tercatat sebagai pesanan XREG.
+// Endpoint ini HANYA MEMBACA (tidak mengubah apa pun) -- aman dipanggil kapan
+// saja. Hapus seluruh blok ini setelah audit selesai dan tidak dibutuhkan lagi.
+app.get('/admin/audit/xreg-aim-hack', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
+  try {
+    const transactions = await readFresh('transactions.json');
+    const suspects = (Array.isArray(transactions) ? transactions : []).filter(t =>
+      t && t.type !== 'reseller' && t.type !== 'deposit' &&
+      /xreg/i.test(String(t.productName || '')) &&
+      t.keySource === 'live' && t.key
+    ).map(t => ({
+      id: t.id, code: t.code, orderId: t.orderId, productName: t.productName,
+      key: t.key, providerVariantId: t.providerVariantId || null,
+      customerName: t.customerName || null, wa: t.wa || null, userId: t.userId || null,
+      price: t.price, createdAt: t.createdAt, status: t.status
+    }));
+    res.json({
+      success: true,
+      totalSuspects: suspects.length,
+      note: suspects.length
+        ? 'Order di bawah ini kemungkinan besar terkirim key AIM HACK padahal pembeli beli XREG. Cek "key" di tiap order -- kalau formatnya cocok pola key AIM HACK (bukan XREG), segera hubungi pembeli dan kirim ulang key XREG yang benar dari stok lokal, lalu update field key transaksi lewat halaman admin transaksi.'
+        : 'Tidak ada order yang cocok kriteria (XREG + keySource live). Kemungkinan semua order XREG selama ini terpenuhi dari stok lokal, atau memang belum ada order XREG yang jatuh ke live fulfillment.',
+      suspects
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// AUDIT PEMBAYARAN PENDING (25 Sep 2026): client melapor "kebanyakan pending,
+// gak otomatis" untuk gateway GensPay. GensPay TIDAK punya endpoint cek status
+// manual -- webhook adalah SATU-SATUNYA cara toko tahu pembayaran sukses. Kalau
+// webhook gagal sampai/diproses (network drop, error internal transient,
+// race condition transaksi belum tersimpan saat webhook masuk -- tiga-tiganya
+// sudah diperbaiki di /webhook/genspay supaya GensPay retry sendiri), order
+// nyangkut pending SELAMANYA tanpa mekanisme otomatis lain yang menyelamatkannya.
+//
+// Endpoint ini READ-ONLY: mencari transaksi GensPay yang masih 'pending' dan
+// SUDAH LEBIH TUA dari ambang waktu wajar (QRIS biasanya dibayar dalam hitungan
+// menit). Order-order ini adalah kandidat kuat "pembeli sudah bayar tapi webhook
+// tidak pernah sampai/berhasil diproses" -- BUKAN otomatis berarti terbayar;
+// tetap perlu dicek manual (screenshot bukti bayar dari pembeli, atau cek
+// dashboard GensPay langsung) sebelum menekan "Konfirmasi Manual", karena
+// "Konfirmasi Manual" memaksa fulfillment TANPA verifikasi ulang ke gateway.
+app.get('/admin/audit/pending-payments', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
+  try {
+    const minAgeMinutes = Math.max(1, parseInt(req.query.minAgeMinutes, 10) || 10);
+    const cutoff = Date.now() - minAgeMinutes * 60 * 1000;
+    const transactions = await readFresh('transactions.json');
+    const stuck = (Array.isArray(transactions) ? transactions : []).filter(t => {
+      if (!t || t.status !== 'pending') return false;
+      const gateway = t.paymentGateway || 'pakasir';
+      if (gateway !== 'genspay') return false; // Pakasir punya endpoint cek status, tidak masuk kategori "tidak ada jalan lain"
+      const created = Date.parse(t.createdAt || '');
+      return Number.isFinite(created) && created < cutoff;
+    }).map(t => ({
+      id: t.id, code: t.code, orderId: t.orderId, type: t.type, productName: t.productName || null,
+      customerName: t.customerName || null, wa: t.wa || null, userId: t.userId || null,
+      price: t.price, createdAt: t.createdAt,
+      ageMinutes: Math.round((Date.now() - Date.parse(t.createdAt)) / 60000)
+    })).sort((a, b) => b.ageMinutes - a.ageMinutes);
+    res.json({
+      success: true,
+      minAgeMinutes,
+      totalStuck: stuck.length,
+      note: stuck.length
+        ? 'Transaksi di bawah masih berstatus pending lebih dari ' + minAgeMinutes + ' menit lewat GensPay (yang tidak punya endpoint cek status manual). Cek dashboard GensPay atau minta bukti bayar ke pembeli SEBELUM klik Konfirmasi Manual -- jangan asumsikan otomatis lunas.'
+        : 'Tidak ada transaksi GensPay yang pending lebih dari ' + minAgeMinutes + ' menit saat ini.',
+      stuck
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════
