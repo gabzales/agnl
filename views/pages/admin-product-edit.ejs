@@ -795,6 +795,29 @@ async function saveProduct() {
     }
   }
 
+  // PERINGATAN (bukan blokir): kalau produk punya LEBIH DARI SATU opsi durasi,
+  // key yang ditempel TANPA tag "=1h" / "=7d" dianggap "generic" -- sistem
+  // TIDAK PERNAH memakainya untuk pesanan durasi tertentu (pesanan 1 jam / 7
+  // hari / dst selalu mencari key yang tag-nya PERSIS cocok, bukan yang
+  // generic). Key generic itu akan menumpuk di stok tapi tidak pernah terjual,
+  // dan pembeli akan tetap melihat "stok kosong" walau jumlah key > 0. Ini
+  // persis penyebab laporan client 26 Sep 2026 (10 key XREG ditempel polos,
+  // pembeli durasi 1 jam tetap dapat status stok kosong).
+  if (keysRaw && validPricing.length > 1) {
+    const rawLines = keysRaw.split('\n').map(l => l.trim()).filter(Boolean);
+    const untaggedCount = rawLines.filter(l => !/=\s*\d+\s*[dh]?\s*$/i.test(l)).length;
+    if (untaggedCount > 0) {
+      const contoh = validPricing.slice(0, 3).map(o => `${o.days}${o.unit === 'h' ? 'jam' : 'hari'} -> tambahkan "=${o.days}${o.unit === 'h' ? 'h' : 'd'}" di akhir key`).join('\n');
+      const lanjut = confirm(
+        `${untaggedCount} dari ${rawLines.length} key TIDAK punya tag durasi (=${validPricing[0].days}${validPricing[0].unit === 'h' ? 'h' : 'd'} dst).\n\n` +
+        `Produk ini punya ${validPricing.length} pilihan durasi, jadi key tanpa tag TIDAK AKAN pernah otomatis kepakai untuk durasi manapun -- pembeli tetap akan melihat "stok kosong" walau key-nya ada.\n\n` +
+        `Format yang benar, tempel di akhir tiap key:\n${contoh}\n\n` +
+        `Lanjut simpan APA ADANYA (key tanpa tag ini jadi stok generic, tidak terpakai otomatis)?`
+      );
+      if (!lanjut) return;
+    }
+  }
+
   // Cegah duplikat (hari/jam + unit) (mis. 2 baris sama-sama "30 hari" dengan harga beda) —
   // baris belakangan akan menang dan bisa bikin bingung, jadi tolak dulu di sini.
   // Dicek berpasangan (days, unit) supaya "30 hari" dan "30 jam" TIDAK dianggap duplikat.

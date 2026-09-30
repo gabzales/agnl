@@ -26,7 +26,7 @@ require('dotenv').config();
 //  - Halaman /admin/logs membaca gabungan: memori instance ini + log tersimpan.
 // ══════════════════════════════════════════════════════════════════
 const LOG_MAX = 600;
-const LOG_PERSIST_MAX = 300;
+const LOG_PERSIST_MAX = 1500;
 const LOG_FLUSH_MS = Math.max(100, Number(process.env.LOG_FLUSH_MS) || 60000);
 let _logFlushTimer = null;
 const _logRing = [];
@@ -39,7 +39,7 @@ const { AsyncLocalStorage } = require('async_hooks');
 // Konteks request: supaya tiap panggilan ke provider DripStore tahu SIAPA pemicunya
 // (route mana / background). Ini kunci diagnosa "kenapa kuota habis".
 const _reqCtx = new AsyncLocalStorage();
-const _dsStats = { since: Date.now(), calls: {}, byWho: {}, ok: 0, rateLimited: 0, err: 0, last429At: 0 };
+const _dsStats = { since: Date.now(), calls: {}, byWho: {}, ok: 0, rateLimited: 0, err: 0, timeout: 0, last429At: 0, pendingRetryCount: 0 };
 const _reqCounts = new Map();
 const _gateStats = { redirected: 0, passed: 0, rejected: 0 };
 let _logFlushImpl = null; // diisi setelah modul DB siap
@@ -401,6 +401,14 @@ const webhookLog = [];
 function logWebhook(gateway, entry) {
   webhookLog.unshift({ gateway, time: new Date().toISOString(), ...entry });
   if (webhookLog.length > 30) webhookLog.length = 30;
+  // Sambungkan ke Log Live (/admin/logs) supaya kejadian webhook (termasuk yang
+  // gagal/ditolak) kelihatan di sana juga, bukan cuma di webhookLog yang tidak
+  // pernah diekspos endpoint mana pun (bug lama -- data ini terkumpul tapi tidak
+  // pernah bisa dibaca admin).
+  try {
+    const lv = /invalid_signature|no_apikey|no_raw_body|^error$/.test(entry?.result || '') ? 'warn' : 'info';
+    pushLog(lv, `[webhook/${gateway}] ${entry?.result || '?'} orderId=${entry?.orderId || '-'}${entry?.error ? ' error=' + entry.error : ''}`, { cat: 'payment' });
+  } catch (_) {}
 }
 
 const checkQrRateLimit = (ip) => {
@@ -1432,7 +1440,7 @@ const createQRISPaymentGenspay = (orderId, amount, settings) => {
       });
     });
     req.on('timeout', () => { req.destroy(); reject(new Error('GensPay timeout')); });
-    req.on('error', e => reject(new Error('Network error: ' + e.message)));
+    req.on('error', e => reject(_dsTransientError('Network error: ' + e.message)));
     req.write(body); req.end();
   });
 };
@@ -1543,7 +1551,7 @@ async function dripstoreCall(settings, endpoint, params = {}, method = 'GET', _r
         try {
           value = await _dripstoreCallOnce(settings, endpoint, params, method, _retried);
         } catch (e) {
-          if (!e?.transient || _retried) throw e;
+          if (!e?.transient || _retried || dripstoreBreakerState().open) throw e;
           await new Promise(r => setTimeout(r, 250));
           value = await _dripstoreCallOnce(settings, endpoint, params, method, true);
         }
@@ -1578,7 +1586,8 @@ function _dripstoreCallOnce(settings, endpoint, params = {}, method = 'GET', _re
     return v;
   }, (e) => {
     const rl = !!(e && e.rateLimited);
-    if (rl) { _dsStats.rateLimited++; _dsStats.last429At = Date.now(); } else { _dsStats.err++; }
+    if (rl) { _dsStats.rateLimited++; _dsStats.last429At = Date.now(); }
+    else { _dsStats.err++; if (/timeout/i.test((e && e.message) || '')) _dsStats.timeout++; }
     pushLog(rl ? 'warn' : 'error', `[dripstore] ${key} GAGAL ${Date.now() - t0}ms <- ${who}: ${(e && e.message) || e}`, { cat: 'dripstore' });
     throw e;
   });
@@ -1605,7 +1614,7 @@ function _dripstoreCallOnceRaw(settings, endpoint, params = {}, method = 'GET', 
     const req = https.request({
       hostname: url.hostname, port: url.port || 443,
       path: url.pathname + url.search, method: method.toUpperCase(),
-      headers, timeout: isGet ? 4000 : 5000
+      headers, timeout: isGet ? 8000 : 20000
     }, (res) => {
       let data = '';
       res.on('data', c => data += c);
@@ -1639,7 +1648,7 @@ function _dripstoreCallOnceRaw(settings, endpoint, params = {}, method = 'GET', 
         resolve(parsed);
       });
     });
-    req.on('timeout', () => { req.destroy(); reject(_dsTransientError('DripStore timeout (' + (isGet ? 4 : 5) + ' detik)')); });
+    req.on('timeout', () => { req.destroy(); reject(_dsTransientError('DripStore timeout (' + (isGet ? 8 : 20) + ' detik)')); });
     req.on('error', e => reject(new Error('Network error: ' + e.message)));
     if (!isGet && body) req.write(body);
     req.end();
@@ -1862,8 +1871,25 @@ function _dsExtractProductItems(resp) {
 }
 
 const DRIPSTORE_PRODUCT_ALIASES = {
-  // XREG on AGHA NL is fulfilled from the provider's AIM HACK catalog.
+  // RIWAYAT (jangan diulang lagi tanpa bukti serupa):
+  // 1) Awalnya ada alias 'xreg apk mod' -> 'aim hack' dengan asumsi "XREG di AGHA NL
+  //    di-fulfill dari katalog AIM HACK provider" -- TANPA verifikasi ke provider.
+  // 2) 25 Sep 2026: client lapor pembeli XREG dapat key AIM HACK (sebagian, karena
+  //    XREG juga py stok lokal sendiri). Alias itu DIHAPUS karena disimpulkan XREG
+  //    dan AIM HACK adalah dua produk berbeda -- kesimpulan ini KELIRU: dua produk
+  //    boleh dijual terpisah di toko dengan nama beda TAPI tetap di-fulfill dari
+  //    katalog provider yang sama, kalau memang begitu cara providernya menjual.
+  // 3) 26 Sep 2026: owner DripStore (provider-nya sendiri, chat WhatsApp langsung,
+  //    bukan asumsi developer) MENGONFIRMASI eksplisit: "Xreg aim hack" -- yakni
+  //    XREG memang dijual provider dengan nama AIM HACK di katalog mereka. Alias
+  //    dikembalikan berdasarkan bukti ini.
+  // KESIMPULAN: laporan "pembeli XREG dapat key AIM HACK" itu SEBENARNYA BUKAN BUG
+  // -- itu memang cara kerja yang benar (key AIM HACK yang dikirim untuk pesanan
+  // XREG memang sah, karena itu produk yang sama di sisi provider). Kalau ada
+  // laporan serupa lagi ke depan, verifikasi dulu ke provider sebelum mengubah
+  // alias manapun -- jangan berdasarkan dugaan/asumsi dari nama produk di toko.
   'xreg apk mod': ['aim hack', 'aim hack android+ ios', 'aim hack android ios'],
+
   // Typo/casing mismatch that exists between the AGHA product name and
   // DripStore catalog; use an explicit alias instead of broad fuzzy matching.
   'drip clint apk mod': ['drip client apk mod'],
@@ -1898,7 +1924,13 @@ const DRIPSTORE_STRICT_ALIASES = {
   // Nama di DripStore: HG CHEAT SAFE SERVER  (sumber: chat client 24 Sep 2026)
   'hg apk mod global rank': ['hg cheat safe server'],
   'hg apk mod global': ['hg cheat safe server'],
-  // Nama di DripStore: HG CHEAT BRUTAL
+  // Nama di DripStore: HG CHEAT BRUTAL  (sumber: chat client 24-25 Sep 2026)
+  // Nama produk asli di web ternyata "HG APK MOD CR (COSTUM ROOM ONLY)" -- ada kata
+  // "ONLY" yang membuat key normalisasi berbeda dari dugaan awal. Semua variasi
+  // ejaan yang mungkin muncul (costum/custom, dengan/tanpa "only") didaftarkan di
+  // sini supaya salah ketik admin di masa depan tidak mengulang bug yang sama.
+  'hg apk mod cr costum room only': ['hg cheat brutal'],
+  'hg apk mod cr custom room only': ['hg cheat brutal'],
   'hg apk mod cr costum room': ['hg cheat brutal'],
   'hg apk mod cr custom room': ['hg cheat brutal'],
   'hg apk mod cr': ['hg cheat brutal']
@@ -2243,7 +2275,26 @@ const DRIPSTORE_FAIL_COOLDOWN_MS = 45000;
 // provider secara LIVE (checkDripstoreOptionAvailability), jadi stok tampilan
 // yang agak basi tidak pernah bisa menghasilkan pembelian tanpa saldo.
 let _dripstoreLastGood = null; // { signature, balance, balanceAt, products, productsAt, at }
-const DRIPSTORE_CATALOG_CACHE_TTL = 30000;
+// FIX (egress Supabase, audit 29 Sep 2026): TTL ini SEBELUMNYA 30000 (30 detik).
+// Dampaknya: file snapshot katalog DripStore (dripstore_snapshot.json) ditulis
+// ulang ke Supabase tiap ~30 detik selama ada traffic terus-menerus, DAN dibaca
+// ulang PENUH oleh SETIAP instance Vercel baru yang di-spin up dengan cache
+// in-memory kosong (cache ini per-instance, hilang tiap cold start). Di traffic
+// ramai, Vercel bisa menjalankan banyak instance paralel sekaligus -- tiap
+// instance itu punya "jendela 30 detik" sendiri, jadi baca/tulis ke Supabase
+// terjadi jauh lebih sering daripada yang terlihat dari kacamata satu request.
+// Ini terbukti jadi kontributor utama laporan client: Cached Egress 226% dari
+// kuota (11.3GB/5GB) di Supabase, padahal toko baru berjalan beberapa minggu
+// (products.json/transactions.json belum sempat membengkak sebesar itu).
+//
+// Katalog & harga produk DripStore pada praktiknya TIDAK berubah dalam hitungan
+// detik atau bahkan menit -- provider biasanya update harga/stok dalam hitungan
+// jam. 5 menit jauh lebih dari cukup untuk TAMPILAN stok publik (tombol
+// Beli/Cek stok/Habis), dan TIDAK memengaruhi akurasi CHECKOUT: guard pembelian
+// (checkDripstoreVariantAvailability, dripstoreGenerateKey) selalu memanggil
+// dripstoreCall() LIVE langsung ke DripStore sesaat sebelum generate key --
+// keduanya sama sekali tidak bergantung pada TTL ini.
+const DRIPSTORE_CATALOG_CACHE_TTL = 5 * 60 * 1000;
 const DRIPSTORE_CATALOG_TIMEOUT_MS = 4500;
 const DRIPSTORE_SNAPSHOT_FILE = 'dripstore_snapshot.json';
 const DRIPSTORE_STALE_BALANCE_MAX_MS = 10 * 60 * 1000;   // saldo basi maks 10 menit utk tampilan
@@ -2435,6 +2486,8 @@ function getCachedDripstoreCatalogSnapshot(settings) {
   if ((Date.now() - _dripstoreCatalogCacheAt) >= DRIPSTORE_CATALOG_CACHE_TTL) return null;
   return _dripstoreCatalogCache;
 }
+let _dripstoreLastWarmAttempt = 0;
+const DRIPSTORE_WARM_MIN_GAP_MS = 5000;
 function warmDripstoreCatalog(settings) {
   if (!settings?.dripstore?.apiToken) return;
   if (_dripstoreCatalogInflight) return;
@@ -2442,6 +2495,12 @@ function warmDripstoreCatalog(settings) {
   // warm kalau cache masih segar. Sebelumnya dipanggil di SETIAP page load.
   if (dripstoreBreakerState().open || Date.now() < _dripstoreFailUntil) return;
   if (getCachedDripstoreCatalogSnapshot(settings)) return;
+  // Throttle independen dari _dripstoreFailUntil (yang baru terisi SETELAH satu
+  // percobaan gagal). Tanpa ini, banyak pengunjung yang datang bersamaan sebelum
+  // cooldown resmi aktif bisa memicu beberapa percobaan warm sekaligus.
+  const now = Date.now();
+  if (now - _dripstoreLastWarmAttempt < DRIPSTORE_WARM_MIN_GAP_MS) return;
+  _dripstoreLastWarmAttempt = now;
   getDripstoreCatalogSnapshot(settings).catch(() => {});
 }
 
@@ -3170,13 +3229,15 @@ app.get('/', async (req, res) => {
   const homeDsMode = settings.dripstore?.fulfillmentMode || 'live';
   if ((homeDsMode === 'live' || homeDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     homeProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
-    // IMPORTANT: on a Vercel cold start there is no in-memory provider cache.
-    // Rendering immediately with null snapshot makes every LIVE product look
-    // like stock=0 even though DripStore has balance/variants. Fetch one
-    // catalog snapshot for the first render; later requests use the cache.
+    // STALE-WHILE-REVALIDATE: kalau tidak ada cache SEGAR, coba dulu katalog BASI
+    // (bisa umur berjam-jam, lihat DRIPSTORE_STALE_DISPLAY_MAX_MS) -- itu tidak
+    // butuh network sama sekali. Pengunjung TIDAK PERNAH nunggu provider kalau
+    // sudah pernah ada satu snapshot sukses sepanjang hidup instance ini.
+    // Fetch LIVE (nunggu sampai 3.5 dtk) HANYA kalau benar-benar tidak ada apa pun
+    // di cache -- itu cuma kejadian sekali per cold start Vercel, bukan tiap TTL habis.
+    if (!homeProviderSnapshot) homeProviderSnapshot = getDisplayDripstoreSnapshot(settings);
     if (!homeProviderSnapshot) {
       homeProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 3500 }).catch(() => null);
-      if (!homeProviderSnapshot?.products) homeProviderSnapshot = getDisplayDripstoreSnapshot(settings) || homeProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -4163,9 +4224,11 @@ app.get('/buy/:id', async (req, res) => {
     // lambat, lanjut render tanpa provider dan refresh berjalan di background.
     // Ini mencegah menu durasi kosong sekaligus mencegah request menggantung.
     buyProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    // Sama seperti home: coba katalog basi dulu (tanpa network), baru fetch live
+    // kalau instance ini belum pernah punya snapshot sama sekali.
+    if (!buyProviderSnapshot) buyProviderSnapshot = getDisplayDripstoreSnapshot(settings);
     if (!buyProviderSnapshot) {
       buyProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 2500 }).catch(() => null);
-      if (!buyProviderSnapshot?.products) buyProviderSnapshot = getDisplayDripstoreSnapshot(settings) || buyProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -4233,7 +4296,10 @@ app.get('/api/catalog/stock', async (req, res) => {
   try {
     res.set('Cache-Control', 'no-store, max-age=0');
     const rawProducts = (await readSmart('products.json')).filter(p => p.status === 'active');
-    const settings = await readFresh('settings.json');
+    // FIX (egress, audit 29 Sep 2026): settings.json jarang berubah dalam hitungan
+    // detik -- readSmart (cache 60 dtk) cukup, konsisten dengan products.json di
+    // atas, dan endpoint ini dipanggil otomatis oleh SETIAP load homepage.
+    const settings = await readSmart('settings.json');
     const mode = ['live','hybrid','local'].includes(settings.dripstore?.fulfillmentMode)
       ? settings.dripstore.fulfillmentMode : 'live';
     let snapshot = null;
@@ -4271,10 +4337,18 @@ app.get('/api/products/:id/stock', async (req, res) => {
   if (!checkApiRateLimit(req.ip)) return res.status(429).json({ success: false, message: 'Terlalu banyak permintaan. Coba lagi nanti.' });
   try {
     res.set('Cache-Control', 'no-store, max-age=0');
-    const rawProducts = await readFresh('products.json');
+    // FIX (egress, audit 29 Sep 2026): dulu readFresh('products.json') DAN
+    // readFresh('settings.json') di sini -- endpoint ini dipanggil otomatis oleh
+    // JS halaman /buy/:id SETIAP kali halaman itu di-load (lihat refreshProviderStock
+    // di buy.ejs), jadi setiap page view menarik ulang seluruh blob products.json
+    // dari Supabase WALAU halaman itu sendiri baru saja me-render produk yang sama
+    // lewat readSmart(). Data yang dibutuhkan di sini (harga/opsi durasi produk,
+    // pengaturan provider) tidak berubah dalam hitungan detik -- readSmart (cache
+    // 60 dtk) cukup dan menghapus duplikasi fetch per page view.
+    const rawProducts = await readSmart('products.json');
     const raw = rawProducts.find(p => String(p.id) === String(req.params.id) && p.status === 'active');
     if (!raw) return res.status(404).json({ success: false, message: 'Produk tidak ditemukan' });
-    const settings = await readFresh('settings.json');
+    const settings = await readSmart('settings.json');
     const mode = settings.dripstore?.fulfillmentMode || 'live';
     let snapshot = null;
     if ((mode === 'live' || mode === 'hybrid') && settings.dripstore?.apiToken) {
@@ -4609,6 +4683,17 @@ async function incrementProductSold(productId) {
   });
 }
 
+async function releaseProductFulfillmentClaim(refId) {
+  const claimKey = `fulfillment-claim:${String(refId)}`;
+  const client = db.getClient();
+  try {
+    if (!client) { _localFulfillmentClaims.delete(claimKey); return; }
+    await client.from('keyvalue_store').delete().eq('key', claimKey);
+  } catch (e) {
+    console.error('[fulfillment] gagal melepas klaim', refId, e.message);
+  }
+}
+
 async function claimProductFulfillment(refId) {
   const claimKey = `fulfillment-claim:${String(refId)}`;
   const client = db.getClient();
@@ -4737,15 +4822,35 @@ async function finalizeOrder(refId, settings) {
     }
   }
 
+  let pendingRetry = false;
   if (!key && !outOfStock && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid')) {
     const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
     if (liveProvider && !liveProvider.error) {
       key = liveProvider.key; keySource = liveProvider.source;
       providerTransactionId = liveProvider.providerTransactionId; providerVariantId = liveProvider.variantId;
     } else if (liveProvider?.error) {
-      console.error('[DripStore hybrid fulfillment]', transaction.code, liveProvider.error.message);
-      outOfStock = true;
+      const err = liveProvider.error;
+      // Transient (timeout/network/5xx/rate-limit): PROVIDER-nya yang lelet/limit,
+      // bukan stoknya yang kosong. Jangan vonis "stok habis" -- itu memicu WA "proses
+      // manual" padahal beberapa detik lagi provider biasanya sudah pulih.
+      const isTransient = !!(err?.transient || err?.rateLimited);
+      if (isTransient) {
+        pendingRetry = true;
+        _dsStats.pendingRetryCount++;
+        console.warn('[DripStore hybrid fulfillment] transient, akan dicoba lagi:', transaction.code, err.message);
+      } else {
+        console.error('[DripStore hybrid fulfillment]', transaction.code, err.message);
+        outOfStock = true;
+      }
     }
+  }
+
+  if (pendingRetry) {
+    // Uang sudah dikonfirmasi masuk, TAPI belum difulfill. JANGAN tandai 'done' (nanti
+    // dianggap outOfStock permanen). Lepas klaim supaya panggilan check-payment
+    // berikutnya (polling client, biasanya tiap beberapa detik) boleh mencoba lagi.
+    if (!transaction.type || transaction.type === 'product') await releaseProductFulfillmentClaim(refId);
+    return { status: 'pending_retry', type: 'product', code: transaction.code };
   }
 
   if (key) {
@@ -4891,6 +4996,11 @@ app.get('/check-payment/:refId', requireAuth, async (req, res) => {
       // lain), jadi aman dipanggil langsung dari sini.
       const result = await finalizeOrder(refId, settings);
       if (result.status === 'not_found') return res.json({ success: false, message: 'Transaksi tidak ditemukan' });
+      if (result.status === 'pending_retry' || result.status === 'already_processing') {
+        // Uang sudah masuk, provider lagi lelet/limit -- client tetap polling normal,
+        // percobaan fulfillment berikutnya terjadi otomatis di panggilan check-payment ini juga.
+        return res.json({ success: true, status: 'pending' });
+      }
       if (result.type === 'reseller') return res.json({ success: true, status: 'done', type: 'reseller' });
       if (result.type === 'deposit') return res.json({ success: true, status: 'done', type: 'deposit', balance: result.balance });
       return res.json({ success: true, status: 'done', key: result.key, code: result.code, outOfStock: result.outOfStock });
@@ -4956,7 +5066,20 @@ app.post('/webhook/genspay', async (req, res) => {
     const orderId = data.order_id;
     const transactions = await readFresh('transactions.json');
     const transaction = transactions.find(t => t.orderId === orderId);
-    if (!transaction) { logWebhook('genspay', { result: 'transaction_not_found', orderId }); return res.status(200).send('OK'); }
+    if (!transaction) {
+      // PENTING: GensPay memanggil webhook segera setelah pembayaran sukses --
+      // dalam kondisi Supabase lelet/race jarang, ada kemungkinan webhook ini
+      // sampai SEBELUM create-order selesai menulis transaksi ke database.
+      // Membalas 200 di sini FATAL: GensPay menganggap webhook selesai diproses
+      // dan TIDAK AKAN mengirim ulang, padahal transaksinya baru akan muncul
+      // sesaat lagi -- order itu nyangkut pending SELAMANYA (GensPay tidak
+      // punya endpoint cek status manual buat rekonsiliasi belakangan).
+      // Balas 5xx supaya GensPay retry sesuai kebijakan mereka (biasanya
+      // beberapa kali dalam interval singkat) -- di percobaan retry berikutnya
+      // transaksi kemungkinan besar sudah ada.
+      logWebhook('genspay', { result: 'transaction_not_found', orderId });
+      return res.status(503).send('Transaction not found yet, please retry');
+    }
     if (transaction.status === 'done') { logWebhook('genspay', { result: 'already_done', orderId }); return res.status(200).send('OK'); }
 
     const status = (data.status || '').toUpperCase();
@@ -4974,19 +5097,50 @@ app.post('/webhook/genspay', async (req, res) => {
     }
     if (!paid) { logWebhook('genspay', { result: 'not_paid', orderId, statusFromWebhook: status || '(kosong)' }); return res.status(200).send('OK'); }
 
-    if (processingOrders.has(transaction.id)) { logWebhook('genspay', { result: 'already_processing', orderId }); return res.status(200).send('OK'); }
+    if (processingOrders.has(transaction.id)) {
+      // Request lain (mis. retry GensPay yang datang sangat cepat, atau polling
+      // client) sedang memproses order yang sama detik ini juga. Balas 200 di
+      // sini AMAN (bukan diam-diam gagal) -- proses yang sedang jalan itu akan
+      // tetap menuntaskan fulfillment; ini cuma mencegah dua proses fulfillment
+      // berjalan bersamaan untuk order yang sama.
+      logWebhook('genspay', { result: 'already_processing', orderId });
+      return res.status(200).send('OK');
+    }
     processingOrders.add(transaction.id);
     try {
       const result = await finalizeOrder(transaction.id, settings);
-      logWebhook('genspay', { result: 'finalized', orderId, type: result.type, key: result.key ? '(terkirim)' : (result.outOfStock ? '(kosong/out-of-stock)' : '(n/a)') });
+      if (result.status === 'pending_retry') {
+        // Fulfillment gagal transient (provider DripStore timeout/limit). Order
+        // TETAP 'pending' di database (lihat finalizeOrder), TAPI dari sudut
+        // pandang webhook GensPay ini, statusnya SUDAH "SUCCESS" (uang masuk) --
+        // kalau kita balas non-2xx di sini, GensPay akan mengira webhook gagal
+        // diproses dan mengirim ulang notifikasi SUKSES yang sama berkali-kali
+        // (percuma, provider DripStore-nya yang lelet, bukan webhook-nya).
+        // Retry fulfillment yang sebenarnya sudah ditangani lewat polling client
+        // (/check-payment) atau admin "Konfirmasi Manual" -- webhook GensPay
+        // sudah menyelesaikan tugasnya (mencatat uang sudah masuk).
+        logWebhook('genspay', { result: 'finalized_pending_retry', orderId, note: 'provider lelet, fulfillment akan dicoba ulang saat polling/konfirmasi manual' });
+        return res.status(200).send('OK');
+      }
+      const fulfillNote = result.key ? '(terkirim)' : (result.outOfStock ? '(kosong/out-of-stock)' : '(n/a)');
+      logWebhook('genspay', { result: 'finalized', orderId, type: result.type, key: fulfillNote });
       res.status(200).send('OK');
     } finally {
       processingOrders.delete(transaction.id);
     }
   } catch (error) {
+    // Error internal TAK TERDUGA (bug, exception yang tidak ditangani cabang
+    // manapun di atas) -- ini KEMUNGKINAN BESAR transient (mis. Supabase drop
+    // koneksi di tengah proses). Balas 5xx supaya GensPay retry, BUKAN 200.
+    // Sebelumnya endpoint ini SELALU balas 200 bahkan di sini, dengan alasan
+    // "biar GensPay tidak retry terus" -- itu keliru: order yang gagal di-
+    // finalize karena error transient jadi TIDAK PERNAH dicoba ulang otomatis
+    // sama sekali, padahal itu justru SATU-SATUNYA jalan (GensPay tidak punya
+    // endpoint cek status manual). Order yang macet pending karena ini persis
+    // yang dilaporkan client.
     console.error('[webhook/genspay] error:', error.message);
     logWebhook('genspay', { result: 'error', error: error.message });
-    res.status(200).send('OK'); // tetap 200 biar GensPay tidak retry terus akibat error internal kita
+    res.status(500).send('Internal error, please retry');
   }
 });
 
@@ -5844,9 +5998,9 @@ app.get('/admin', requireAdmin, async (req, res) => {
   let adminProviderSnapshot = null;
   if ((adminDsMode === 'live' || adminDsMode === 'hybrid') && settings.dripstore?.apiToken) {
     adminProviderSnapshot = getCachedDripstoreCatalogSnapshot(settings);
+    if (!adminProviderSnapshot) adminProviderSnapshot = getDisplayDripstoreSnapshot(settings);
     if (!adminProviderSnapshot) {
       adminProviderSnapshot = await getDripstoreCatalogSnapshot(settings, { maxWaitMs: 4500 }).catch(() => null);
-      if (!adminProviderSnapshot?.products) adminProviderSnapshot = getDisplayDripstoreSnapshot(settings) || adminProviderSnapshot;
     }
     warmDripstoreCatalog(settings);
   }
@@ -6377,6 +6531,75 @@ app.get('/admin/dripstore/status', requireAdmin, (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════
+// KOREKSI (26 Sep 2026): endpoint audit ini SEBELUMNYA (25 Sep 2026) dibuat
+// dengan asumsi bahwa transaksi XREG berkeySource:'live' berarti salah kirim
+// key AIM HACK. Asumsi itu TERBUKTI KELIRU -- owner DripStore mengonfirmasi
+// LANGSUNG (chat WhatsApp) bahwa XREG memang dijual provider dengan nama
+// AIM HACK. Alias 'xreg apk mod' -> 'aim hack' sudah DIKEMBALIKAN di
+// DRIPSTORE_PRODUCT_ALIASES. Order yang tadinya ke-flag endpoint ini adalah
+// order yang BENAR, bukan salah -- JANGAN hubungi pembeli yang sudah pernah
+// muncul di sini sebelumnya untuk "koreksi", karena key yang mereka terima
+// itu sudah sah. Endpoint dibiarkan ada (bukan dihapus) supaya siapa pun yang
+// membuka link/bookmark lama langsung melihat koreksi ini, bukan data lama
+// yang menyesatkan.
+app.get('/admin/audit/xreg-aim-hack', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
+  res.json({
+    success: true,
+    corrected: true,
+    message: 'Audit ini sudah TIDAK BERLAKU. Temuan sebelumnya (pembeli XREG dianggap salah dapat key AIM HACK) TERBUKTI KELIRU setelah dikonfirmasi langsung oleh owner DripStore: XREG memang dijual provider dengan nama AIM HACK -- itu perilaku yang BENAR, bukan bug. JANGAN menghubungi pembeli manapun untuk "mengoreksi" key XREG mereka; key yang mereka terima sudah sah.'
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// AUDIT PEMBAYARAN PENDING (25 Sep 2026): client melapor "kebanyakan pending,
+// gak otomatis" untuk gateway GensPay. GensPay TIDAK punya endpoint cek status
+// manual -- webhook adalah SATU-SATUNYA cara toko tahu pembayaran sukses. Kalau
+// webhook gagal sampai/diproses (network drop, error internal transient,
+// race condition transaksi belum tersimpan saat webhook masuk -- tiga-tiganya
+// sudah diperbaiki di /webhook/genspay supaya GensPay retry sendiri), order
+// nyangkut pending SELAMANYA tanpa mekanisme otomatis lain yang menyelamatkannya.
+//
+// Endpoint ini READ-ONLY: mencari transaksi GensPay yang masih 'pending' dan
+// SUDAH LEBIH TUA dari ambang waktu wajar (QRIS biasanya dibayar dalam hitungan
+// menit). Order-order ini adalah kandidat kuat "pembeli sudah bayar tapi webhook
+// tidak pernah sampai/berhasil diproses" -- BUKAN otomatis berarti terbayar;
+// tetap perlu dicek manual (screenshot bukti bayar dari pembeli, atau cek
+// dashboard GensPay langsung) sebelum menekan "Konfirmasi Manual", karena
+// "Konfirmasi Manual" memaksa fulfillment TANPA verifikasi ulang ke gateway.
+app.get('/admin/audit/pending-payments', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
+  try {
+    const minAgeMinutes = Math.max(1, parseInt(req.query.minAgeMinutes, 10) || 10);
+    const cutoff = Date.now() - minAgeMinutes * 60 * 1000;
+    const transactions = await readFresh('transactions.json');
+    const stuck = (Array.isArray(transactions) ? transactions : []).filter(t => {
+      if (!t || t.status !== 'pending') return false;
+      const gateway = t.paymentGateway || 'pakasir';
+      if (gateway !== 'genspay') return false; // Pakasir punya endpoint cek status, tidak masuk kategori "tidak ada jalan lain"
+      const created = Date.parse(t.createdAt || '');
+      return Number.isFinite(created) && created < cutoff;
+    }).map(t => ({
+      id: t.id, code: t.code, orderId: t.orderId, type: t.type, productName: t.productName || null,
+      customerName: t.customerName || null, wa: t.wa || null, userId: t.userId || null,
+      price: t.price, createdAt: t.createdAt,
+      ageMinutes: Math.round((Date.now() - Date.parse(t.createdAt)) / 60000)
+    })).sort((a, b) => b.ageMinutes - a.ageMinutes);
+    res.json({
+      success: true,
+      minAgeMinutes,
+      totalStuck: stuck.length,
+      note: stuck.length
+        ? 'Transaksi di bawah masih berstatus pending lebih dari ' + minAgeMinutes + ' menit lewat GensPay (yang tidak punya endpoint cek status manual). Cek dashboard GensPay atau minta bukti bayar ke pembeli SEBELUM klik Konfirmasi Manual -- jangan asumsikan otomatis lunas.'
+        : 'Tidak ada transaksi GensPay yang pending lebih dari ' + minAgeMinutes + ' menit saat ini.',
+      stuck
+    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
 // LIVE LOG VIEWER -- endpoint + persistensi (lihat komentar di bagian atas file)
 // ══════════════════════════════════════════════════════════════════
 const LOG_FILE = 'app_logs.json';
@@ -6434,9 +6657,9 @@ function _logStatus(settings) {
     snapshot: snap,
     provider: {
       sinceSec: Math.round((Date.now() - _dsStats.since) / 1000),
-      calls: _dsStats.calls, ok: _dsStats.ok, rateLimited: _dsStats.rateLimited, err: _dsStats.err,
+      calls: _dsStats.calls, ok: _dsStats.ok, rateLimited: _dsStats.rateLimited, err: _dsStats.err, timeout: _dsStats.timeout,
       last429AgeSec: _dsStats.last429At ? Math.round((Date.now() - _dsStats.last429At) / 1000) : null,
-      byTrigger: topCalls, microCache: _dsMicroCache.size
+      byTrigger: topCalls, microCache: _dsMicroCache.size, pendingRetryOrders: _dsStats.pendingRetryCount
     },
     gate: { enabled: SITE_CHALLENGE_ON, redirected: _gateStats.redirected, passed: _gateStats.passed, rejected: _gateStats.rejected },
     topRequests: topReq,
