@@ -1,21 +1,17 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "server.js",
-      "use": "@vercel/node",
-      "config": { "includeFiles": ["views/**", "public/**"] }
-    }
-  ],
   "functions": {
-    "server.js": { "maxDuration": 60 }
+    "server.js": {
+      "maxDuration": 60,
+      "includeFiles": "{views,public}/**"
+    }
   },
-  "routes": [
+  "headers": [
     {
-      "src": "/uploads/(.*)",
-      "headers": { "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400" },
-      "continue": true
-    },
-    { "src": "/(.*)", "dest": "server.js" }
+      "source": "/uploads/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=3600, stale-while-revalidate=86400" }
+      ]
+    }
   ]
 }
