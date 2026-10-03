@@ -400,6 +400,7 @@ const walletLocks = new Set();
 const webhookLog = [];
 function logWebhook(gateway, entry) {
   webhookLog.unshift({ gateway, time: new Date().toISOString(), ...entry });
+  try { paymentAudit.record('webhook.' + gateway + '.result', { orderId: entry?.orderId || null, ...entry }); } catch (_) {}
   if (webhookLog.length > 30) webhookLog.length = 30;
   // Sambungkan ke Log Live (/admin/logs) supaya kejadian webhook (termasuk yang
   // gagal/ditolak) kelihatan di sana juga, bukan cuma di webhookLog yang tidak
@@ -937,6 +938,10 @@ const readDB = db.readDB;
 const writeDB = db.writeDB;
 const readFresh = db.readFresh;
 
+// Riwayat pembayaran permanen + halaman /admin/payment-history (bukti banding payment gateway)
+const paymentAudit = require('./payment-audit');
+paymentAudit.init({ readFresh: (f) => db.readFresh(f), writeDB: (f, d) => db.writeDB(f, d) });
+
 // Banner lama (seed default "Open Reseller") tersimpan tanpa field `id` dan
 // pakai key `url` bukan `imageUrl` — akibatnya tombol "Hapus"/"Toggle" di
 // admin panel selalu gagal mencocokkan banner tersebut (id undefined !== id
@@ -1412,7 +1417,7 @@ const createQRISPaymentPakasir = (orderId, amount, settings) => {
 //   4. TIDAK ADA endpoint GET status manual / cancel -- status transaksi
 //      HANYA dikirim lewat webhook (event "transaction.updated", lihat
 //      app.post('/webhook/genspay')).
-const createQRISPaymentGenspay = (orderId, amount, settings) => {
+const _createQRISPaymentGenspayRaw = (orderId, amount, settings) => {
   return new Promise((resolve, reject) => {
     const baseUrl = (settings.genspay?.baseUrl || process.env.GENSPAY_BASE_URL || 'https://genspay.my.id/api/v1').trim();
     const apiKey = (settings.genspay?.apiKey || process.env.GENSPAY_API_KEY || '').trim();
@@ -1443,6 +1448,20 @@ const createQRISPaymentGenspay = (orderId, amount, settings) => {
     req.on('error', e => reject(_dsTransientError('Network error: ' + e.message)));
     req.write(body); req.end();
   });
+};
+
+// Bungkus panggilan create GensPay: setiap request keluar (sukses/gagal, durasi) dicatat permanen
+// supaya bisa dijadikan bukti saat banding. API key TIDAK ikut tercatat.
+const createQRISPaymentGenspay = async (orderId, amount, settings) => {
+  const t0 = Date.now();
+  try {
+    const r = await _createQRISPaymentGenspayRaw(orderId, amount, settings);
+    paymentAudit.record('genspay.create', { orderId, amount, ok: true, durationMs: Date.now() - t0, totalPayment: r.total_payment, expiredAt: r.expired_at });
+    return r;
+  } catch (e) {
+    paymentAudit.record('genspay.create', { orderId, amount, ok: false, durationMs: Date.now() - t0, error: e.message });
+    throw e;
+  }
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -2161,7 +2180,7 @@ async function approveDripstoreRestockRequest(requestId, adminName = 'admin') {
     // Resolve provider dari katalog TERKINI sebelum purchase. Mapping tersimpan
     // hanya metadata; request lama tidak boleh membeli variant yang sudah berubah.
     const providerProducts = await dripstoreCall(settings, 'products.php');
-    const currentVariantId = resolveDripstoreVariantFromCatalog(providerProducts, normalized.name, opt);
+    const currentVariantId = resolveDripstoreVariantForOption(providerProducts, normalized.name, opt);
     if (!currentVariantId) throw new Error('Variant DripStore terkini untuk produk + durasi ini tidak ditemukan');
 
     // Purchase tetap eksklusif di jalur approval admin.
@@ -2564,6 +2583,20 @@ function resolveDripstoreVariantFromCatalog(productsResp, productName, opt) {
   return null;
 }
 
+// Pilih Variant ID provider untuk satu opsi durasi.
+// PRIORITAS: mapping eksplisit (opt.dripstoreVariantId) selama ID itu MASIH ada & punya harga di katalog
+// provider saat ini; baru kalau tidak ada, cocokkan lewat nama produk + durasi.
+// Dipakai SEMUA jalur (tampilan stok, pre-flight checkout, fulfillment) supaya konsisten --
+// sebelumnya pre-flight hanya mencocokkan nama sehingga produk yang sudah di-mapping tetap ditolak.
+function resolveDripstoreVariantForOption(productsResp, productName, opt) {
+  const mapped = String(opt?.dripstoreVariantId || '').trim();
+  if (mapped && productsResp) {
+    const cost = _dsFindVariantCost(productsResp, mapped);
+    if (cost !== null) return mapped;
+  }
+  return resolveDripstoreVariantFromCatalog(productsResp, productName, opt);
+}
+
 function findDripstoreVariantForOption(snapshot, productName, opt) {
   if (!snapshot?.products || !productName || !opt) return null;
 
@@ -2773,8 +2806,8 @@ async function checkDripstoreOptionAvailability(settings, productName, opt, quan
   } else {
     productsResp = await dripstoreCall(settings, 'products.php');
   }
-  const variantId = resolveDripstoreVariantFromCatalog(productsResp, productName, opt);
-  if (!variantId) return { ok: false, reason: 'Variant DripStore untuk produk + durasi ini tidak ditemukan' };
+  const variantId = resolveDripstoreVariantForOption(productsResp, productName, opt);
+  if (!variantId) return { ok: false, variantMissing: true, reason: 'Variant DripStore untuk produk + durasi ini tidak ditemukan' };
   if (balance === undefined) balance = await getDripstoreBalanceValue(settings);
   const unitCost = _dsFindVariantCost(productsResp, variantId);
   if (balance === null) return { ok: false, guarded: false, variantId: String(variantId), unitCost, balance: null, reason: 'Saldo provider tidak dapat diverifikasi' };
@@ -2873,7 +2906,7 @@ async function fulfillProductFromDripstore(transaction, settings) {
   } else {
     providerProducts = await dripstoreCall(settings, 'products.php');
   }
-  const currentVariantId = resolveDripstoreVariantFromCatalog(providerProducts, product.name, opt);
+  const currentVariantId = resolveDripstoreVariantForOption(providerProducts, product.name, opt);
   if (!currentVariantId) return null;
 
   const lockKey = `live:${transaction.id}`;
@@ -3709,9 +3742,11 @@ app.post('/reseller/join', requireAuth, async (req, res) => {
       price, totalPayment: price, qrString, isStatic,
       paymentGateway: settings.apiGateway || 'pakasir',
       status: 'pending', key: null,
+      ip: clientIp, ua: clientUa,
       createdAt: new Date().toISOString(), time: formatDate()
     });
     await writeDB('transactions.json', transactions);
+    await paymentAudit.record('order.created', { orderId, refId, gateway: settings.apiGateway || 'pakasir', amount: price, totalPayment, userId: req.session.userId, ip: clientIp, ua: clientUa, product: product.name, static: isStatic });
 
     res.json({ success: true, refId, orderId, qrString, orderCode, isStatic, paymentGateway: settings.apiGateway || 'pakasir',
       qrisStaticImage: isStatic ? settings.qrisStaticImage : null });
@@ -4515,13 +4550,43 @@ app.post('/create-order', async (req, res) => {
         try {
           const av = await checkDripstoreOptionAvailability(settings, product.name, selectedOpt, 1);
           if (!av.ok) {
-            const bal = av.balance == null ? '?' : Number(av.balance).toFixed(2);
-            const reqCost = av.required == null ? '?' : Number(av.required).toFixed(2);
-            return res.json({ success: false, message: `Stok variant ini belum tersedia. Saldo provider $${bal}, kebutuhan $${reqCost}.` });
+            // Hanya tampilkan angka saldo/kebutuhan kalau memang dua-duanya terbaca. Kalau penyebabnya
+            // variant belum ke-mapping / saldo tak terbaca, tampilkan alasan sebenarnya (bukan "$?").
+            console.warn('[checkout] pre-flight provider gagal:', JSON.stringify({ product: product.name, days: selectedDays, unit: selectedUnit, reason: av.reason, balance: av.balance, required: av.required, variantId: av.variantId }));
+            if (av.balance != null && av.required != null) {
+              return res.json({ success: false, message: `Stok variant ini belum tersedia. Saldo provider $${Number(av.balance).toFixed(2)}, kebutuhan $${Number(av.required).toFixed(2)}.` });
+            }
+            return res.json({ success: false, message: `Stok variant ini belum bisa diproses: ${av.reason || 'data provider tidak lengkap'}. Hubungi CS.` });
           }
         } catch (e) {
           return res.json({ success: false, message: 'Tidak bisa memverifikasi stok provider sebelum checkout: ' + e.message });
         }
+      }
+    }
+
+    const clientIp = String(req.ip || req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const clientUa = String(req.headers['user-agent'] || '').slice(0, 160);
+
+    // ── CEGAH QRIS SIA-SIA (akar masalah banyak "pending" & suspend GensPay) ──
+    // Sebelumnya cek "pesanan pending duplikat" baru dilakukan SETELAH createQRISPayment() dipanggil, jadi
+    // setiap klik yang akhirnya ditolak tetap membuat QRIS baru di GensPay yang tidak pernah tercatat di
+    // database kita dan tidak akan pernah dibayar (pending menumpuk + request create berlebihan).
+    // Sekarang semua penolakan terjadi SEBELUM GensPay dipanggil.
+    {
+      const preTx = await readFresh('transactions.json');
+      const nowMs = Date.now(), WINDOW = 30 * 60 * 1000;
+      const live = (Array.isArray(preTx) ? preTx : []).filter(t => t.status === 'pending' && (nowMs - Date.parse(t.createdAt)) < WINDOW);
+      const dup = live.find(t => t.userId === req.session.userId && t.productId === productId);
+      const dyn = live.filter(t => !t.isStatic);
+      const pendingByUser = dyn.filter(t => t.userId === req.session.userId).length;
+      const pendingByIp = clientIp ? dyn.filter(t => t.ip === clientIp).length : 0;
+      if (dup) {
+        paymentAudit.record('order.blocked_duplicate', { orderId: dup.orderId, userId: req.session.userId, ip: clientIp, reason: 'pending_same_product' });
+        return res.json({ success: false, message: 'Kamu masih memiliki pesanan pending untuk produk ini. Selesaikan pembayaran atau tunggu 30 menit.' });
+      }
+      if (pendingByUser >= 3 || pendingByIp >= 5) {
+        paymentAudit.record('order.blocked_duplicate', { userId: req.session.userId, ip: clientIp, reason: 'too_many_pending', pendingByUser, pendingByIp });
+        return res.json({ success: false, message: 'Kamu masih punya beberapa pesanan yang belum dibayar. Selesaikan pembayaran atau tunggu 30 menit sebelum membuat pesanan baru.' });
       }
     }
 
@@ -5035,6 +5100,7 @@ app.post('/webhook/genspay', async (req, res) => {
     const settings = await readFresh('settings.json');
     const apiKey = (settings.genspay?.apiKey || process.env.GENSPAY_API_KEY || '').trim();
     const signatureHeader = req.headers['x-genspay-signature'];
+    paymentAudit.record('webhook.genspay.received', { ip: req.ip, ua: req.headers['user-agent'], contentType: req.headers['content-type'], signaturePresent: !!signatureHeader, rawBody: req.rawBody ? req.rawBody.toString().slice(0, 800) : null });
     if (!apiKey || !signatureHeader) { logWebhook('genspay', { result: 'no_apikey_or_signature' }); return res.status(401).send('Unauthorized'); }
 
     // Signature = sha256(rawBody + apiKey). Pakai req.rawBody (string mentah,
@@ -6567,6 +6633,8 @@ app.get('/admin/audit/xreg-aim-hack', requireAdmin, async (req, res) => {
 // tetap perlu dicek manual (screenshot bukti bayar dari pembeli, atau cek
 // dashboard GensPay langsung) sebelum menekan "Konfirmasi Manual", karena
 // "Konfirmasi Manual" memaksa fulfillment TANPA verifikasi ulang ke gateway.
+paymentAudit.mount(app, requireAdmin);
+
 app.get('/admin/audit/pending-payments', requireAdmin, async (req, res) => {
   res.set('Cache-Control', 'no-store, max-age=0');
   try {
@@ -7003,6 +7071,7 @@ app.post('/admin/transaction/confirm/:id', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
     const result = await finalizeOrder(req.params.id, settings);
+    paymentAudit.record('order.manual_confirm', { orderId: req.params.id, result: result.status, type: result.type || null, by: 'admin' });
     if (result.status === 'not_found') return res.json({ success: false, message: 'Transaksi tidak ditemukan' });
     if (result.status === 'already_done') return res.json({ success: false, message: 'Transaksi sudah selesai' });
     if (result.status === 'already_processing') return res.json({ success: false, message: 'Transaksi sedang diproses di request lain. Tunggu sebentar.' });
