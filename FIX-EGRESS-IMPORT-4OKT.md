@@ -26,3 +26,20 @@ Admin -> Settings DripStore -> kotak "Import Varian dari DripStore".
 - Mode "semua" : + bikin produk baru dari katalog provider (default nonaktif).
 - Preview dulu, baru Import Sekarang. Opsi update harga varian yang sudah ada.
 - Varian provider tanpa durasi terbaca (mis. "Permanent") dilewati.
+
+## Migrasi ke Supabase baru (pakai file restore terpisah, JANGAN masuk repo)
+1. Bikin org + project Supabase baru.
+2. SQL Editor project baru: paste isi restore-supabase-baru.sql, Run (1.4MB; kalau editor berat, pakai jalur script di bawah).
+   Alternatif: jalanin supabase-schema.sql dulu, lalu
+   NEW_SUPABASE_URL=... NEW_SUPABASE_SERVICE_ROLE_KEY=... node migrate-supabase.js export.json
+3. Env Vercel: SUPABASE_URL & SUPABASE_SERVICE_ROLE_KEY ganti ke project baru.
+   Tambah LEGACY_SUPABASE_URL=https://egwoqgrscylrqpgwkkpm.supabase.co supaya gambar lama
+   tetap tampil lewat /media/ begitu project lama bisa diakses lagi (restrict kebuka / reset 14 Okt).
+4. Redeploy.
+
+## Riwayat transaksi lengkap (bukti payment gateway)
+- Tab Transaksi sebelumnya cuma menerima 20 transaksi terakhir dari server. Sekarang: total asli,
+  filter Semua/Pending/Done/Failed, cari, rentang tanggal, dan tombol "Muat lebih banyak" (50 per muat).
+- Tombol pintas ke /admin/payment-history (kronologi), Export CSV, dan Laporan banding (cetak/PDF).
+- CSV sekarang ada kolom paidAt (WIB+ISO), status gateway, key_terkirim, sumber_key.
+- Default gateway di halaman riwayat = Semua (sebelumnya cuma GensPay). Filter Failed ditambah.

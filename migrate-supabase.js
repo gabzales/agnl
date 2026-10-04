@@ -24,7 +24,17 @@ const { createClient } = require('@supabase/supabase-js');
   const rows = Object.entries(data).map(([k, v]) => ({ key: k, value: v }));
   if (!rows.length) throw new Error('export.json kosong / format tidak dikenali');
   const sb = createClient(url, key, { auth: { persistSession: false } });
-  const { error } = await sb.from('keyvalue_store').upsert(rows, { onConflict: 'key' });
-  if (error) throw new Error(error.message);
-  console.log(`OK: ${rows.length} collection dipindah ->`, rows.map(r => r.key).join(', '));
+  // Cek tabel ada dulu (kasih pesan jelas kalau supabase-schema.sql belum dijalankan)
+  const probe = await sb.from('keyvalue_store').select('key', { head: true, count: 'exact' });
+  if (probe.error) throw new Error('Tabel keyvalue_store belum ada / key salah: ' + (probe.error.message || probe.error.code) + ' -> jalankan supabase-schema.sql dulu di SQL Editor project baru');
+  const BATCH = 50;
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const chunk = rows.slice(i, i + BATCH);
+    const { error } = await sb.from('keyvalue_store').upsert(chunk, { onConflict: 'key' });
+    if (error) throw new Error(`batch ${i}-${i + chunk.length}: ${error.message}`);
+    console.log(`  ${Math.min(i + BATCH, rows.length)}/${rows.length}`);
+  }
+  const { count, error: cErr } = await sb.from('keyvalue_store').select('key', { head: true, count: 'exact' });
+  if (cErr) throw new Error(cErr.message);
+  console.log(`OK: ${rows.length} baris dikirim, di database sekarang ada ${count} baris (harus ${rows.length}).`);
 })().catch(e => { console.error('GAGAL:', e.message); process.exit(1); });

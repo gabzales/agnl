@@ -30,3 +30,7 @@ backup-*/
 # perlu disimpan di git. Kalau file ini belum ada saat development lokal,
 # jalankan `npm run build` dulu sebelum `npm run dev`.
 public/css/tailwind.css
+
+# data backup/migrasi (isi password hash + token) - JANGAN di-commit
+export.json
+restore-supabase-baru.sql

@@ -500,14 +500,21 @@ app.use((req, res, next) => {
 // cookieSession supaya respons tidak membawa Set-Cookie (yang bisa membatalkan
 // cache CDN).
 // ══════════════════════════════════════════════════════════════════
-const _mediaBase = (() => {
-  const u = (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
+const _mkMediaBase = (envName) => {
+  const u = (process.env[envName] || '').trim().replace(/\/+$/, '');
   return u ? `${u}/storage/v1/object/public/product-images/` : null;
-})();
+};
+const _mediaBase = _mkMediaBase('SUPABASE_URL');
+// Opsional: URL project Supabase LAMA (setelah migrasi). Gambar lama masih
+// menunjuk ke sana; proxy mencoba project baru dulu, lalu project lama.
+const _legacyMediaBase = _mkMediaBase('LEGACY_SUPABASE_URL');
+const _mediaBases = [_mediaBase, _legacyMediaBase].filter(Boolean);
 if (_mediaBase) {
   const _origSend = express.response.send;
   express.response.send = function (body) {
-    if (typeof body === 'string' && body.includes(_mediaBase)) body = body.split(_mediaBase).join('/media/');
+    if (typeof body === 'string') {
+      for (const b of _mediaBases) if (body.includes(b)) body = body.split(b).join('/media/');
+    }
     return _origSend.call(this, body);
   };
   app.get('/media/:file', async (req, res) => {
@@ -516,7 +523,14 @@ if (_mediaBase) {
     try {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 8000);
-      const r = await fetch(_mediaBase + encodeURIComponent(f), { signal: ctl.signal }).finally(() => clearTimeout(t));
+      let r = null;
+      try {
+        for (const b of _mediaBases) {
+          r = await fetch(b + encodeURIComponent(f), { signal: ctl.signal }).catch(() => null);
+          if (r && r.ok) break;
+        }
+      } finally { clearTimeout(t); }
+      if (!r) { res.set('Cache-Control', 'public, max-age=30'); return res.status(502).end(); }
       const ct = r.headers.get('content-type') || '';
       if (!r.ok || !/^image\//i.test(ct)) {
         res.set('Cache-Control', 'public, max-age=30');
@@ -6039,6 +6053,39 @@ app.get('/admin/migrate-images', async (req, res) => {
     res.write('\n❌ Migrasi berhenti karena error: ' + err.message + '\n');
     res.end();
   }
+});
+
+
+// Riwayat transaksi LENGKAP untuk tab Transaksi admin (paginasi + filter di server).
+// Sebelumnya /admin cuma mengirim 20 transaksi terakhir ke halaman, jadi riwayat
+// lama (sejak awal toko jalan) tidak kelihatan sama sekali di panel.
+app.get('/admin/transactions/page', requireAdmin, async (req, res) => {
+  res.set('Cache-Control', 'no-store, max-age=0');
+  try {
+    const all = await readSmart('transactions.json');
+    const status = String(req.query.status || 'all');
+    const q = String(req.query.q || '').toLowerCase().trim();
+    const from = req.query.from ? Date.parse(req.query.from) : null;
+    const to = req.query.to ? Date.parse(req.query.to) + 86400000 : null;
+    const rows = (Array.isArray(all) ? all : []).filter(t => {
+      if (!t) return false;
+      if (status !== 'all' && t.status !== status) return false;
+      const c = Date.parse(t.createdAt || '');
+      if (from && !(c >= from)) return false;
+      if (to && !(c < to)) return false;
+      if (q && ![t.orderId, t.code, t.customerName, t.wa, t.productName, t.id].join(' ').toLowerCase().includes(q)) return false;
+      return true;
+    }).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const items = rows.slice(offset, offset + limit).map(t => ({
+      id: t.id, code: t.code, type: t.type || null, productName: t.productName, status: t.status,
+      outOfStock: !!t.outOfStock, customerName: t.customerName, wa: t.wa, price: Number(t.price) || 0,
+      time: t.time, createdAt: t.createdAt, paidAt: t.paidAt || null, key: t.key || null,
+      selectedDays: t.selectedDays || null, selectedUnit: t.selectedUnit || null, orderId: t.orderId || null
+    }));
+    res.json({ success: true, total: rows.length, offset, items, hasMore: offset + items.length < rows.length });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
 app.get('/admin', requireAdmin, async (req, res) => {

@@ -643,13 +643,24 @@ html.dark .badge-featured { color:#fca5a5 !important; }
 
 <!-- ── TRANSAKSI ── -->
 <div id="pane-transactions" class="tab-pane">
-    <div class="flex items-center justify-between mb-3">
-        <div class="section-label mb-0">Semua Transaksi (<%= transactions.length %>)</div>
+    <div class="flex items-center justify-between mb-3 gap-2 flex-wrap">
+        <div class="section-label mb-0">Semua Transaksi (<span id="trx-total"><%= stats.totalTransactions %></span>)</div>
         <div class="flex gap-2">
             <button onclick="filterTrx('all')" id="trxf-all" class="trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-red-500/20 border border-zinc-500/40 text-red-300">Semua</button>
             <button onclick="filterTrx('pending')" id="trxf-pending" class="trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white/3 border border-white/10 text-zinc-500">Pending</button>
             <button onclick="filterTrx('done')" id="trxf-done" class="trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white/3 border border-white/10 text-zinc-500">Done</button>
+            <button onclick="filterTrx('failed')" id="trxf-failed" class="trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white/3 border border-white/10 text-zinc-500">Failed</button>
         </div>
+    </div>
+    <div class="flex gap-2 mb-2 flex-wrap">
+        <input type="text" id="trx-q" placeholder="Cari order / WA / nama / produk" class="flex-1 min-w-[160px] bg-black/30 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none" onkeydown="if(event.key==='Enter'){event.preventDefault();filterTrx(window._trxStatus||'all');}">
+        <input type="date" id="trx-from" class="bg-black/30 border border-white/10 rounded-xl px-2 py-2 text-xs text-white" onchange="filterTrx(window._trxStatus||'all')">
+        <input type="date" id="trx-to" class="bg-black/30 border border-white/10 rounded-xl px-2 py-2 text-xs text-white" onchange="filterTrx(window._trxStatus||'all')">
+    </div>
+    <div class="flex gap-2 mb-3 flex-wrap">
+        <a href="/admin/payment-history?gateway=all&status=done" class="px-3 py-1.5 rounded-lg text-[10px] font-bold text-sky-300 border border-sky-500/25 bg-sky-500/10">Riwayat lengkap + kronologi</a>
+        <a href="/admin/payment-history/export.csv?gateway=all&status=done" class="px-3 py-1.5 rounded-lg text-[10px] font-bold text-emerald-300 border border-emerald-500/25 bg-emerald-500/10">Export CSV (Done)</a>
+        <a href="/admin/payment-history/report?gateway=all&status=done" target="_blank" class="px-3 py-1.5 rounded-lg text-[10px] font-bold text-rose-300 border border-rose-500/25 bg-rose-500/10">Laporan banding (cetak/PDF)</a>
     </div>
     <div class="space-y-2" id="trx-list">
         <% transactions.forEach(t => { %>
@@ -693,6 +704,9 @@ html.dark .badge-featured { color:#fca5a5 !important; }
         <% if(!transactions.length){ %>
         <div class="text-center py-10 text-zinc-600 text-xs">Belum ada transaksi</div>
         <% } %>
+    </div>
+    <div class="text-center mt-3">
+        <button id="trx-more" onclick="loadMoreTrx()" class="px-4 py-2 rounded-xl text-xs font-bold text-zinc-300 border border-white/10 bg-white/5 hover:bg-white/10 <%= stats.totalTransactions > transactions.length ? '' : 'hidden' %>">Muat lebih banyak</button>
     </div>
 </div>
 
@@ -3110,16 +3124,67 @@ async function confirmTransaction(id) {
 }
 
 // ── FILTER TRANSAKSI ──
+window._trxStatus = 'all';
+window._trxOffset = <%= transactions.length %>;
+window._trxBusy = false;
+function _trxEsc(x) { return String(x == null ? '' : x).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function _trxCard(t) {
+    const done = t.status === 'done', failed = t.status === 'failed';
+    const badge = done ? '<span class="badge badge-done">Done</span>'
+        : failed ? '<span class="badge" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.3)">Failed</span>'
+        : `<span class="badge badge-pending" id="trx-status-badge-${_trxEsc(t.id)}">Pending</span>`;
+    return `<div class="neon-card p-3.5 fade-in trx-item" data-trx-id="${_trxEsc(t.id)}" data-status="${_trxEsc(t.status)}">
+        <div class="flex items-start justify-between gap-2 mb-2"><div>
+            <div class="flex items-center gap-2"><div class="text-[11px] font-mono font-bold text-red-400">${_trxEsc(t.code)}</div>${t.type === 'reseller' ? '<span class="badge" style="background:rgba(234,179,8,.15);color:#fbbf24;border:1px solid rgba(234,179,8,.3)">Reseller</span>' : ''}</div>
+            <div class="text-sm font-semibold text-white mt-0.5">${_trxEsc(t.productName)}</div></div>${badge}</div>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1 mb-3">
+            <div class="text-[10px] text-zinc-500">Customer: <span class="text-zinc-300">${_trxEsc(t.customerName)}</span></div>
+            <div class="text-[10px] text-zinc-500">WA: <span class="text-zinc-300">${_trxEsc(t.wa)}</span></div>
+            <div class="text-[10px] text-zinc-500">Harga: <span class="text-emerald-400 font-bold">Rp ${Number(t.price || 0).toLocaleString('id-ID')}</span></div>
+            <div class="text-[10px] text-zinc-500">Waktu: <span class="text-zinc-300">${_trxEsc(t.time)}</span></div>
+            ${t.orderId ? `<div class="text-[10px] text-zinc-500 col-span-2">Order: <span class="text-zinc-300 font-mono">${_trxEsc(t.orderId)}</span></div>` : ''}
+            ${t.paidAt ? `<div class="text-[10px] text-zinc-500 col-span-2">Dibayar: <span class="text-zinc-300">${_trxEsc(new Date(t.paidAt).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false }))} WIB</span></div>` : ''}
+            ${t.key ? `<div class="text-[10px] text-zinc-500 col-span-2">Key: <span class="text-emerald-400 font-mono font-bold">${_trxEsc(t.key)}</span></div>` : ''}
+            ${t.selectedDays ? `<div class="text-[10px] text-zinc-500 col-span-2">Durasi: <span class="text-sky-400 font-bold">${_trxEsc(t.selectedDays)} ${t.selectedUnit === 'h' ? 'Jam' : 'Hari'}</span></div>` : ''}
+        </div>
+        <div class="flex gap-2">
+            ${!done && !failed ? `<button onclick="confirmTransaction('${_trxEsc(t.id)}')" class="btn-success py-1 px-3 text-[10px]" id="trx-confirm-${_trxEsc(t.id)}"><iconify-icon icon="mdi:check-circle"></iconify-icon> Konfirmasi Bayar</button>` : ''}
+            <button onclick="deleteTransaction('${_trxEsc(t.id)}')" class="btn-danger py-1 px-3 text-[10px]"><iconify-icon icon="mdi:trash-can"></iconify-icon></button>
+        </div></div>`;
+}
+async function _trxFetch(reset) {
+    if (window._trxBusy) return;
+    window._trxBusy = true;
+    const list = document.getElementById('trx-list');
+    const more = document.getElementById('trx-more');
+    const offset = reset ? 0 : window._trxOffset;
+    const qs = new URLSearchParams({
+        status: window._trxStatus, offset, limit: 50,
+        q: document.getElementById('trx-q').value.trim(),
+        from: document.getElementById('trx-from').value, to: document.getElementById('trx-to').value
+    });
+    try {
+        const r = await fetch('/admin/transactions/page?' + qs.toString());
+        const d = await r.json();
+        if (!d.success) throw new Error(d.message || 'Gagal memuat');
+        if (reset) list.innerHTML = '';
+        list.insertAdjacentHTML('beforeend', d.items.map(_trxCard).join(''));
+        if (reset && !d.items.length) list.innerHTML = '<div class="text-center py-10 text-zinc-600 text-xs">Tidak ada transaksi yang cocok</div>';
+        window._trxOffset = offset + d.items.length;
+        document.getElementById('trx-total').textContent = d.total;
+        more.classList.toggle('hidden', !d.hasMore);
+    } catch (e) { toast('Gagal memuat transaksi: ' + e.message, 'error'); }
+    finally { window._trxBusy = false; }
+}
+function loadMoreTrx() { _trxFetch(false); }
 function filterTrx(status) {
+    window._trxStatus = status;
     document.querySelectorAll('.trx-filter').forEach(b => {
         b.className = 'trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-white/3 border border-white/10 text-zinc-500';
     });
     const activeBtn = document.getElementById(`trxf-${status}`);
     if (activeBtn) activeBtn.className = 'trx-filter px-2.5 py-1 rounded-lg text-[10px] font-bold bg-red-500/20 border border-zinc-500/40 text-red-300';
-    document.querySelectorAll('.trx-item').forEach(card => {
-        const s = card.getAttribute('data-status');
-        card.style.display = (status === 'all' || s === status) ? '' : 'none';
-    });
+    _trxFetch(true);
 }
 
 // ── TOGGLE RESELLER USER ──

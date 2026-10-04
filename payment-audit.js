@@ -105,7 +105,7 @@ async function load(opts = {}) {
 }
 
 function filterTx(tx, opts) {
-  const gateway = opts.gateway || 'genspay';
+  const gateway = opts.gateway || 'all';
   const from = opts.from ? Date.parse(opts.from) : null;
   const to = opts.to ? Date.parse(opts.to) + 86400000 : null;
   const q = String(opts.q || '').toLowerCase().trim();
@@ -195,7 +195,8 @@ async function buildAudit(opts) {
       price: t.price, totalPayment: t.totalPayment, customerName: t.customerName || u.username || null,
       wa: t.wa || u.wa || null, userId: t.userId || null, isGuest: !!u.isGuest,
       createdAt: t.createdAt, ageMinutes: Math.round((now - Date.parse(t.createdAt)) / 60000),
-      ip: t.ip || null, hasKey: !!t.key
+      ip: t.ip || null, hasKey: !!t.key,
+      paidAt: t.paidAt || null, gatewayStatus: t.gatewayStatus || null, gatewayUpdatedAt: t.gatewayUpdatedAt || null, keySource: t.keySource || null
     };
   });
   return { rows, list, events, logs, summary: summarize(rows, events, logs), users };
@@ -217,7 +218,7 @@ a{color:#7dd3fc}h1{font-size:18px;margin:0 0 4px}.sub{color:#9aa;font-size:12px;
 .bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}input,select,button{background:#15151e;color:#e8e8f0;border:1px solid #333;border-radius:8px;padding:8px 10px;font-size:13px}
 button.p{background:#e11d48;border-color:#e11d48;font-weight:700;cursor:pointer}button{cursor:pointer}
 table{width:100%;border-collapse:collapse;font-size:12px}th,td{padding:7px 6px;border-bottom:1px solid #22222e;text-align:left;vertical-align:top}th{color:#9aa;font-weight:600;position:sticky;top:0;background:#0b0b10}
-.tag{padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700}.done{background:#06462a;color:#6ee7b7}.pending{background:#4a3a05;color:#fcd34d}.expired,.cancelled{background:#3b1a1a;color:#fca5a5}
+.tag{padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700}.done{background:#06462a;color:#6ee7b7}.pending{background:#4a3a05;color:#fcd34d}.expired,.cancelled,.failed{background:#3b1a1a;color:#fca5a5}
 tr.row{cursor:pointer}tr.row:hover{background:#12121a}.tl{background:#0f0f17;padding:8px 10px;border-left:3px solid #e11d48;margin:4px 0}.tl div{margin:2px 0;font-family:ui-monospace,monospace;font-size:11px;color:#cbd}
 .box{background:#15151e;border:1px solid #262634;border-radius:10px;padding:10px;margin-bottom:14px}.wrap{overflow-x:auto}.muted{color:#9aa}
 </style></head><body>
@@ -225,8 +226,8 @@ tr.row{cursor:pointer}tr.row:hover{background:#12121a}.tl{background:#0f0f17;pad
 <div class="sub">Semua transaksi + kronologi + export. Waktu ditampilkan WIB.</div>
 <div class="cards" id="cards"></div>
 <div class="bar">
- <select id="gw"><option value="genspay">GensPay</option><option value="pakasir">Pakasir</option><option value="all">Semua gateway</option></select>
- <select id="st"><option value="all">Semua status</option><option value="pending">Pending</option><option value="done">Done</option><option value="expired">Expired</option></select>
+ <select id="gw"><option value="all">Semua gateway</option><option value="genspay">GensPay</option><option value="pakasir">Pakasir</option></select>
+ <select id="st"><option value="all">Semua status</option><option value="pending">Pending</option><option value="done">Done</option><option value="failed">Failed</option><option value="expired">Expired</option></select>
  <input type="date" id="from"><input type="date" id="to"><input id="q" placeholder="cari order/WA/nama/produk">
  <button class="p" onclick="load()">Tampilkan</button>
 </div>
@@ -321,7 +322,7 @@ const csvCell = (v) => { const s = String(v == null ? '' : v); return /[",\n]/.t
 
 function mount(app, requireAdmin, adminPathFn) {
   const AP = 'admin';
-  const O = (req) => ({ gateway: req.query.gateway || 'genspay', status: req.query.status, from: req.query.from, to: req.query.to, q: req.query.q });
+  const O = (req) => ({ gateway: req.query.gateway || 'all', status: req.query.status, from: req.query.from, to: req.query.to, q: req.query.q });
 
   app.get('/admin/payment-history', requireAdmin, (req, res) => {
     res.set('Cache-Control', 'no-store'); res.type('html').send(pageHtml(AP));
@@ -338,8 +339,8 @@ function mount(app, requireAdmin, adminPathFn) {
   app.get('/admin/payment-history/export.csv', requireAdmin, async (req, res) => {
     try {
       const a = await buildAudit(O(req));
-      const head = ['createdAt_WIB', 'createdAt_ISO', 'orderId', 'refId', 'code', 'gateway', 'jenis_qris', 'status', 'produk', 'durasi', 'harga', 'totalPayment', 'customer', 'wa', 'userId', 'guest', 'ip', 'umur_menit'];
-      const lines = [head.join(',')].concat(a.list.map(t => [jkt(t.createdAt), t.createdAt, t.orderId, t.id, t.code, t.gateway, t.isStatic ? 'statis' : 'dinamis', t.status, t.productName, t.duration, t.price, t.totalPayment, t.customerName, t.wa, t.userId, t.isGuest, t.ip, t.ageMinutes].map(csvCell).join(',')));
+      const head = ['createdAt_WIB', 'createdAt_ISO', 'paidAt_WIB', 'paidAt_ISO', 'orderId', 'refId', 'code', 'gateway', 'jenis_qris', 'status', 'status_gateway', 'status_gateway_update_ISO', 'produk', 'durasi', 'harga', 'totalPayment', 'key_terkirim', 'sumber_key', 'customer', 'wa', 'userId', 'guest', 'ip', 'umur_menit'];
+      const lines = [head.join(',')].concat(a.list.map(t => [jkt(t.createdAt), t.createdAt, t.paidAt ? jkt(t.paidAt) : '', t.paidAt || '', t.orderId, t.id, t.code, t.gateway, t.isStatic ? 'statis' : 'dinamis', t.status, t.gatewayStatus || '', t.gatewayUpdatedAt || '', t.productName, t.duration, t.price, t.totalPayment, t.hasKey ? 'ya' : 'tidak', t.keySource || '', t.customerName, t.wa, t.userId, t.isGuest, t.ip, t.ageMinutes].map(csvCell).join(',')));
       res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="riwayat-pembayaran.csv"' });
       res.send('\ufeff' + lines.join('\n'));
     } catch (e) { res.status(500).send(e.message); }
