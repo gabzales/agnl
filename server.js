@@ -463,7 +463,7 @@ function _normPath(p) {
 }
 app.use((req, res, next) => {
   const p = req.path;
-  if (/\.(?:css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|mp4|webm)$/i.test(p) || p.startsWith('/uploads/') || p.startsWith('/admin/logs')) return next();
+  if (/\.(?:css|js|mjs|map|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|mp4|webm)$/i.test(p) || p.startsWith('/uploads/') || p.startsWith('/media/') || p.startsWith('/admin/logs')) return next();
   const t0 = Date.now();
   _reqCtx.run({ method: req.method, path: _normPath(p), ip: req.ip }, () => {
     res.on('finish', () => {
@@ -486,6 +486,55 @@ app.use((req, res, next) => {
     next();
   });
 });
+
+
+// ══════════════════════════════════════════════════════════════════
+// MEDIA PROXY (4 Okt 2026) -- sumber utama "Cached Egress" Supabase jebol.
+// Semua gambar (produk, banner, avatar, QRIS) disimpan di Supabase Storage dan
+// sebelumnya di-embed LANGSUNG ke <img>, jadi tiap pengunjung menarik gambar
+// langsung dari Supabase (itu yang dihitung Cached Egress, bukan query DB).
+// Sekarang URL storage ditulis ulang ke /media/<file> (lihat res.send wrapper di
+// bawah) dan file disajikan lewat CDN Vercel dengan cache 1 tahun (nama file
+// berisi timestamp, jadi aman immutable). Supabase cuma kena SEKALI per file
+// per region CDN, bukan per pengunjung. Rute ini sengaja dipasang SEBELUM
+// cookieSession supaya respons tidak membawa Set-Cookie (yang bisa membatalkan
+// cache CDN).
+// ══════════════════════════════════════════════════════════════════
+const _mediaBase = (() => {
+  const u = (process.env.SUPABASE_URL || '').trim().replace(/\/+$/, '');
+  return u ? `${u}/storage/v1/object/public/product-images/` : null;
+})();
+if (_mediaBase) {
+  const _origSend = express.response.send;
+  express.response.send = function (body) {
+    if (typeof body === 'string' && body.includes(_mediaBase)) body = body.split(_mediaBase).join('/media/');
+    return _origSend.call(this, body);
+  };
+  app.get('/media/:file', async (req, res) => {
+    const f = String(req.params.file || '');
+    if (!/^[A-Za-z0-9._-]{1,200}$/.test(f)) return res.status(400).end();
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 8000);
+      const r = await fetch(_mediaBase + encodeURIComponent(f), { signal: ctl.signal }).finally(() => clearTimeout(t));
+      const ct = r.headers.get('content-type') || '';
+      if (!r.ok || !/^image\//i.test(ct)) {
+        res.set('Cache-Control', 'public, max-age=30');
+        return res.status(r.status === 404 ? 404 : 502).end();
+      }
+      const buf = Buffer.from(await r.arrayBuffer());
+      res.set({
+        'Content-Type': ct,
+        'Cache-Control': 'public, max-age=31536000, s-maxage=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff'
+      });
+      res.end(buf);
+    } catch (e) {
+      res.set('Cache-Control', 'public, max-age=30');
+      res.status(502).end();
+    }
+  });
+}
 
 app.use(expressLayouts);
 // `verify` di sini nyimpen raw body string ke req.rawBody -- dibutuhkan
@@ -662,7 +711,7 @@ function _gateSetCookie(req, res) {
   });
 }
 // Path yang WAJIB lolos tanpa challenge (server-to-server / mesin).
-const GATE_BYPASS_PREFIX = ['/webhook/', '/auth/google', '/uploads/', '/css/', '/js/', '/img/', '/images/', '/fonts/', '/assets/', '/cf-check'];
+const GATE_BYPASS_PREFIX = ['/webhook/', '/auth/google', '/uploads/', '/media/', '/css/', '/js/', '/img/', '/images/', '/fonts/', '/assets/', '/cf-check'];
 const GATE_BYPASS_EXACT = new Set(['/robots.txt', '/sitemap.xml', '/favicon.ico', '/manifest.json', '/sw.js', '/health', '/ads.txt']);
 // Crawler mesin pencari/preview link yang sah. UA bisa dipalsukan, tapi risikonya
 // cuma "lolos gate" (bukan bypass auth) -- gate ini lapisan anti-bot, bukan auth.
@@ -6826,6 +6875,211 @@ app.get('/admin/dripstore/catalog-search', requireAdmin, async (req, res) => {
   }
 });
 
+
+// ══════════════════════════════════════════════════════════════════
+// IMPORT VARIAN / PRODUK DARI DRIPSTORE + HARGA OTOMATIS (margin persen)
+// (diminta client 4 Okt 2026)
+//   mode 'variants' : tambah varian durasi yang BELUM ADA di produk lokal yang
+//                     cocok dengan produk provider (+ harga otomatis).
+//   mode 'all'      : sama, PLUS bikin produk baru untuk semua produk provider
+//                     yang belum ada di toko.
+// Harga jual = harga provider x kurs x (1 + margin%), dibulatkan KE ATAS ke
+// kelipatan roundTo. Pengaturan disimpan di settings.dripstoreImport (terpisah
+// dari settings.dripstore supaya tidak ketimpa form Settings DripStore).
+// ══════════════════════════════════════════════════════════════════
+function _dsImportPrefs(settings, body = {}) {
+  const saved = settings.dripstoreImport || {};
+  const num = (v, d) => { const n = Number(String(v ?? '').replace(',', '.')); return Number.isFinite(n) ? n : d; };
+  const kurs = Math.max(0, num(body.kurs, num(saved.kurs, 1))) || 1;
+  const margin = Math.max(0, Math.min(1000, num(body.marginPercent, num(saved.marginPercent, 10))));
+  const resRaw = body.resellerMarginPercent ?? saved.resellerMarginPercent;
+  const resellerMargin = (resRaw === undefined || resRaw === null || resRaw === '') ? null : Math.max(0, Math.min(1000, num(resRaw, 0)));
+  const roundDefault = kurs > 1 ? 500 : 1;
+  const roundTo = Math.max(1, Math.floor(num(body.roundTo, num(saved.roundTo, roundDefault))));
+  return { kurs, marginPercent: margin, resellerMarginPercent: resellerMargin, roundTo };
+}
+
+function _dsSellPrice(cost, pct, prefs) {
+  if (cost === null || cost === undefined || !Number.isFinite(Number(cost))) return null;
+  const raw = Number(cost) * prefs.kurs * (1 + pct / 100);
+  const r = prefs.roundTo;
+  return Math.max(0, Math.ceil(raw / r - 1e-9) * r);
+}
+
+function _dsVariantCost(raw) {
+  const v = _dsFirst(raw || {}, ['unit_price','unitPrice','price','cost','cost_price','costPrice','price_usd','priceUsd','unitPriceUsd','unit_price_usd','cost_usd','costUsd','unit_cost','unitCost','reseller_price','resellerPrice','selling_price','sellingPrice','p']);
+  return _dsParseMoney(v);
+}
+
+// Kelompokkan hasil ekstraksi provider per nama produk, buang durasi dobel.
+function _dsGroupSupplier(items) {
+  const groups = new Map();
+  for (const it of items) {
+    const name = String(it.productName || '').trim();
+    if (!name) continue;
+    if (!groups.has(name)) groups.set(name, { name, variants: [], dupes: 0, raw: it.raw });
+    const g = groups.get(name);
+    const key = `${it.days}${it.unit}`;
+    const cost = _dsVariantCost(it.raw);
+    const ex = g.variants.find(v => `${v.days}${v.unit}` === key);
+    if (ex) {
+      g.dupes++;
+      // durasi dobel di satu produk: simpan yang lebih murah
+      if (cost !== null && (ex.cost === null || cost < ex.cost)) { ex.variantId = it.variantId; ex.cost = cost; ex.variantName = it.variantName; }
+      continue;
+    }
+    g.variants.push({ variantId: it.variantId, variantName: it.variantName, days: it.days, unit: it.unit, cost });
+  }
+  const sortVar = (a, b) => (a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1));
+  groups.forEach(g => g.variants.sort(sortVar));
+  return [...groups.values()];
+}
+
+function _dsFindLocalProduct(products, group) {
+  const ids = new Set(group.variants.map(v => String(v.variantId)));
+  // 1) tautan variantId yang sudah ada = bukti paling kuat
+  let hit = products.find(p => (p.pricingOptions || []).some(o => o.dripstoreVariantId && ids.has(String(o.dripstoreVariantId))));
+  if (hit) return hit;
+  // 2) nama sama persis / alias strict
+  hit = products.find(p => _dsIsExactNameMatch(p.name, group.name));
+  if (hit) return hit;
+  // 3) pencocokan nama biasa (sama seperti auto-map)
+  return products.find(p => _dsNameMatchWithAliases(p.name, group.name)) || null;
+}
+
+function _dsBuildImportPlan(products, groups, prefs, opts) {
+  const plan = { newProducts: [], addVariants: [], updatePrices: [], noCost: 0, dupes: 0 };
+  for (const g of groups) {
+    plan.dupes += g.dupes;
+    const local = _dsFindLocalProduct(products, g);
+    const mkOpt = (v) => {
+      const price = _dsSellPrice(v.cost, prefs.marginPercent, prefs);
+      const rp = prefs.resellerMarginPercent === null ? null : _dsSellPrice(v.cost, prefs.resellerMarginPercent, prefs);
+      return { days: v.days, unit: v.unit, price, reseller_price: rp, strike_price: null, dripstoreVariantId: String(v.variantId), _cost: v.cost };
+    };
+    if (!local) {
+      if (opts.mode !== 'all') continue;
+      const options = g.variants.map(mkOpt).filter(o => { if (o.price === null) { plan.noCost++; return false; } return true; });
+      if (options.length) plan.newProducts.push({ name: g.name, raw: g.raw, options });
+      continue;
+    }
+    const have = new Map((local.pricingOptions || []).map(o => [`${Number(o.days)}${o.unit === 'h' ? 'h' : 'd'}`, o]));
+    const add = [];
+    for (const v of g.variants) {
+      const o = have.get(`${v.days}${v.unit}`);
+      if (!o) {
+        const no = mkOpt(v);
+        if (no.price === null) { plan.noCost++; continue; }
+        add.push(no);
+      } else if (opts.updateExisting && String(o.dripstoreVariantId || '') === String(v.variantId)) {
+        const np = _dsSellPrice(v.cost, prefs.marginPercent, prefs);
+        if (np !== null && Number(o.price) !== np) plan.updatePrices.push({ productId: local.id, productName: local.name, days: v.days, unit: v.unit, from: Number(o.price), to: np, resellerTo: prefs.resellerMarginPercent === null ? undefined : _dsSellPrice(v.cost, prefs.resellerMarginPercent, prefs) });
+      }
+    }
+    if (add.length) plan.addVariants.push({ productId: local.id, productName: local.name, options: add });
+  }
+  return plan;
+}
+
+async function _dsLoadSupplierGroups(force = false) {
+  const settings = await readFresh('settings.json');
+  if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
+  const resp = await dripstoreCall(settings, 'products.php');
+  const items = _dsExtractProductItems(resp);
+  if (!items.length) throw new Error('Daftar produk DripStore kosong / format products.php belum dikenali.');
+  return { settings, groups: _dsGroupSupplier(items), rawCount: items.length };
+}
+
+// PREVIEW: tidak mengubah apa pun, cuma menghitung apa yang AKAN terjadi.
+app.post('/admin/dripstore/import-preview', requireAdmin, async (req, res) => {
+  try {
+    const { settings, groups, rawCount } = await _dsLoadSupplierGroups();
+    const prefs = _dsImportPrefs(settings, req.body);
+    const mode = req.body?.mode === 'all' ? 'all' : 'variants';
+    const updateExisting = req.body?.updateExisting === true || req.body?.updateExisting === 'true' || req.body?.updateExisting === 'on';
+    const products = await readFresh('products.json');
+    const plan = _dsBuildImportPlan(products, groups, prefs, { mode, updateExisting });
+    const strip = o => ({ days: o.days, unit: o.unit, cost: o._cost, price: o.price, reseller_price: o.reseller_price });
+    res.json({
+      success: true, prefs, mode, supplierVariants: rawCount, supplierProducts: groups.length,
+      newProducts: plan.newProducts.map(p => ({ name: p.name, options: p.options.map(strip) })),
+      addVariants: plan.addVariants.map(p => ({ productName: p.productName, options: p.options.map(strip) })),
+      updatePrices: plan.updatePrices.slice(0, 200),
+      skippedNoCost: plan.noCost, skippedDupes: plan.dupes
+    });
+  } catch (e) {
+    console.error('[dripstore import-preview]', e);
+    res.json({ success: false, message: e.message });
+  }
+});
+
+// EKSEKUSI: tulis ke products.json lewat single-writer lock.
+app.post('/admin/dripstore/import', requireAdmin, async (req, res) => {
+  try {
+    const { settings, groups } = await _dsLoadSupplierGroups();
+    const prefs = _dsImportPrefs(settings, req.body);
+    const mode = req.body?.mode === 'all' ? 'all' : 'variants';
+    const updateExisting = req.body?.updateExisting === true || req.body?.updateExisting === 'true' || req.body?.updateExisting === 'on';
+    const newStatus = req.body?.newStatus === 'active' ? 'active' : 'inactive';
+
+    const result = await withProductsWriteLock(async () => {
+      const products = await readFresh('products.json');
+      const plan = _dsBuildImportPlan(products, groups, prefs, { mode, updateExisting });
+      const sortOpts = (a, b) => (a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1));
+      const clean = o => { const { _cost, ...rest } = o; return rest; };
+      const rebuildItems = (p) => {
+        p.pricingOptions.sort(sortOpts);
+        p.items = p.pricingOptions.map(o => ({ l: `${String(p.name).toUpperCase()} ${formatDurationLabel(o.days, o.unit)}`, p: o.price, reseller_price: o.reseller_price ?? null, strike_price: o.strike_price ?? null }));
+      };
+      let addedVariants = 0, createdProducts = 0, updatedPrices = 0;
+
+      for (const a of plan.addVariants) {
+        const p = products.find(x => x.id === a.productId);
+        if (!p) continue;
+        p.pricingOptions = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
+        for (const o of a.options) { p.pricingOptions.push(clean(o)); addedVariants++; }
+        rebuildItems(p);
+      }
+      for (const u of plan.updatePrices) {
+        const p = products.find(x => x.id === u.productId);
+        const o = p && p.pricingOptions.find(x => Number(x.days) === u.days && (x.unit === 'h' ? 'h' : 'd') === u.unit);
+        if (!o) continue;
+        o.price = u.to;
+        if (u.resellerTo !== undefined) o.reseller_price = u.resellerTo;
+        if (o.strike_price != null && Number(o.strike_price) <= o.price) o.strike_price = null;
+        rebuildItems(p);
+        updatedPrices++;
+      }
+      for (const np of plan.newProducts) {
+        const raw = np.raw || {};
+        let image = String(_dsFirst(raw, ['image', 'image_url', 'imageUrl', 'thumbnail', 'logo', 'icon']) || '').trim();
+        if (!image || !isValidImageUrl(image)) image = '/images/placeholder.jpg';
+        const descRaw = _dsFirst(raw, ['description', 'desc', 'details']);
+        const prod = {
+          id: uuidv4(), name: np.name, categories: [],
+          description: typeof descRaw === 'string' ? descRaw.slice(0, 4000) : '',
+          image, pricingOptions: np.options.map(clean), items: [], status: newStatus,
+          keys: [], channelUrl: '', downloadUrl: '', fakeSold: null, sold: 0,
+          createdAt: new Date().toISOString(), importedFrom: 'dripstore'
+        };
+        rebuildItems(prod);
+        products.push(prod);
+        createdProducts++;
+      }
+      if (addedVariants || createdProducts || updatedPrices) await writeDB('products.json', products);
+      return { addedVariants, createdProducts, updatedPrices, skippedNoCost: plan.noCost, skippedDupes: plan.dupes };
+    });
+
+    // simpan preferensi margin/kurs buat dipakai lagi
+    const st = await readFresh('settings.json');
+    st.dripstoreImport = prefs;
+    await writeDB('settings.json', st);
+    res.json({ success: true, ...result, newStatus });
+  } catch (e) {
+    console.error('[dripstore import]', e);
+    res.json({ success: false, message: e.message });
+  }
+});
 
 app.get('/admin/dripstore/availability', requireAdmin, async (req, res) => {
   try {

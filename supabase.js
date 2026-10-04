@@ -251,6 +251,7 @@ const uploadImage = async (fileBuffer, filename, contentType) => {
     .from('product-images')
     .upload(cleanName, buffer, {
       contentType: finalContentType,
+      cacheControl: '31536000',
       upsert: false
     });
 

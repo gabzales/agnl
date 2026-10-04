@@ -1418,6 +1418,51 @@ html.dark .badge-featured { color:#fca5a5 !important; }
             </div>
             <div id="dripstoreCatalogSearchResult" class="hidden text-[11px] p-2.5 rounded-lg max-h-64 overflow-auto mt-2"></div>
 
+            <!-- IMPORT VARIAN / PRODUK DARI DRIPSTORE + HARGA OTOMATIS (4 Okt 2026) -->
+            <div class="mt-3 p-3 rounded-xl space-y-2.5" style="background:rgba(16,185,129,.05);border:1px solid rgba(16,185,129,.18)">
+                <div class="text-[11px] font-bold text-emerald-300 flex items-center gap-1.5"><iconify-icon icon="mdi:cloud-download-outline"></iconify-icon> Import Varian dari DripStore (harga otomatis)</div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <div class="setting-row-label">Untung (%)</div>
+                        <input type="number" id="dsImpMargin" min="0" step="0.1" value="<%= settings.dripstoreImport?.marginPercent ?? 10 %>" class="hm-input text-sm">
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Untung reseller (%) <span class="text-zinc-600">opsional</span></div>
+                        <input type="number" id="dsImpResMargin" min="0" step="0.1" value="<%= settings.dripstoreImport?.resellerMarginPercent ?? '' %>" placeholder="kosong = tanpa harga reseller" class="hm-input text-sm">
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Kurs ke Rupiah <span class="text-zinc-600">(1 = harga provider sudah Rp)</span></div>
+                        <input type="number" id="dsImpKurs" min="0" step="any" value="<%= settings.dripstoreImport?.kurs ?? 1 %>" class="hm-input text-sm">
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Bulatkan ke atas ke kelipatan</div>
+                        <input type="number" id="dsImpRound" min="1" value="<%= settings.dripstoreImport?.roundTo ?? ((settings.dripstoreImport?.kurs ?? 1) > 1 ? 500 : 1) %>" class="hm-input text-sm">
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 gap-2">
+                    <div>
+                        <div class="setting-row-label">Mode</div>
+                        <select id="dsImpMode" class="hm-input text-sm">
+                            <option value="variants">Tambah varian ke produk yang sudah ada</option>
+                            <option value="all">Semua: varian + produk baru</option>
+                        </select>
+                    </div>
+                    <div>
+                        <div class="setting-row-label">Status produk baru</div>
+                        <select id="dsImpStatus" class="hm-input text-sm">
+                            <option value="inactive">Nonaktif (rapihin dulu)</option>
+                            <option value="active">Langsung aktif</option>
+                        </select>
+                    </div>
+                </div>
+                <label class="flex items-center gap-2 text-[11px] text-zinc-400"><input type="checkbox" id="dsImpUpdate" class="w-4 h-4"> Update juga harga varian yang sudah ke-mapping (ikut margin di atas)</label>
+                <div class="grid grid-cols-2 gap-2">
+                    <button type="button" onclick="dripstoreImport(true)" id="dsImpPreviewBtn" class="py-2 rounded-xl text-xs font-bold text-amber-300 border border-amber-500/25 bg-amber-500/10 hover:bg-amber-500/20 transition-all flex items-center justify-center gap-1.5"><iconify-icon icon="mdi:eye-outline"></iconify-icon> Preview</button>
+                    <button type="button" onclick="dripstoreImport(false)" id="dsImpRunBtn" class="py-2 rounded-xl text-xs font-bold text-emerald-300 border border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all flex items-center justify-center gap-1.5"><iconify-icon icon="mdi:check-bold"></iconify-icon> Import Sekarang</button>
+                </div>
+                <div id="dsImpResult" class="hidden text-[11px] p-2.5 rounded-lg max-h-72 overflow-auto"></div>
+            </div>
+
             <div class="mt-3 p-3 rounded-xl" style="background:rgba(59,130,246,.05);border:1px solid rgba(59,130,246,.15)">
                 <div class="flex items-center justify-between gap-2 mb-2">
                     <div class="text-[11px] font-bold text-blue-300 flex items-center gap-1.5"><iconify-icon icon="mdi:clipboard-clock-outline"></iconify-icon> Pending Restock Approval</div>
@@ -2785,6 +2830,59 @@ async function autoMapDripstore(restockLowStock = false) {
         toast('Gagal sync DripStore: ' + err.message, 'error');
     } finally {
         if (btn) { btn.dataset.busy = '0'; btn.disabled = false; btn.innerHTML = '<iconify-icon icon="mdi:link-variant"></iconify-icon> Sync & Auto Map'; }
+    }
+}
+
+
+async function dripstoreImport(previewOnly) {
+    const box = document.getElementById('dsImpResult');
+    const btn = document.getElementById(previewOnly ? 'dsImpPreviewBtn' : 'dsImpRunBtn');
+    if (btn?.dataset.busy === '1') return;
+    const mode = document.getElementById('dsImpMode').value;
+    if (!previewOnly && !confirm('Import sekarang? Varian/produk baru akan ditulis ke toko. Disarankan Preview dulu.')) return;
+    const body = {
+        marginPercent: document.getElementById('dsImpMargin').value,
+        resellerMarginPercent: document.getElementById('dsImpResMargin').value,
+        kurs: document.getElementById('dsImpKurs').value,
+        roundTo: document.getElementById('dsImpRound').value,
+        mode,
+        newStatus: document.getElementById('dsImpStatus').value,
+        updateExisting: document.getElementById('dsImpUpdate').checked
+    };
+    const old = btn.innerHTML;
+    btn.dataset.busy = '1'; btn.disabled = true; btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Proses...';
+    box.className = 'text-[11px] p-2.5 rounded-lg bg-white/5 text-zinc-400 max-h-72 overflow-auto';
+    box.textContent = 'Menarik katalog DripStore...';
+    try {
+        const r = await fetch('/admin/dripstore/import' + (previewOnly ? '-preview' : ''), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json();
+        if (!d.success) throw new Error(d.message || 'Gagal');
+        const esc = x => String(x).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+        const rp = n => 'Rp' + Number(n).toLocaleString('id-ID');
+        const dur = o => o.days + (o.unit === 'h' ? ' jam' : ' hari');
+        if (previewOnly) {
+            const line = (o) => `<div class="flex justify-between gap-2"><span>${dur(o)}</span><span class="text-zinc-500">provider ${o.cost}</span><b>${rp(o.price)}${o.reseller_price != null ? ' / reseller ' + rp(o.reseller_price) : ''}</b></div>`;
+            let h = `<div class="text-zinc-300 mb-1.5">Provider: ${d.supplierProducts} produk, ${d.supplierVariants} varian. Untung ${d.prefs.marginPercent}%, kurs ${d.prefs.kurs}, bulat ${d.prefs.roundTo}.</div>`;
+            h += `<div class="text-emerald-300 font-bold">Varian baru di produk yang ada (${d.addVariants.reduce((a, p) => a + p.options.length, 0)})</div>`;
+            h += d.addVariants.map(p => `<div class="mt-1"><div class="text-white">${esc(p.productName)}</div>${p.options.map(line).join('')}</div>`).join('') || '<div class="text-zinc-500">Tidak ada.</div>';
+            if (mode === 'all') {
+                h += `<div class="text-cyan-300 font-bold mt-2">Produk baru (${d.newProducts.length})</div>`;
+                h += d.newProducts.map(p => `<div class="mt-1"><div class="text-white">${esc(p.name)}</div>${p.options.map(line).join('')}</div>`).join('') || '<div class="text-zinc-500">Tidak ada.</div>';
+            }
+            if (d.updatePrices.length) h += `<div class="text-amber-300 font-bold mt-2">Update harga (${d.updatePrices.length})</div>` + d.updatePrices.map(u => `<div>${esc(u.productName)} ${u.days}${u.unit === 'h' ? 'j' : 'h'}: ${rp(u.from)} → <b>${rp(u.to)}</b></div>`).join('');
+            if (d.skippedNoCost) h += `<div class="text-zinc-500 mt-2">${d.skippedNoCost} varian dilewati (harga provider tidak terbaca).</div>`;
+            box.className = 'text-[11px] p-2.5 rounded-lg bg-white/5 text-zinc-300 max-h-72 overflow-auto';
+            box.innerHTML = h;
+        } else {
+            box.className = 'text-[11px] p-2.5 rounded-lg bg-emerald-500/10 text-emerald-300';
+            box.innerHTML = `Selesai: ${d.addedVariants} varian ditambah, ${d.createdProducts} produk baru (${d.newStatus}), ${d.updatedPrices} harga diupdate.` + (d.skippedNoCost ? ` ${d.skippedNoCost} dilewati (harga provider kosong).` : '');
+            toast(`Import: +${d.addedVariants} varian, +${d.createdProducts} produk`, 'success');
+        }
+    } catch (e) {
+        box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300';
+        box.textContent = 'Gagal: ' + e.message;
+    } finally {
+        btn.dataset.busy = '0'; btn.disabled = false; btn.innerHTML = old;
     }
 }
 
