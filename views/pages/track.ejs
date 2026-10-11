@@ -1,0 +1,60 @@
+<%
+const pageTitle = 'Lacak Pesanan';
+const noIndex = true;
+const rp = n => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const toneStyle = {
+  ok: 'background:rgba(34,197,94,.14);color:#16a34a;border:1px solid rgba(34,197,94,.35)',
+  warn: 'background:rgba(245,158,11,.14);color:#d97706;border:1px solid rgba(245,158,11,.35)',
+  pending: 'background:rgba(234,179,8,.14);color:#ca8a04;border:1px solid rgba(234,179,8,.35)',
+  bad: 'background:rgba(239,68,68,.12);color:#dc2626;border:1px solid rgba(239,68,68,.3)'
+};
+%>
+<!-- navbar: sekarang dari partials/header (layout) -->
+
+<main class="max-w-3xl mx-auto px-4 pt-6 pb-16" style="color:var(--text-1);">
+  <h1 class="text-2xl font-black mb-1">Lacak Pesanan</h1>
+  <p class="text-sm mb-5" style="color:var(--text-2);">Masukkan kode pesanan (contoh <b>FX-CJM2-LRRQ</b>) atau order ID (contoh <b>FX-1790942354004</b>). Bisa banyak sekaligus, pisahkan dengan baris baru atau koma (maksimal 100).</p>
+
+  <form method="get" action="/track" class="mb-6">
+    <textarea name="q" rows="4" class="w-full rounded-xl p-3 text-sm font-mono" style="background:var(--bg-card);border:1px solid var(--border);color:var(--text-1);" placeholder="FX-CJM2-LRRQ&#10;FX-1790942354004"><%= q %></textarea>
+    <button type="submit" class="mt-2 px-5 py-2.5 rounded-xl text-sm font-bold text-white" style="background:var(--neon-purple,#dc2626);">Cek Status</button>
+  </form>
+
+  <% if (error) { %>
+    <div class="rounded-xl p-3 text-sm mb-4" style="<%= toneStyle.bad %>"><%= error %></div>
+  <% } %>
+
+  <% if (results) { %>
+    <div class="text-xs mb-3" style="color:var(--text-2);">
+      Ditemukan <b><%= results.length %></b> pesanan<% if (missing.length) { %>, <b><%= missing.length %></b> tidak ditemukan<% } %>.
+      Data pembeli (nama, WhatsApp) dan isi key sengaja tidak ditampilkan.
+    </div>
+    <div class="space-y-3">
+      <% results.forEach(r => { %>
+      <div class="rounded-2xl p-4" style="background:var(--bg-card);border:1px solid var(--border);">
+        <div class="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <div class="font-mono font-bold text-sm" style="color:var(--accent-color);"><%= r.code %></div>
+            <div class="font-semibold mt-0.5"><%= r.product %></div>
+          </div>
+          <span class="text-[11px] font-bold px-2.5 py-1 rounded-lg" style="<%= toneStyle[r.tone] || toneStyle.pending %>"><%= r.status.toUpperCase() %></span>
+        </div>
+        <div class="text-xs mt-2 font-semibold"><%= r.label %></div>
+        <div class="grid grid-cols-2 gap-x-4 gap-y-1 mt-3 text-xs" style="color:var(--text-2);">
+          <div>Order ID: <span class="font-mono"><%= r.orderId || '-' %></span></div>
+          <div>Durasi: <b><%= r.duration %></b></div>
+          <div>Harga: <b><%= rp(r.price) %></b></div>
+          <div>Key terkirim: <b><%= r.keySent ? 'Ya' : 'Tidak' %></b></div>
+          <div>Dibuat: <%= r.created %></div>
+          <div>Dibayar: <%= r.paid %></div>
+        </div>
+      </div>
+      <% }) %>
+    </div>
+    <% if (missing.length) { %>
+      <div class="rounded-xl p-3 mt-4 text-xs" style="<%= toneStyle.pending %>">
+        <b>Tidak ditemukan:</b> <span class="font-mono"><%= missing.join(', ') %></span>
+      </div>
+    <% } %>
+  <% } %>
+</main>

@@ -1,0 +1,98 @@
+<%
+  var _ct = settings?.contact || {};
+  var _waN = String(_ct.whatsapp || '').replace(/\D/g, '');
+%>
+<!-- ══ SEARCH PANEL ══ -->
+<div id="search-panel" class="fixed inset-0 flex-col" style="display:none;background:var(--bg-main);z-index:8000;">
+  <div class="ag-panel-head">
+    <button onclick="closeSearch()" class="ag-icon-btn" aria-label="Kembali"><iconify-icon icon="mdi:arrow-left"></iconify-icon></button>
+    <input type="text" id="searchInput" placeholder="Cari produk..." class="hm-input" oninput="doSearch(this.value)" style="flex:1;">
+  </div>
+  <div id="searchResults" class="flex-1 overflow-y-auto p-4">
+    <div class="text-center py-16" style="color:var(--text-3);"><p class="text-sm">Ketik untuk mencari produk...</p></div>
+  </div>
+</div>
+
+<!-- ══ CART PANEL ══ -->
+<div id="cart-panel" class="fixed inset-0" style="display:none;z-index:8000;">
+  <div onclick="closeCart()" class="absolute inset-0" style="background:rgba(0,0,0,.7);"></div>
+  <div class="modal-sheet absolute bottom-0 left-0 right-0">
+    <div class="ag-panel-head" style="position:sticky;top:0;background:var(--bg-card);">
+      <h3 style="margin:0;flex:1;font-size:14px;font-weight:900;">Keranjang</h3>
+      <button onclick="closeCart()" class="ag-icon-btn" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    </div>
+    <div id="cartItems" class="p-4 space-y-3"></div>
+  </div>
+</div>
+
+<!-- ══ TRACK PANEL ══ -->
+<div id="track-panel" class="fixed inset-0 hidden" style="z-index:8000;">
+  <div class="absolute inset-0" style="background:rgba(0,0,0,.7);" onclick="closeTrack()"></div>
+  <div class="modal-sheet absolute bottom-0 left-0 right-0 p-5">
+    <div class="flex items-center justify-between mb-4">
+      <h3 style="margin:0;font-size:14px;font-weight:900;">Lacak Pesanan</h3>
+      <button onclick="closeTrack()" class="ag-icon-btn" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    </div>
+    <div class="space-y-3">
+      <input type="text" id="trackCode" placeholder="FX-XXXX-XXXX" class="hm-input font-mono uppercase tracking-widest" maxlength="14" oninput="this.value=this.value.toUpperCase()">
+      <button onclick="doTrack()" class="btn btn-primary w-full py-2.5 text-sm"><iconify-icon icon="mdi:magnify"></iconify-icon> Cek Status</button>
+      <div id="trackResult"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ MENU DRAWER (side menu ala ThanHub) ══ -->
+<div id="menu-drawer" class="fixed inset-0" style="display:none;z-index:8000;">
+  <div onclick="closeMenu()" class="absolute inset-0" style="background:rgba(0,0,0,.7);animation:fadeIn .2s ease;"></div>
+  <aside class="side-drawer" id="menu-drawer-content" aria-label="Menu utama">
+    <div class="ag-menu-head">
+      <div class="ag-menu-title">
+        <img class="ag-logo" src="<%= imgW(settings?.logoUrl || '/uploads/logo-main.png', 96) %>" alt="" width="34" height="34" style="height:34px;width:34px;object-fit:contain;border-radius:10px;">
+        <span>MENU <span style="color:var(--accent-bright)">UTAMA</span></span>
+      </div>
+      <button onclick="closeMenu()" class="ag-icon-btn" aria-label="Tutup menu"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    </div>
+
+    <div class="ag-account ag-user-only">
+      <input type="file" id="avatarInput" accept="image/jpeg,image/png,image/webp" class="hidden" onchange="uploadAvatar(this)">
+      <div class="avatar-wrap ag-nonadmin-only" onclick="document.getElementById('avatarInput').click()">
+        <div id="profilePhotoWrap" style="width:44px;height:44px;border-radius:50%;overflow:hidden;border:1.5px solid var(--accent-50);flex-shrink:0;">
+          <div class="ag-avatar" id="agMenuAvatar" style="width:100%;height:100%;border-radius:0;">?</div>
+        </div>
+        <div class="avatar-overlay"><iconify-icon icon="mdi:camera" style="color:#fff;font-size:14px;"></iconify-icon></div>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div id="agMenuName" style="font-size:13px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></div>
+        <div id="agMenuRole" style="font-size:10.5px;color:var(--text-3);">Member</div>
+      </div>
+      <a href="/logout" onclick="doLogout(event)" class="ag-icon-btn" aria-label="Keluar" style="color:var(--red);"><iconify-icon icon="mdi:logout"></iconify-icon></a>
+    </div>
+    <div class="ag-guest-only" style="display:flex;gap:8px;padding:14px 16px;">
+      <a href="/login" onclick="closeMenu();return agAuth('login')" class="ag-btn-sm" style="flex:1;text-align:center;padding:11px;">Masuk</a>
+      <a href="/register" onclick="closeMenu();return agAuth('register')" class="ag-btn-sm solid" style="flex:1;text-align:center;padding:11px;">Daftar</a>
+    </div>
+
+    <nav class="ag-menu-links">
+      <a href="/" class="ag-menu-link" onclick="closeMenu()"><iconify-icon class="lead" icon="mdi:home-variant"></iconify-icon><span class="grow">Beranda</span></a>
+      <a href="/invoice" class="ag-menu-link" onclick="closeMenu()"><iconify-icon class="lead" icon="mdi:package-variant-closed"></iconify-icon><span class="grow">Cek Pesanan<small>Lacak status &amp; key</small></span></a>
+      <a href="/informasi" class="ag-menu-link" onclick="closeMenu()"><iconify-icon class="lead" icon="mdi:help-circle-outline"></iconify-icon><span class="grow">FAQ &amp; Informasi<small>Cara beli, syarat, pertanyaan umum</small></span></a>
+      <a href="/activate-key" class="ag-menu-link" onclick="closeMenu()"><iconify-icon class="lead" icon="mdi:key"></iconify-icon><span class="grow">Aktivasi Key</span></a>
+      <a href="/dashboard" class="ag-menu-link ag-nonadmin-only ag-user-only" onclick="closeMenu()"><iconify-icon class="lead" icon="mdi:view-dashboard"></iconify-icon><span class="grow">Dashboard</span></a>
+      <% if (settings?.resellerEnabled !== false) { %>
+      <a href="/reseller" class="ag-menu-link ag-nonadmin-only" onclick="closeMenu()"><iconify-icon class="lead" icon="mdi:crown"></iconify-icon><span class="grow ag-res-label">Jadi Reseller VIP</span><span class="ag-chip-vip ag-reseller-only">AKTIF</span></a>
+      <% } %>
+      <a href="/admin" class="ag-menu-link ag-admin-only" onclick="closeMenu()" style="color:var(--accent-bright);"><iconify-icon class="lead" icon="mdi:shield-crown"></iconify-icon><span class="grow">Admin Panel</span></a>
+    </nav>
+
+    <% if (_waN || settings?.contact?.waChannel || settings?.contact?.telegram || settings?.contact?.instagram) { %>
+    <div class="ag-menu-section">KOMUNITAS &amp; SOSIAL</div>
+    <nav class="ag-menu-links">
+      <% if (_waN) { %><a href="https://wa.me/<%= _waN %>" target="_blank" rel="noopener" class="ag-menu-link"><iconify-icon class="lead" icon="mdi:whatsapp" style="color:var(--brand-wa);"></iconify-icon><span class="grow">WhatsApp CS</span></a><% } %>
+      <% if (settings?.contact?.waChannel) { %><a href="<%= settings.contact.waChannel %>" target="_blank" rel="noopener" class="ag-menu-link"><iconify-icon class="lead" icon="mdi:broadcast" style="color:var(--brand-wa);"></iconify-icon><span class="grow">Saluran WA</span></a><% } %>
+      <% if (settings?.contact?.telegram) { %><a href="https://t.me/<%= String(settings.contact.telegram).replace('@','') %>" target="_blank" rel="noopener" class="ag-menu-link"><iconify-icon class="lead" icon="mdi:telegram" style="color:#2aa3ef;"></iconify-icon><span class="grow">Telegram</span></a><% } %>
+      <% if (settings?.contact?.instagram) { %><a href="<%= /^https?:\/\//i.test(settings.contact.instagram) ? settings.contact.instagram : 'https://instagram.com/' + String(settings.contact.instagram).replace('@','') %>" target="_blank" rel="noopener" class="ag-menu-link"><iconify-icon class="lead" icon="mdi:instagram" style="color:#e1306c;"></iconify-icon><span class="grow">Instagram</span></a><% } %>
+    </nav>
+    <% } %>
+    <div style="padding:18px 16px 24px;text-align:center;font-size:10px;color:var(--text-3);">&copy; <%= new Date().getFullYear() %> <%= settings?.siteName || 'AGHA NL' %></div>
+  </aside>
+</div>

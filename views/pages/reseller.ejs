@@ -1,0 +1,159 @@
+<%
+const pageTitle = 'Reseller VIP';
+%>
+<style>
+.benefit-row{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);}
+.benefit-row:last-child{border-bottom:none;}
+.btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--blue);color:#fff;font-weight:700;font-size:13px;border-radius:8px;cursor:pointer;border:none;transition:opacity .15s;}
+.btn-primary:hover{opacity:.88;}
+.btn-primary:active{opacity:.7;transform:scale(.97);}
+#toast-wrap{position:fixed;top:14px;right:14px;z-index:9999;display:flex;flex-direction:column;gap:8px;}
+.toast-item{padding:10px 14px;border-radius:10px;background:var(--bg-card);font-size:12px;max-width:280px;border:1px solid var(--border-md);color:var(--text-1);}
+.toast-success{border-color:rgba(34,197,94,.35);color:#4ade80;}
+.toast-error{border-color:var(--blue-border-strong);color:var(--blue);}
+
+.hm-input{padding:10px 14px;}
+</style>
+<div id="toast-wrap"></div>
+
+
+
+
+<div style="min-height:60vh;padding-top:16px;padding-bottom:40px;padding-left:16px;padding-right:16px;">
+<div style="max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:12px;">
+
+<!-- ── HERO ── -->
+<div class="card fade-in-up" style="margin-top:16px;border-color:var(--blue-border);">
+    <div style="height:3px;background:var(--blue);border-radius:12px 12px 0 0;"></div>
+    <div style="padding:24px;text-align:center;">
+        <div style="width:56px;height:56px;border-radius:14px;background:var(--blue-dim);border:1px solid var(--blue-border);display:flex;align-items:center;justify-content:center;margin:0 auto 16px;">
+            <iconify-icon icon="mdi:crown" style="color:var(--blue);font-size:26px;"></iconify-icon>
+        </div>
+        <div style="font-size:16px;font-weight:800;color:var(--text-1);letter-spacing:.02em;margin-bottom:8px;">RESELLER VIP</div>
+        <p style="font-size:13px;color:var(--text-2);line-height:1.6;max-width:320px;margin:0 auto;">
+            <%= settings.resellerNote || 'Dapatkan diskon eksklusif untuk semua produk dan jadilah mitra prioritas kami. Hanya dengan bayar sekali, nikmati benefit selamanya!' %>
+        </p>
+    </div>
+</div>
+
+<% if (user && user.is_reseller) { %>
+<!-- ── SUDAH RESELLER ── -->
+<div class="card fade-in-up" style="padding:24px;text-align:center;border-color:rgba(34,197,94,.2);">
+    <iconify-icon icon="mdi:check-decagram" style="font-size:36px;color:#4ade80;display:block;margin:0 auto 12px;"></iconify-icon>
+    <div style="font-size:15px;font-weight:800;color:#4ade80;margin-bottom:6px;">Kamu sudah Reseller VIP!</div>
+    <p style="font-size:12px;color:var(--text-3);margin-bottom:16px;">Diskon <strong style="color:var(--blue);">eksklusif reseller</strong> aktif otomatis di semua pembelian.</p>
+    <% if (user.reseller_code) { %>
+    <div style="display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:8px;background:var(--blue-dim);border:1px solid var(--blue-border);font-family:monospace;font-size:14px;font-weight:800;color:var(--blue);margin-bottom:6px;">
+        <iconify-icon icon="mdi:identifier" style="font-size:16px;"></iconify-icon>
+        <%= user.reseller_code %>
+    </div>
+    <p style="font-size:10px;color:var(--text-3);">Kode identitas reseller kamu</p>
+    <% } %>
+    <% if (settings?.resellerGroupUrl) { %>
+    <a href="<%= settings.resellerGroupUrl %>" target="_blank" rel="noopener" class="btn-primary" style="margin-top:16px;padding:10px 24px;font-size:13px;text-decoration:none;background:#16a34a;">
+        <iconify-icon icon="mdi:whatsapp" style="font-size:16px;"></iconify-icon> Gabung Grup <%= settings.resellerGroupName || 'Reseller VIP' %>
+    </a>
+    <% } %>
+    <a href="/" class="btn-primary" style="margin-top:10px;padding:10px 24px;font-size:13px;text-decoration:none;">
+        <iconify-icon icon="mdi:shopping" style="font-size:15px;"></iconify-icon> Belanja Sekarang
+    </a>
+</div>
+
+<% } else { %>
+<!-- ── BENEFIT LIST ── -->
+<div class="card fade-in-up" style="padding:20px;">
+    <div style="font-size:12px;font-weight:700;color:var(--text-2);text-transform:uppercase;letter-spacing:.06em;margin-bottom:16px;">Keuntungan Bergabung</div>
+
+    <div class="benefit-row">
+        <div style="width:36px;height:36px;border-radius:9px;background:var(--blue-dim);border:1px solid var(--blue-border);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <iconify-icon icon="mdi:tag-multiple" style="color:var(--blue);font-size:16px;"></iconify-icon>
+        </div>
+        <div>
+            <div style="font-size:13px;font-weight:700;color:var(--text-1);">Diskon <span style="color:var(--blue);">Eksklusif</span> Otomatis Semua Produk</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:3px;">Harga reseller langsung terpotong tanpa perlu input kode apapun.</div>
+        </div>
+    </div>
+
+    <div class="benefit-row">
+        <div style="width:36px;height:36px;border-radius:9px;background:var(--blue-dim);border:1px solid var(--blue-border);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <iconify-icon icon="mdi:lightning-bolt" style="color:var(--blue);font-size:16px;"></iconify-icon>
+        </div>
+        <div>
+            <div style="font-size:13px;font-weight:700;color:var(--text-1);">Harga Langsung Terpotong di Checkout</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:3px;">Harga normal dicoret, harga reseller tampil di setiap pilihan paket.</div>
+        </div>
+    </div>
+
+    <div class="benefit-row">
+        <div style="width:36px;height:36px;border-radius:9px;background:rgba(34,197,94,.1);border:1px solid rgba(34,197,94,.2);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <iconify-icon icon="mdi:identifier" style="color:#4ade80;font-size:16px;"></iconify-icon>
+        </div>
+        <div>
+            <div style="font-size:13px;font-weight:700;color:var(--text-1);">Kode Reseller Unik</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:3px;">Kode identitas reseller sebagai tanda keanggotaan VIP.</div>
+        </div>
+    </div>
+
+    <div class="benefit-row">
+        <div style="width:36px;height:36px;border-radius:9px;background:var(--blue-dim);border:1px solid var(--blue-border);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+            <iconify-icon icon="mdi:crown" style="color:var(--blue);font-size:16px;"></iconify-icon>
+        </div>
+        <div>
+            <div style="font-size:13px;font-weight:700;color:var(--text-1);">Badge VIP di Profil & Leaderboard</div>
+            <div style="font-size:11px;color:var(--text-3);margin-top:3px;">Status VIP tampil di badge profil dan halaman admin.</div>
+        </div>
+    </div>
+</div>
+
+<!-- ── HARGA & BAYAR ── -->
+<div class="card fade-in-up" style="padding:24px;">
+    <div style="text-align:center;margin-bottom:20px;">
+        <div style="font-size:11px;color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Biaya Keanggotaan Reseller VIP</div>
+        <div style="font-size:36px;font-weight:900;color:var(--text-1);line-height:1;margin-bottom:6px;">
+            Rp <%= (settings.resellerPrice || 50000).toLocaleString('id-ID') %>
+        </div>
+        <div style="font-size:11px;color:var(--text-3);">Bayar sekali · Diskon <strong style="color:var(--blue);">eksklusif</strong> berlaku selamanya</div>
+    </div>
+
+    <% if (!user) { %>
+    <a href="/login?redirect=/reseller" class="btn-primary" style="width:100%;padding:13px;font-size:14px;border-radius:10px;text-decoration:none;">
+        <iconify-icon icon="mdi:login" style="font-size:16px;"></iconify-icon> Login untuk Bergabung
+    </a>
+    <p style="font-size:11px;color:var(--text-3);text-align:center;margin-top:10px;">Belum punya akun? <a href="/register" style="color:var(--blue);text-decoration:none;">Daftar gratis</a></p>
+    <% } else { %>
+    <%
+      const waNumber = (settings.contact?.whatsapp || '').replace(/\D/g, '');
+      const waMsg = encodeURIComponent(
+        'Halo min, saya mau daftar Reseller VIP di ' + (settings.siteName || 'AGHA NL') + '\n\n' +
+        'Nama akun: ' + (user.username || '-') + '\n' +
+        'Email: ' + (user.email || '-') + '\n\n' +
+        'Mohon diproses ya, terima kasih!'
+      );
+    %>
+    <a href="https://wa.me/<%= waNumber %>?text=<%= waMsg %>" target="_blank" rel="noopener"
+       class="btn-primary" style="width:100%;padding:13px;font-size:14px;border-radius:10px;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px;background:#16a34a;">
+        <iconify-icon icon="mdi:whatsapp" style="font-size:20px;"></iconify-icon>
+        Daftar via WhatsApp Admin
+    </a>
+    <p style="font-size:11px;color:var(--text-3);text-align:center;margin-top:10px;">
+      Kamu akan diarahkan ke WhatsApp admin untuk konfirmasi &amp; aktivasi reseller.
+    </p>
+    <% } %>
+</div>
+
+<% } %>
+</div>
+</div>
+
+
+<script>
+function showToast(msg, type='info') {
+    const wrap = document.getElementById('toast-wrap');
+    const el = document.createElement('div');
+    el.className = `toast-item toast-${type}`;
+    el.textContent = msg;
+    wrap.appendChild(el);
+    setTimeout(() => { el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(),300); }, 3500);
+}
+</script>
+

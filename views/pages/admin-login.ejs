@@ -1,0 +1,139 @@
+<%
+const pageTitle = 'Admin Access';
+const noIndex = true; // halaman admin, jangan di-index Google
+%>
+
+<style>
+/* Halaman ini sengaja SELALU hitam (diminta client 14 Sep 2026), TIDAK
+   ikut var(--bg-main)/var(--bg-card)/var(--text-1) dkk punya tema utama
+   (yang default putih) -- supaya tidak ketiban bug tabrakan variable
+   seperti yang sebelumnya bikin teks nyaris tak kelihatan di sini. Semua
+   warna di bawah HARDCODE lokal ke halaman ini saja. */
+body.admin-login-page { background:#000 !important; }
+
+.al-card { background:#111214; border:1px solid rgba(220,38,38,.35); }
+
+.al-input-wrap { position:relative; }
+.al-input {
+    width:100%; padding:10px 42px 10px 14px;
+    border-radius:8px;
+    background:#0a0a0a;
+    border:1px solid #2a2a2e;
+    color:#f4f4f5; font-size:13px;
+    font-family:'Inter',sans-serif;
+    transition:border-color .15s;
+}
+.al-input:focus {
+    outline:none;
+    border-color:#dc2626;
+    background:#0a0a0a;
+}
+.al-input::placeholder { color:#6b6b70; }
+.al-toggle-eye {
+    position:absolute; right:10px; top:50%; transform:translateY(-50%);
+    background:none; border:none; padding:4px; cursor:pointer;
+    color:#9a9a9f; font-size:16px; line-height:1; display:flex;
+}
+.al-toggle-eye:hover { color:#f4f4f5; }
+</style>
+
+<script>document.body.classList.add('admin-login-page');</script>
+
+<div class="min-h-screen flex items-center justify-center px-4" style="background:#000;">
+    <div class="w-full max-w-sm">
+        <!-- Logo -->
+        <div class="text-center mb-8">
+            <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4"
+                 style="background:rgba(220,38,38,.12);border:1px solid rgba(220,38,38,.4);">
+                <iconify-icon icon="mdi:shield-crown" style="font-size:32px;color:#f87171;"></iconify-icon>
+            </div>
+            <h1 class="text-xl font-bold text-white">Admin Panel</h1>
+            <p class="text-xs mt-1" style="color:#9a9a9f;">Akses terbatas — hanya untuk administrator</p>
+        </div>
+
+        <!-- Card -->
+        <div class="al-card rounded-2xl p-6">
+            <% if (typeof error !== 'undefined' && error) { %>
+            <div class="flex items-center gap-2 p-3 rounded-xl mb-4 text-xs"
+                 style="background:rgba(220,38,38,.12);border:1px solid rgba(220,38,38,.35);color:#f87171;">
+                <iconify-icon icon="mdi:alert-circle" class="text-sm flex-shrink-0"></iconify-icon>
+                <%= error %>
+            </div>
+            <% } %>
+
+            <% if (typeof lockedInfo !== 'undefined' && lockedInfo) { %>
+            <div class="p-3 rounded-xl mb-4 text-xs" style="background:rgba(234,179,8,.1);border:1px solid rgba(234,179,8,.3);color:#fbbf24;">
+                <div class="flex items-center gap-2 mb-1">
+                    <iconify-icon icon="mdi:devices" class="text-sm flex-shrink-0"></iconify-icon>
+                    <span class="font-bold">Panel admin sedang dipakai perangkat lain</span>
+                </div>
+                <div style="color:#c4c4c8;">
+                    Device: <span style="color:#f4f4f5;"><%= lockedInfo.device %></span> ·
+                    Aktif terakhir <span style="color:#f4f4f5;"><%= lockedInfo.minutesAgo %> menit lalu</span>
+                </div>
+                <p class="mt-1.5 text-[11px]" style="color:#8a8a8f;">Hanya 1 perangkat yang boleh login admin sekaligus, supaya data produk tidak saling tertimpa. Centang di bawah kalau Anda yakin ingin mengambil alih sesi tersebut (perangkat lain otomatis logout).</p>
+            </div>
+            <% } %>
+
+            <form method="POST" action="/vpr-secure-panel-8x">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-semibold mb-1.5" style="color:#c4c4c8;">Username Admin</label>
+                        <div class="al-input-wrap">
+                            <input type="password" name="username" id="alUsername" placeholder="Username"
+                                   value="<%= typeof username !== 'undefined' ? username : '' %>"
+                                   class="al-input" autocomplete="off" required>
+                            <button type="button" class="al-toggle-eye" onclick="alToggle('alUsername', this)" tabindex="-1" aria-label="Tampilkan/sembunyikan username">
+                                <iconify-icon icon="mdi:eye-outline"></iconify-icon>
+                            </button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold mb-1.5" style="color:#c4c4c8;">Password</label>
+                        <div class="al-input-wrap">
+                            <input type="password" name="password" id="alPassword" placeholder="••••••••"
+                                   class="al-input" required>
+                            <button type="button" class="al-toggle-eye" onclick="alToggle('alPassword', this)" tabindex="-1" aria-label="Tampilkan/sembunyikan password">
+                                <iconify-icon icon="mdi:eye-outline"></iconify-icon>
+                            </button>
+                        </div>
+                    </div>
+                    <% if (typeof lockedInfo !== 'undefined' && lockedInfo) { %>
+                    <label class="flex items-center gap-2 text-xs cursor-pointer" style="color:#c4c4c8;">
+                        <input type="checkbox" name="forceTakeover" value="1" class="w-4 h-4">
+                        Ambil alih sesi ini, logout paksa perangkat lain
+                    </label>
+                    <% } %>
+                    <button type="submit" class="w-full py-3 rounded-xl font-bold text-sm text-white transition-all hover:opacity-90"
+                            style="background:#dc2626;border:1px solid rgba(220,38,38,.6);">
+                        <iconify-icon icon="mdi:lock-open-outline" class="mr-1"></iconify-icon>
+                        Masuk ke Panel Admin
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div class="text-center mt-4">
+            <a href="/" class="text-xs hover:text-white transition-colors" style="color:#8a8a8f;">
+                <iconify-icon icon="mdi:arrow-left" style="vertical-align:-2px;"></iconify-icon> Kembali ke Beranda
+            </a>
+        </div>
+    </div>
+</div>
+
+<script>
+// Toggle show/hide untuk field username & password di form login admin
+// (diminta client 14 Sep 2026) -- dua-duanya default disamarkan (type
+// password) dan direveal jadi teks biasa pas ikon mata diklik.
+function alToggle(inputId, btn) {
+    const input = document.getElementById(inputId);
+    const icon = btn.querySelector('iconify-icon');
+    if (input.type === 'password') {
+        input.type = 'text';
+        icon.setAttribute('icon', 'mdi:eye-off-outline');
+    } else {
+        input.type = 'password';
+        icon.setAttribute('icon', 'mdi:eye-outline');
+    }
+}
+</script>

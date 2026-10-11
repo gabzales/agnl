@@ -1,0 +1,111 @@
+<%
+const rp = n => 'Rp ' + Number(n || 0).toLocaleString('id-ID');
+const tone = { ok: '#16a34a', warn: '#d97706', pending: '#ca8a04', bad: '#dc2626' };
+const qs = (o) => { const p = new URLSearchParams(); Object.entries(o).forEach(([k, v]) => { if (v) p.set(k, v); }); return p.toString(); };
+%><!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Portal Audit Transaksi</title>
+<style>
+  *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0f1115;color:#e5e7eb;font-size:14px}
+  a{color:#93c5fd} .wrap{max-width:1200px;margin:0 auto;padding:18px}
+  .card{background:#171a21;border:1px solid #262b36;border-radius:14px;padding:16px}
+  h1{font-size:18px;margin:0 0 4px} .muted{color:#9ca3af;font-size:12px}
+  input,select,button{font:inherit} input,select,textarea{background:#0f1115;border:1px solid #303644;color:#e5e7eb;border-radius:10px;padding:9px 11px;width:100%}
+  button,.btn{background:#2563eb;color:#fff;border:0;border-radius:10px;padding:9px 14px;font-weight:700;cursor:pointer;text-decoration:none;display:inline-block}
+  .btn.alt{background:#262b36} .grid{display:grid;gap:10px} .g4{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .stat b{display:block;font-size:20px} .row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  .row>div{flex:1;min-width:140px} label{font-size:11px;color:#9ca3af;display:block;margin-bottom:3px}
+  .tw{overflow-x:auto;margin-top:12px} table{border-collapse:collapse;width:100%;min-width:980px;font-size:12px}
+  th,td{padding:8px 10px;border-bottom:1px solid #262b36;text-align:left;vertical-align:top} th{color:#9ca3af;font-weight:600;position:sticky;top:0;background:#171a21}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-weight:700;font-size:11px;border:1px solid currentColor}
+  .err{background:rgba(239,68,68,.12);color:#fca5a5;border:1px solid rgba(239,68,68,.3);padding:9px 12px;border-radius:10px;margin-bottom:10px}
+  .center{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:18px} .box{width:100%;max-width:380px}
+  .pg{display:flex;gap:6px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<% if (mode === 'blocked') { %>
+  <div class="center"><div class="box card">
+    <h1>Akses ditolak</h1>
+    <p class="muted" style="margin:6px 0 12px">Halaman ini hanya bisa dibuka dari alamat IP yang sudah didaftarkan oleh pemilik toko.</p>
+    <div class="card" style="background:#0f1115">IP kamu saat ini:<br><b style="font-size:16px"><%= ip %></b></div>
+    <p class="muted" style="margin-top:10px">Kirim IP di atas ke pemilik toko agar diizinkan, lalu buka halaman ini lagi.</p>
+  </div></div>
+<% } else if (mode === 'login') { %>
+  <div class="center"><div class="box card">
+    <h1>Portal Audit Transaksi</h1>
+    <p class="muted" style="margin:4px 0 14px">Akses hanya-baca untuk verifikasi status pesanan.</p>
+    <% if (error) { %><div class="err"><%= error %></div><% } %>
+    <form method="post" action="/auditor/login" autocomplete="off">
+      <label>Username</label><input name="username" required autofocus style="margin-bottom:10px">
+      <label>Password</label><input name="password" type="password" required style="margin-bottom:14px">
+      <button type="submit" style="width:100%">Masuk</button>
+    </form>
+  </div></div>
+<% } else { const d = data; %>
+  <div class="wrap">
+    <div class="row" style="justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="flex:none"><h1>Portal Audit Transaksi</h1><div class="muted">Hanya-baca. Key, nama lengkap, dan nomor WA pembeli tidak ditampilkan. IP: <%= ip %></div></div>
+      <form method="post" action="/auditor/logout" style="flex:none"><button class="btn alt" type="submit">Keluar</button></form>
+    </div>
+
+    <div class="grid g4" style="margin-bottom:12px">
+      <div class="card stat"><span class="muted">Total transaksi</span><b><%= d.summary.total %></b></div>
+      <div class="card stat"><span class="muted">Selesai</span><b style="color:#4ade80"><%= d.summary.done %></b><span class="muted"><%= d.summary.doneManual %> diproses manual</span></div>
+      <div class="card stat"><span class="muted">Pending</span><b style="color:#facc15"><%= d.summary.pending %></b></div>
+      <div class="card stat"><span class="muted">Expired / Gagal</span><b style="color:#f87171"><%= d.summary.expired + d.summary.failed %></b></div>
+      <div class="card stat"><span class="muted">Nilai transaksi selesai</span><b><%= rp(d.summary.doneRevenue) %></b></div>
+    </div>
+
+    <form method="get" action="/auditor" class="card">
+      <div class="row">
+        <div style="flex:2;min-width:220px"><label>Cari kode / order ID (boleh banyak, pisah koma atau baris)</label><input name="q" value="<%= d.f.q %>" placeholder="FX-CJM2-LRRQ, FX-1790942354004"></div>
+        <div><label>Status</label>
+          <select name="status">
+            <% ['all','done','pending','expired','failed'].forEach(s => { %><option value="<%= s %>" <%= d.f.status === s ? 'selected' : '' %>><%= s === 'all' ? 'Semua' : s %></option><% }) %>
+          </select></div>
+        <div><label>Dari</label><input type="date" name="from" value="<%= d.f.from %>"></div>
+        <div><label>Sampai</label><input type="date" name="to" value="<%= d.f.to %>"></div>
+        <div style="flex:none"><button type="submit">Filter</button></div>
+        <div style="flex:none"><a class="btn alt" href="/auditor/export.csv?<%= qs({ q: d.f.q, status: d.f.status === 'all' ? '' : d.f.status, from: d.f.from, to: d.f.to }) %>">Unduh CSV</a></div>
+      </div>
+    </form>
+
+    <div class="muted" style="margin-top:10px"><%= d.total %> transaksi cocok. Halaman <%= d.page %> dari <%= d.pages %>.</div>
+    <div class="tw card" style="padding:0">
+      <table>
+        <thead><tr><th>Kode</th><th>Order ID</th><th>Produk</th><th>Durasi</th><th>Harga</th><th>Status</th><th>Dibuat</th><th>Dibayar</th><th>Key terkirim</th><th>Diproses oleh</th><th>WA</th></tr></thead>
+        <tbody>
+          <% d.items.forEach(r => { %>
+          <tr>
+            <td style="font-family:monospace"><%= r.code %></td>
+            <td style="font-family:monospace"><%= r.orderId %></td>
+            <td><%= r.product %></td>
+            <td><%= r.duration %></td>
+            <td><%= rp(r.price) %></td>
+            <td><span class="pill" style="color:<%= tone[r.tone] || '#9ca3af' %>"><%= String(r.status).toUpperCase() %></span></td>
+            <td><%= r.created %></td>
+            <td><%= r.paid %></td>
+            <td><%= r.keySent ? 'Ya' : 'Tidak' %></td>
+            <td><%= r.by %><% if (r.note) { %><div class="muted"><%= r.note %></div><% } %></td>
+            <td style="font-family:monospace"><%= r.wa %></td>
+          </tr>
+          <% }) %>
+          <% if (!d.items.length) { %><tr><td colspan="11" class="muted" style="text-align:center;padding:24px">Tidak ada data yang cocok.</td></tr><% } %>
+        </tbody>
+      </table>
+    </div>
+    <% if (d.pages > 1) { %>
+    <div class="pg">
+      <% if (d.page > 1) { %><a class="btn alt" href="/auditor?<%= qs({ q: d.f.q, status: d.f.status === 'all' ? '' : d.f.status, from: d.f.from, to: d.f.to, page: d.page - 1 }) %>">Sebelumnya</a><% } %>
+      <% if (d.page < d.pages) { %><a class="btn alt" href="/auditor?<%= qs({ q: d.f.q, status: d.f.status === 'all' ? '' : d.f.status, from: d.f.from, to: d.f.to, page: d.page + 1 }) %>">Berikutnya</a><% } %>
+    </div>
+    <% } %>
+  </div>
+<% } %>
+</body>
+</html>

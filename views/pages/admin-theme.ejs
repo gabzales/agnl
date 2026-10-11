@@ -1,0 +1,299 @@
+<%
+const pageTitle = 'Pengaturan Tema';
+const noIndex = true; // halaman admin, jangan di-index Google
+%>
+<div class="min-h-screen pt-24 pb-20" style="background:var(--bg-main);">
+  <div class="max-w-2xl mx-auto px-4">
+    
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-3xl font-black text-zinc-900 flex items-center gap-2"><iconify-icon icon="mdi:cog"></iconify-icon> Pengaturan Tema</h1>
+      <a href="/admin" class="px-4 py-2 rounded-lg border border-red-500/25 text-red-400 hover:bg-red-500/10 transition-all flex items-center gap-2">
+        <iconify-icon icon="mdi:arrow-left" class="text-lg"></iconify-icon> Kembali
+      </a>
+    </div>
+
+    <!-- Main Card -->
+    <div class="neon-card p-6 rounded-xl space-y-6">
+      
+      <p class="text-zinc-500 text-sm">Ubah warna tema website. Perubahan akan diterapkan secara real-time ke seluruh halaman.</p>
+
+      <!-- Color Inputs Grid -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        
+        <div class="space-y-2">
+          <label class="block text-sm font-bold text-zinc-700 flex items-center gap-1.5"><iconify-icon icon="mdi:palette"></iconify-icon> Warna Utama (Primary)</label>
+          <div class="flex items-center gap-3">
+            <input type="color" id="primaryColor" class="w-16 h-12 rounded-lg cursor-pointer border-2 border-red-500/25">
+            <input type="text" id="primaryValue" class="hm-input flex-1" readonly>
+          </div>
+          <p class="text-xs text-zinc-500">Warna tombol utama & accent</p>
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-sm font-bold text-zinc-700 flex items-center gap-1.5"><iconify-icon icon="mdi:palette-swatch"></iconify-icon> Warna Sekunder</label>
+          <div class="flex items-center gap-3">
+            <input type="color" id="secondaryColor" class="w-16 h-12 rounded-lg cursor-pointer border-2 border-red-500/25">
+            <input type="text" id="secondaryValue" class="hm-input flex-1" readonly>
+          </div>
+          <p class="text-xs text-zinc-500">Warna pelengkap untuk elemen sekunder di halaman</p>
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-sm font-bold text-zinc-700 flex items-center gap-1.5"><iconify-icon icon="mdi:auto-fix"></iconify-icon> Warna Aksen</label>
+          <div class="flex items-center gap-3">
+            <input type="color" id="accentColor" class="w-16 h-12 rounded-lg cursor-pointer border-2 border-red-500/25">
+            <input type="text" id="accentValue" class="hm-input flex-1" readonly>
+          </div>
+          <p class="text-xs text-zinc-500">Highlight & hover state</p>
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-sm font-bold text-zinc-700 flex items-center gap-1.5"><iconify-icon icon="mdi:image-outline"></iconify-icon> Background</label>
+          <div class="flex items-center gap-3">
+            <input type="color" id="backgroundColor" class="w-16 h-12 rounded-lg cursor-pointer border-2 border-red-500/25">
+            <input type="text" id="backgroundValue" class="hm-input flex-1" readonly>
+          </div>
+          <p class="text-xs text-zinc-500">Warna background utama</p>
+        </div>
+
+        <div class="space-y-2">
+          <label class="block text-sm font-bold text-zinc-700 flex items-center gap-1.5"><iconify-icon icon="mdi:card-outline"></iconify-icon> Card Background</label>
+          <div class="flex items-center gap-3">
+            <input type="color" id="cardBackground" class="w-16 h-12 rounded-lg cursor-pointer border-2 border-red-500/25">
+            <input type="text" id="cardValue" class="hm-input flex-1" readonly>
+          </div>
+          <p class="text-xs text-zinc-500">Warna container & card</p>
+        </div>
+      </div>
+
+      <div class="border-t border-red-500/25"></div>
+
+      <!-- Preview Section -->
+      <div>
+        <h2 class="text-lg font-bold text-zinc-900 mb-4 flex items-center gap-2">
+          <iconify-icon icon="mdi:eye" class="text-red-400 text-xl"></iconify-icon>
+          Preview Tema
+        </h2>
+
+        <div id="themePreview" class="p-6 rounded-xl space-y-4" style="background-color: var(--preview-bg); border: 2px solid var(--preview-border);">
+          <!-- Header Preview -->
+          <div class="flex items-center gap-3 pb-4 border-b" style="border-color: var(--preview-border);">
+            <div class="w-12 h-12 rounded-lg" style="background: var(--preview-primary);"></div>
+            <div>
+              <div class="font-bold text-white">Preview Heading</div>
+              <div class="text-sm" style="color: var(--preview-accent);">Subtitle dengan warna aksen</div>
+            </div>
+          </div>
+
+          <!-- Buttons Preview -->
+          <div class="flex flex-col gap-2">
+            <button class="w-full py-2 rounded-lg font-bold text-white" style="background: var(--preview-primary);">
+              Tombol Utama
+            </button>
+            <button class="w-full py-2 rounded-lg font-bold border-2" style="border-color: var(--preview-primary); color: var(--preview-primary); background: transparent;">
+              Tombol Secondary
+            </button>
+          </div>
+
+          <!-- Card Preview -->
+          <div class="p-3 rounded-lg border-2" style="border-color: var(--preview-border); background: var(--preview-bg);">
+            <p class="text-sm text-white">Contoh Card</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="border-t border-red-500/25"></div>
+
+      <!-- Preset Colors -->
+      <div>
+        <h3 class="text-sm font-bold text-zinc-700 mb-3">Preset Warna</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <button onclick="applyPreset('purple')" class="p-3 rounded-lg border-2 border-red-500/25 hover:border-red-500/50 transition-all hover:bg-red-500/10">
+            <div class="w-8 h-8 rounded mx-auto mb-2" style="background:#b91c1c;"></div>
+            <span class="text-xs font-bold text-red-300">AGHA NL</span>
+          </button>
+          <button onclick="applyPreset('blue')" class="p-3 rounded-lg border-2 border-red-500/25 hover:border-red-500/50 transition-all hover:bg-red-500/10">
+            <div class="w-8 h-8 rounded mx-auto mb-2" style="background:#ef4444;"></div>
+            <span class="text-xs font-bold text-red-300">Crimson</span>
+          </button>
+          <button onclick="applyPreset('green')" class="p-3 rounded-lg border-2 border-red-500/25 hover:border-red-500/50 transition-all hover:bg-red-500/10">
+            <div class="w-8 h-8 rounded mx-auto mb-2" style="background:#22c55e;"></div>
+            <span class="text-xs font-bold text-green-300">Green</span>
+          </button>
+          <button onclick="applyPreset('red')" class="p-3 rounded-lg border-2 border-red-500/25 hover:border-red-500/50 transition-all hover:bg-red-500/10">
+            <div class="w-8 h-8 rounded mx-auto mb-2" style="background:#ef4444;"></div>
+            <span class="text-xs font-bold text-red-300">Red</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="flex gap-3">
+        <button onclick="saveTheme()" class="btn-gaming flex-1 py-3 font-bold text-lg flex items-center justify-center gap-2">
+          <iconify-icon icon="mdi:check-circle" class="text-2xl"></iconify-icon>
+          Simpan Tema
+        </button>
+        <button onclick="resetTheme()" class="flex-1 py-3 px-4 rounded-lg border border-red-500/25 text-red-400 hover:bg-red-500/10 font-bold transition-all flex items-center justify-center gap-2">
+          <iconify-icon icon="mdi:refresh" class="text-lg"></iconify-icon>
+          Reset
+        </button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<style>
+:root {
+  --preview-primary: #7f1d1d;
+  --preview-secondary: #ef4444;
+  --preview-accent: #f87171;
+  --preview-bg: rgba(21, 21, 24, 0.5);
+  --preview-border: rgba(220, 38, 38, 0.25);
+}
+/* FIX (dark mode, 23 Agu 2026) -- warna --preview-* di atas untuk
+   preview swatch tema custom (sengaja beda sistem), bukan warna UI
+   halaman ini sendiri. Override di bawah untuk teks/label form yang
+   memang harus ikut var(--text-*) sesuai tema aktif. */
+.text-zinc-900 { color: var(--text-1) !important; }
+.text-zinc-700 { color: var(--text-1) !important; }
+.text-zinc-500 { color: var(--text-2) !important; }
+</style>
+
+<script>
+const presets = {
+  purple: {
+    primaryColor: '#dc2626',
+    secondaryColor: '#7b2cbf',
+    accentColor: '#8b0000',
+    backgroundColor: '#0a0a0a',
+    cardBackground: '#141414'
+  },
+  blue: {
+    primaryColor: '#ef4444',
+    secondaryColor: '#fb923c',
+    accentColor: '#fca5a5',
+    backgroundColor: '#1c1c1f',
+    cardBackground: '#27272a'
+  },
+  green: {
+    primaryColor: '#10b981',
+    secondaryColor: '#34d399',
+    accentColor: '#6ee7b7',
+    backgroundColor: '#0d3b2a',
+    cardBackground: '#1a5f47'
+  },
+  red: {
+    primaryColor: '#ef4444',
+    secondaryColor: '#f97316',
+    accentColor: '#fca5a5',
+    backgroundColor: '#5a1111',
+    cardBackground: '#7c1d1d'
+  }
+};
+
+async function loadTheme() {
+  try {
+    const res = await fetch('/admin/theme');
+    const data = await res.json();
+    
+    if (data.success) {
+      const theme = data.data;
+      document.getElementById('primaryColor').value = theme.primaryColor;
+      document.getElementById('secondaryColor').value = theme.secondaryColor;
+      document.getElementById('accentColor').value = theme.accentColor;
+      document.getElementById('backgroundColor').value = theme.backgroundColor;
+      document.getElementById('cardBackground').value = theme.cardBackground;
+      updateHexValues();
+      updatePreview();
+    }
+  } catch (error) {
+    showToast('Error loading theme: ' + error.message, 'error');
+  }
+}
+
+function updateHexValues() {
+  document.getElementById('primaryValue').value = document.getElementById('primaryColor').value;
+  document.getElementById('secondaryValue').value = document.getElementById('secondaryColor').value;
+  document.getElementById('accentValue').value = document.getElementById('accentColor').value;
+  document.getElementById('backgroundValue').value = document.getElementById('backgroundColor').value;
+  document.getElementById('cardValue').value = document.getElementById('cardBackground').value;
+}
+
+function updatePreview() {
+  const root = document.documentElement;
+  root.style.setProperty('--preview-primary', document.getElementById('primaryColor').value);
+  root.style.setProperty('--preview-secondary', document.getElementById('secondaryColor').value);
+  root.style.setProperty('--preview-accent', document.getElementById('accentColor').value);
+  root.style.setProperty('--preview-bg', document.getElementById('backgroundColor').value + '80');
+  
+  // Update hex values
+  updateHexValues();
+}
+
+function applyPreset(name) {
+  const preset = presets[name];
+  document.getElementById('primaryColor').value = preset.primaryColor;
+  document.getElementById('secondaryColor').value = preset.secondaryColor;
+  document.getElementById('accentColor').value = preset.accentColor;
+  document.getElementById('backgroundColor').value = preset.backgroundColor;
+  document.getElementById('cardBackground').value = preset.cardBackground;
+  updatePreview();
+  showToast(`Preset ${name} diterapkan`, 'success');
+}
+
+async function saveTheme() {
+  try {
+    const res = await fetch('/admin/theme', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        primaryColor: document.getElementById('primaryColor').value,
+        secondaryColor: document.getElementById('secondaryColor').value,
+        accentColor: document.getElementById('accentColor').value,
+        backgroundColor: document.getElementById('backgroundColor').value,
+        cardBackground: document.getElementById('cardBackground').value
+      })
+    });
+    
+    const data = await res.json();
+    if (data.success) {
+      showToast('Tema berhasil disimpan!', 'success');
+      // Apply theme to page
+      applyThemeToBrowser(data.data);
+    } else {
+      showToast(data.message, 'error');
+    }
+  } catch (error) {
+    showToast('Error: ' + error.message, 'error');
+  }
+}
+
+function applyThemeToBrowser(theme) {
+  const root = document.documentElement;
+  root.style.setProperty('--neon-purple', theme.primaryColor);
+  root.style.setProperty('--neon-violet', theme.secondaryColor);
+  root.style.setProperty('--accent-color', theme.accentColor);
+}
+
+function resetTheme() {
+  applyPreset('purple');
+  showToast('Tema direset ke default', 'success');
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+  loadTheme();
+  
+  // Update preview on color change
+  document.querySelectorAll('input[type="color"]').forEach(input => {
+    input.addEventListener('change', () => {
+      updatePreview();
+    });
+    input.addEventListener('input', () => {
+      updatePreview();
+    });
+  });
+});
+</script>

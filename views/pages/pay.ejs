@@ -1,0 +1,206 @@
+<%
+  var pageTitle = 'Bayar Pesanan';
+  var st = tx.status;
+  var rupiah = function (n) { return 'Rp ' + Number(n || 0).toLocaleString('id-ID'); };
+  var waLink = function (kind) {
+    if (!csWa) return '';
+    var site = (typeof settings !== 'undefined' && settings && settings.siteName) || 'AGHA NL';
+    var msg = (kind === 'paid')
+      ? (tx.isStatic
+          ? 'Halo Admin ' + site + ' \uD83D\uDC4B\nSaya sudah melakukan pembayaran:\n\uD83D\uDED2 Produk: ' + tx.productName + '\n\u231A Durasi: ' + (tx.duration || '-') + '\n\uD83D\uDCB0 Total: ' + rupiah(tx.totalPayment) + '\n\uD83E\uDDFE Kode Pesanan: ' + tx.code + '\nBerikut saya lampirkan bukti pembayarannya ya \uD83D\uDE4F'
+          : 'Halo admin, saya sudah bayar tapi belum dapat key.\nKode Pesanan: ' + tx.code + '\nProduk: ' + tx.productName + (tx.duration ? ' (' + tx.duration + ')' : '') + '\nTotal: ' + rupiah(tx.totalPayment) + '\nMohon dicek ya, terima kasih.')
+      : 'Halo admin, saya butuh bantuan untuk pesanan dengan Kode Pesanan ' + tx.code + '.';
+    return 'https://wa.me/' + csWa + '?text=' + encodeURIComponent(msg);
+  };
+%>
+<% if (st === 'done') { %>
+  <!-- ══ SUKSES ══ -->
+  <div class="ag-status-page">
+    <div class="ag-status-icon success"><iconify-icon icon="mdi:check"></iconify-icon></div>
+    <div class="ag-status-title">Pembayaran Berhasil!</div>
+    <% if (tx.type === 'product') { %>
+      <div class="ag-status-desc">Key kamu sudah dikirim. Simpan key di bawah ini dengan baik.</div>
+      <% if (tx.key) { %>
+      <div class="ag-key-box">
+        <div class="ag-key-label">KEY - <%= tx.productName %><%= tx.duration ? ' (' + tx.duration + ')' : '' %></div>
+        <div class="ag-key-value" id="keyValue"><%= tx.key %></div>
+        <button type="button" class="ag-copy" onclick="agCopyKey()"><iconify-icon icon="mdi:content-copy"></iconify-icon> Salin key</button>
+      </div>
+      <% } else { %>
+      <div class="ag-status-desc">Key sedang disiapkan. Buka <a href="/invoice?code=<%= encodeURIComponent(tx.code) %>" style="color:var(--accent-bright);text-decoration:underline;">halaman pesanan</a> untuk melihatnya.</div>
+      <% } %>
+    <% } else { %>
+      <div class="ag-status-desc">Transaksi kamu sudah diproses.</div>
+    <% } %>
+<% if (channelUrl) { %><a href="<%= channelUrl %>" target="_blank" rel="noopener" class="ag-btn-full" style="margin-bottom:10px;background:linear-gradient(135deg,#25d366,#128c4a);box-shadow:none;"><iconify-icon icon="mdi:download"></iconify-icon> Download APK / Saluran</a><% } %>
+    <a href="/invoice?code=<%= encodeURIComponent(tx.code) %>" class="ag-btn-line"><iconify-icon icon="mdi:receipt-text-outline"></iconify-icon> Lihat Detail Pesanan</a>
+    <% if (csWa) { %><a href="<%= waLink('help') %>" target="_blank" rel="noopener" class="ag-btn-line" style="border-color:rgba(37,211,102,.5);color:#25d366;"><iconify-icon icon="mdi:whatsapp"></iconify-icon> Butuh bantuan? Chat CS</a><% } %>
+    <a href="/" class="ag-btn-full" style="margin-top:10px;"><iconify-icon icon="mdi:home-variant"></iconify-icon> Kembali ke Home</a>
+  </div>
+  <script>function agCopyKey(){var t=document.getElementById('keyValue').textContent;(navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(function(){showToast('Key disalin','success')}).catch(function(){var r=document.createRange();r.selectNodeContents(document.getElementById('keyValue'));var s=getSelection();s.removeAllRanges();s.addRange(r);showToast('Tekan Salin pada menu browser','info')})}</script>
+
+<% } else if (st !== 'pending') { %>
+  <!-- ══ GAGAL / EXPIRED ══ -->
+  <div class="ag-status-page">
+    <div class="ag-status-icon failed"><iconify-icon icon="mdi:close"></iconify-icon></div>
+    <div class="ag-status-title">Pembayaran Gagal / Expired</div>
+    <div class="ag-status-desc">Pesanan <%= tx.code %> tidak berhasil diproses. Silakan buat pesanan baru.</div>
+    <a href="/" class="ag-btn-full"><iconify-icon icon="mdi:home-variant"></iconify-icon> Kembali ke Home</a>
+  </div>
+
+<% } else { %>
+  <!-- ══ MENUNGGU PEMBAYARAN (QRIS) ══ -->
+  <div class="ag-pay-page">
+    <div class="ag-pay-card">
+      <div class="ag-pay-head">
+        <iconify-icon icon="mdi:qrcode-scan"></iconify-icon>
+        <div>
+          <div class="ag-pay-title">Scan QRIS untuk Bayar</div>
+          <div class="ag-pay-sub" style="margin-top:6px;">Kode Pesanan <span style="color:var(--text-3);">(simpan, dipakai di Cek Pesanan)</span></div>
+          <div class="ag-copyline"><span class="ag-codebox" id="orderCodeText"><%= tx.code %></span><button type="button" class="ag-copy" style="margin:0;" onclick="agCopyCode()"><iconify-icon icon="mdi:content-copy"></iconify-icon> Salin</button></div>
+        </div>
+      </div>
+
+      <div class="ag-qr-wrap" id="qrcode">
+        <% if (tx.isStatic && staticQris) { %><img src="<%= staticQris %>" alt="QRIS" width="240" height="240"><% } %>
+      </div>
+
+      <div class="ag-amount"><span>Total Bayar</span><b><%= rupiah(tx.totalPayment) %></b></div>
+      <% if (tx.fee > 0) { %><div class="ag-fee-note">Termasuk biaya admin <%= rupiah(tx.fee) %></div><% } %>
+      <div class="ag-fee-note" style="margin-bottom:0;"><%= tx.productName %><%= tx.duration ? ' • ' + tx.duration : '' %><%= tx.voucherCode ? ' • Voucher ' + tx.voucherCode : '' %></div>
+
+      <% if (tx.isStatic && csWa) { %>
+      <div style="margin:14px 0 4px;padding:12px;border-radius:14px;background:rgba(37,211,102,.08);border:1px solid rgba(37,211,102,.35);">
+        <div style="font-size:12px;font-weight:800;color:var(--text-1);margin-bottom:8px;display:flex;gap:6px;align-items:flex-start;"><iconify-icon icon="mdi:information-outline" style="color:#25d366;font-size:16px;margin-top:1px;"></iconify-icon><span><b>Langkah selanjutnya:</b> scan QRIS di atas, bayar sesuai nominal, lalu kirim screenshot bukti pembayaran ke WhatsApp admin untuk di-ACC.</span></div>
+        <a href="<%= waLink('paid') %>" target="_blank" rel="noopener" class="ag-btn-full" style="background:linear-gradient(135deg,#25d366,#128c4a);box-shadow:none;"><iconify-icon icon="mdi:whatsapp"></iconify-icon> Kirim Bukti Pembayaran ke WhatsApp</a>
+      </div>
+      <% } %>
+
+      <div class="ag-howto-box">
+        <div class="ag-howto-title"><iconify-icon icon="mdi:check-circle-outline"></iconify-icon> Cara bayar</div>
+        <ol>
+          <li>Buka aplikasi e-wallet / mobile banking yang support QRIS (GoPay, OVO, Dana, ShopeePay, BCA, dll).</li>
+          <li>Pilih menu <b>Scan QR</b> / <b>QRIS</b>, lalu scan kode di atas.</li>
+          <li>Periksa nominal sesuai <b><%= rupiah(tx.totalPayment) %></b>, lalu selesaikan pembayaran.</li>
+          <% if (tx.isStatic) { %>
+          <li>Pembayaran QRIS statis dikonfirmasi <b>manual oleh admin</b>. Kirim bukti bayar ke CS agar pesananmu segera diproses.</li>
+          <% } else { %>
+          <li>Halaman ini akan otomatis update begitu pembayaran terverifikasi. Tidak perlu refresh manual.</li>
+          <% } %>
+        </ol>
+      </div>
+
+      <div class="ag-status-row" id="payStatusRow"><span class="ag-spinner"></span><span><%= tx.isStatic ? 'Menunggu konfirmasi admin...' : 'Menunggu pembayaran...' %></span></div>
+      <div class="ag-countdown" id="payCountdown"></div>
+
+      <button type="button" class="ag-btn-full" onclick="agCheck(true)"><iconify-icon icon="mdi:refresh"></iconify-icon> Cek Status Sekarang</button>
+      <% if (csWa && !tx.isStatic) { %>
+      <a href="<%= waLink('paid') %>" target="_blank" rel="noopener" class="ag-btn-line" style="border-color:rgba(37,211,102,.5);color:#25d366;"><iconify-icon icon="mdi:whatsapp"></iconify-icon> Sudah bayar tapi belum masuk? Chat CS via WhatsApp</a>
+      <% } %>
+      <a href="/" class="ag-btn-line"><iconify-icon icon="mdi:home-variant"></iconify-icon> Kembali ke Home</a>
+    </div>
+  </div>
+
+  <% if (csWa) { %>
+  <!-- Popup bantuan: muncul otomatis kalau setelah 1 menit pembayaran belum terdeteksi -->
+  <div id="payHelp" class="ag-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="payHelpTitle" style="z-index:9500;">
+    <div class="ag-modal ag-cs">
+      <button type="button" class="ag-modal-close" onclick="agHideHelp()" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
+      <div class="ico"><iconify-icon icon="mdi:whatsapp"></iconify-icon></div>
+      <% if (tx.isStatic) { %>
+      <h3 id="payHelpTitle">Sudah transfer? Kirim bukti ke CS</h3>
+      <p>Pembayaran QRIS ini dikonfirmasi manual oleh admin. Kirim bukti transfer ke CS lewat WhatsApp (kode pesanan sudah terisi otomatis) supaya pesananmu segera diproses.</p>
+      <a class="go" href="<%= waLink('paid') %>" target="_blank" rel="noopener"><iconify-icon icon="mdi:whatsapp"></iconify-icon> Kirim Bukti Pembayaran ke WhatsApp</a>
+      <% } else { %>
+      <h3 id="payHelpTitle">Sudah bayar tapi key belum masuk?</h3>
+      <p>Kalau kamu sudah transfer, pembayaran kadang butuh beberapa saat untuk terverifikasi. Kalau masih belum masuk, hubungi CS dengan kode pesanan kamu supaya segera dicek dan diproses.</p>
+      <a class="go" href="<%= waLink('paid') %>" target="_blank" rel="noopener"><iconify-icon icon="mdi:whatsapp"></iconify-icon> Hubungi CS via WhatsApp</a>
+      <% } %>
+      <button type="button" class="later" onclick="agHideHelp(); agCheck(true);">Cek status lagi</button>
+    </div>
+  </div>
+  <% } %>
+
+  <% if (!tx.isStatic && tx.qrString) { %><script src="/js/qr.js?v=<%= assetV %>"></script><% } %>
+  <script>
+  (function () {
+    var REF = <%- safeJson(tx.id) %>, EXPIRES = <%= Number(tx.expiresAtMs) || 0 %>, STATIC = <%= tx.isStatic ? 'true' : 'false' %>, QR = <%- safeJson(tx.qrString || '') %>, CHANNEL = <%- safeJson(channelUrl || '') %>, WAHELP = <%- safeJson(waLink('help')) %>;
+    var done = false, tries = 0, timer = null, inflight = false, helpTimer = null, helpShown = 0;
+    var helpEl = document.getElementById('payHelp');
+    window.agHideHelp = function () { if (helpEl) helpEl.classList.add('hidden'); document.body.classList.remove('no-scroll'); };
+    // Popup bantuan: pertama kali setelah 1 menit, kalau masih pending muncul lagi tiap 3 menit (maks 3x).
+    function scheduleHelp(ms) {
+      if (!helpEl) return;
+      helpTimer = setTimeout(function () {
+        if (done) return;
+        if (document.hidden) { scheduleHelp(15000); return; }   // tunggu sampai pembeli kembali ke halaman
+        helpEl.classList.remove('hidden'); document.body.classList.add('no-scroll'); helpShown++;
+        if (helpShown < 3) scheduleHelp(180000);
+      }, ms);
+    }
+    scheduleHelp(STATIC ? 30000 : 60000);
+    // Pembeli biasanya pindah ke aplikasi e-wallet/bank untuk transfer. Begitu kembali ke halaman ini
+    // (setelah >=10 dtk pergi), langsung ingatkan kirim bukti / hubungi CS.
+    var leftAt = 0;
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) { leftAt = Date.now(); return; }
+      if (!done && helpEl && leftAt && Date.now() - leftAt > 10000 && helpEl.classList.contains('hidden')) {
+        helpEl.classList.remove('hidden'); document.body.classList.add('no-scroll'); helpShown++;
+      }
+      leftAt = 0;
+    });
+    window.agCopyCode = function () {
+      var t = document.getElementById('orderCodeText').textContent.trim();
+      (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { showToast('Kode pesanan disalin', 'success'); }).catch(function () { showToast('Tahan lalu salin kode pesanan', 'info'); });
+    };
+    if (QR && window.agQR) agQR(document.getElementById('qrcode'), QR, 240);
+
+    function finish(d) {
+      done = true; clearTimeout(timer); clearTimeout(helpTimer); if (helpEl) helpEl.remove(); document.body.classList.remove('no-scroll');
+      var root = document.querySelector('.ag-pay-page');
+      var key = d.key ? '<div class="ag-key-box"><div class="ag-key-label">KEY - ' + <%- safeJson(tx.productName) %>.replace(/[<>&]/g, '') + '</div><div class="ag-key-value" id="keyValue"></div><button type="button" class="ag-copy" id="copyBtn">Salin key</button></div>' : '<div class="ag-status-desc">Transaksi diproses. Buka halaman pesanan untuk melihat detail.</div>';
+      root.outerHTML = '<div class="ag-status-page"><div class="ag-status-icon success"><iconify-icon icon="mdi:check"></iconify-icon></div><div class="ag-status-title">Pembayaran Berhasil!</div>' +
+        (d.key ? '<div class="ag-status-desc">Key kamu sudah dikirim. Simpan key di bawah ini dengan baik.</div>' : '') + key +
+        (CHANNEL ? '<a href="' + CHANNEL.replace(/"/g, '') + '" target="_blank" rel="noopener" class="ag-btn-full" style="margin-bottom:10px;background:linear-gradient(135deg,#25d366,#128c4a);box-shadow:none;"><iconify-icon icon="mdi:download"></iconify-icon> Download APK / Saluran</a>' : '') + '<a href="/invoice?code=' + encodeURIComponent(d.code || <%- safeJson(tx.code) %>) + '" class="ag-btn-line"><iconify-icon icon="mdi:receipt-text-outline"></iconify-icon> Lihat Detail Pesanan</a>' + (WAHELP ? '<a href="' + WAHELP + '" target="_blank" rel="noopener" class="ag-btn-line" style="border-color:rgba(37,211,102,.5);color:#25d366;"><iconify-icon icon="mdi:whatsapp"></iconify-icon> Butuh bantuan? Chat CS</a>' : '') + '<a href="/" class="ag-btn-full" style="margin-top:10px;"><iconify-icon icon="mdi:home-variant"></iconify-icon> Kembali ke Home</a></div>';
+      if (d.key) { var kv = document.getElementById('keyValue'); kv.textContent = d.key; document.getElementById('copyBtn').onclick = function () { (navigator.clipboard ? navigator.clipboard.writeText(d.key) : Promise.reject()).then(function () { showToast('Key disalin', 'success'); }).catch(function () { showToast('Tahan lalu salin teks key', 'info'); }); }; }
+    }
+    function failed() {
+      done = true; clearTimeout(timer); clearTimeout(helpTimer); if (helpEl) helpEl.remove(); document.body.classList.remove('no-scroll');
+      document.querySelector('.ag-pay-page').outerHTML = '<div class="ag-status-page"><div class="ag-status-icon failed"><iconify-icon icon="mdi:close"></iconify-icon></div><div class="ag-status-title">Pembayaran Gagal / Expired</div><div class="ag-status-desc">Order tidak berhasil diproses. Silakan buat pesanan baru.</div><a href="/" class="ag-btn-full">Kembali ke Home</a></div>';
+    }
+    window.agCheck = async function (manual) {
+      if (done || inflight) return; inflight = true;
+      try {
+        var d = await (await fetch('/check-payment/' + encodeURIComponent(REF), { cache: 'no-store' })).json();
+        if (d.success && d.status === 'done') return finish(d);
+        if (d.success && (d.status === 'expired' || d.status === 'cancelled')) return failed();
+        if (manual) showToast('Pembayaran belum terkonfirmasi, coba lagi beberapa saat.', 'info');
+      } catch (e) { if (manual) showToast('Gagal cek status, coba lagi.', 'error'); }
+      finally { inflight = false; }
+    };
+
+    // Polling HEMAT (webhook gateway tetap jalur utama; ini cuma update tampilan):
+    // 5 dtk x4 -> 10 dtk x6 -> 20 dtk seterusnya; QRIS statis 30 dtk. Berhenti saat tab tersembunyi.
+    function delay() { return STATIC ? 30000 : (tries < 4 ? 5000 : (tries < 10 ? 10000 : 20000)); }
+    function loop() {
+      timer = setTimeout(async function () {
+        if (done) return;
+        if (!document.hidden) { tries++; await agCheck(false); }
+        loop();
+      }, delay());
+    }
+    loop();
+    document.addEventListener('visibilitychange', function () { if (!document.hidden && !done) agCheck(false); });
+
+    var cd = document.getElementById('payCountdown'), expiredChecked = false;
+    function tick() {
+      if (done || !EXPIRES) return;
+      var left = EXPIRES - Date.now();
+      if (left <= 0) { cd.textContent = 'Waktu pembayaran habis. Memeriksa status...'; if (!expiredChecked) { expiredChecked = true; agCheck(false); } return; }
+      var m = Math.floor(left / 60000), s = Math.floor((left % 60000) / 1000);
+      cd.textContent = 'Bayar sebelum waktu habis: ' + m + ':' + (s < 10 ? '0' : '') + s;
+    }
+    tick(); setInterval(tick, 1000);
+  })();
+  </script>
+<% } %>

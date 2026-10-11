@@ -1,0 +1,19 @@
+<%
+  // Wordmark AGHA NL: kalau settings.logoTextUrl (atau param imgUrl) diisi,
+  // render sebagai GAMBAR (bukan teks font biasa) -- sesuai request rebrand:
+  // pic4 (AGHA NL digital store, gaya brush/goresan) dipakai apa adanya.
+  // Kalau logoTextUrl kosong, fallback ke rendering teks lama (siteName).
+  const _imgUrl = (typeof imgUrl !== 'undefined' && imgUrl) ? imgUrl : ((typeof logoTextUrl !== 'undefined' && logoTextUrl) ? logoTextUrl : null);
+  const _fontSize = (typeof fontSize !== 'undefined' && fontSize) ? fontSize : '15px';
+  // Tinggi gambar wordmark diturunkan dari fontSize (kira-kira 2.3x) supaya
+  // proporsinya sejajar & sedikit lebih besar dibanding logo ikon di sebelahnya.
+  const _imgHeight = (typeof imgHeight !== 'undefined' && imgHeight) ? imgHeight : `calc(${_fontSize} * 2.3)`;
+%>
+<% if (_imgUrl) { %><img src="<%= _imgUrl %>" alt="<%= (typeof siteName !== 'undefined' && siteName) ? siteName : 'AGHA NL' %>" style="height:<%= _imgHeight %>;width:auto;object-fit:contain;display:block;flex-shrink:0;"><% } else { %><%
+  const _name = (typeof siteName !== 'undefined' && siteName) ? siteName : 'AGHA NL';
+  const _color = (typeof color !== 'undefined' && color) ? color : 'var(--text-1)';
+  const _accent = (typeof accentColor !== 'undefined' && accentColor) ? accentColor : '#dc2626';
+  const _words = _name.trim().split(/\s+/);
+  const _last = _words.length > 1 ? _words.pop() : null;
+  const _rest = _words.join(' ');
+%><span style="font-weight:900;font-size:<%= _fontSize %>;letter-spacing:.01em;line-height:1;white-space:nowrap;"><% if (_last) { %><span style="color:<%= _color %>;"><%= _rest %> </span><span style="color:<%= _accent %>;"><%= _last %></span><% } else { %><span style="color:<%= _color %>;"><%= _rest %></span><% } %></span><% } %>
