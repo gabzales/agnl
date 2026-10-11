@@ -1,0 +1,10 @@
+<%
+  var _cs = String(settings?.contact?.csWhatsapp || settings?.contact?.whatsapp || '').replace(/\D/g, '');
+%>
+<div class="ag-fab">
+  <% if (_cs) { %>
+    <a class="ag-fab-label" href="https://wa.me/<%= _cs %>" target="_blank" rel="noopener"><small>REPORT MASALAH</small><b>Hubungi WA</b></a>
+    <a class="ag-fab-btn ag-fab-wa" href="https://wa.me/<%= _cs %>" target="_blank" rel="noopener" aria-label="WhatsApp CS"><iconify-icon icon="mdi:whatsapp"></iconify-icon></a>
+  <% } %>
+  <button type="button" class="ag-fab-btn ag-fab-theme" id="agThemeBtn" onclick="agToggleTheme()" aria-label="Ganti tema"><iconify-icon id="agThemeIcon" icon="mdi:white-balance-sunny"></iconify-icon></button>
+</div>

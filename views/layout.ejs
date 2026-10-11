@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="id" data-theme="dark">
+<head>
+    <script>
+      /* Tema: gelap = default. Dibaca sebelum render supaya tidak ada flash. */
+      try { document.documentElement.setAttribute('data-theme', localStorage.getItem('agnl-theme') === 'light' ? 'light' : 'dark'); } catch (e) {}
+      /* Status login = petunjuk UI dari cookie 'agu' (bukan keamanan; server tetap cek sesi). Dengan begini HTML sama untuk semua orang -> bisa di-cache CDN. */
+      try { var m = document.cookie.match(/(?:^|; )agu=([^;]*)/), a = m ? JSON.parse(decodeURIComponent(m[1])) : null; document.documentElement.setAttribute('data-auth', a ? (a.a ? 'admin' : 'user') : 'guest'); if (a && a.r) document.documentElement.setAttribute('data-reseller', '1'); } catch (e) { document.documentElement.setAttribute('data-auth', 'guest'); }
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title><%= typeof pageTitle !== 'undefined' ? pageTitle + ' — ' : '' %><%= settings?.siteName || 'AGHA NL' %></title>
+    <meta name="description" content="<%= typeof pageDescription !== 'undefined' && pageDescription ? pageDescription : (settings?.about || 'AGHA NL DIGITAL STORE - Platform Digital Terpercaya') %>">
+    <!-- SEO (diminta client 22 Agu 2026, target keyword "topup mod ff" dkk) -->
+    <meta name="keywords" content="<%= settings?.seoKeywords || 'topup mod ff, key mod ff, cheat free fire, mod menu ff, topup mod game' %>">
+    <meta name="robots" content="<%= typeof noIndex !== 'undefined' && noIndex ? 'noindex, nofollow' : 'index, follow' %>">
+    <link rel="canonical" href="<%= siteUrl %><%= typeof canonicalPath !== 'undefined' ? canonicalPath : '' %>">
+    <!-- Open Graph (preview link WhatsApp/Telegram/Facebook) -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="<%= settings?.siteName || 'AGHA NL' %>">
+    <meta property="og:title" content="<%= typeof pageTitle !== 'undefined' ? pageTitle + ' — ' : '' %><%= settings?.siteName || 'AGHA NL' %>">
+    <meta property="og:description" content="<%= typeof pageDescription !== 'undefined' && pageDescription ? pageDescription : (settings?.about || 'AGHA NL DIGITAL STORE - Platform Digital Terpercaya') %>">
+    <meta property="og:image" content="<%= settings?.logoUrl ? (settings.logoUrl.startsWith('http') ? settings.logoUrl : siteUrl + settings.logoUrl) : siteUrl + '/uploads/logo-main.png' %>">
+    <meta property="og:url" content="<%= siteUrl %><%= typeof canonicalPath !== 'undefined' ? canonicalPath : '' %>">
+    <meta property="og:locale" content="id_ID">
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="<%= typeof pageTitle !== 'undefined' ? pageTitle + ' — ' : '' %><%= settings?.siteName || 'AGHA NL' %>">
+    <meta name="twitter:description" content="<%= typeof pageDescription !== 'undefined' && pageDescription ? pageDescription : (settings?.about || 'AGHA NL DIGITAL STORE - Platform Digital Terpercaya') %>">
+    <meta name="twitter:image" content="<%= settings?.logoUrl ? (settings.logoUrl.startsWith('http') ? settings.logoUrl : siteUrl + settings.logoUrl) : siteUrl + '/uploads/logo-main.png' %>">
+    <meta name="theme-color" content="#08080b">
+    <link rel="icon" type="image/png" href="<%= settings?.logoUrl || '/uploads/logo-main.png' %>">
+    <link rel="apple-touch-icon" href="<%= settings?.logoUrl || '/uploads/logo-main.png' %>">
+    <link rel="preload" href="/css/tailwind.css?v=<%= assetV %>" as="style">
+    <link rel="stylesheet" href="/css/tailwind.css?v=<%= assetV %>">
+    <link rel="stylesheet" href="/css/app.css?v=<%= assetV %>">
+    <script src="/js/icons.js?v=<%= assetV %>" defer></script>
+    <%
+      var _pc = settings?.theme?.primaryColor;
+      var _accent = (typeof _pc === 'string' && /^#[0-9a-fA-F]{6}$/.test(_pc)) ? _pc : '#e11d2e';
+    %>
+    <style>:root{--accent:<%= _accent %>;}</style>
+</head>
+<body>
+    <script src="/js/layout.js?v=<%= assetV %>"></script>
+    <div id="toast-container"></div>
+    <div id="purchase-notif-container"></div>
+
+    <%- include('partials/header') %>
+    <div class="ag-spacer"></div>
+
+    <%- body %>
+
+    <%- include('partials/footer') %>
+    <%- include('partials/panels') %>
+    <%- include('partials/fab') %>
+
+</body>
+</html>

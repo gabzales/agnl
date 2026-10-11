@@ -1,0 +1,230 @@
+<%
+  var pageTitle = settings?.siteName || 'AGHA NL';
+  var _bn = (banners || []).map(function (b) { return b.imageUrl || b.image || b.url; }).filter(Boolean);
+  var _cs = String(settings?.contact?.csWhatsapp || settings?.contact?.whatsapp || '').replace(/\D/g, '');
+  var _csMsg = 'Halo CS ' + (settings?.siteName || 'AGHA NL') + ', saya butuh bantuan.';
+%>
+<main class="ag-wrap">
+
+  <!-- ══ BANNER ══ -->
+  <section class="ag-banner" aria-label="Promo">
+    <div class="ag-banner-track" id="bannerTrack">
+      <% if (_bn.length) { _bn.forEach(function (u, i) { %>
+        <div class="ag-slide">
+          <img src="<%= imgW(u, 960) %>" srcset="<%= imgW(u, 640) %> 640w, <%= imgW(u, 1280) %> 1280w" sizes="(max-width: 1100px) 100vw, 1100px"
+               alt="Promo <%= i + 1 %>" width="1280" height="560" <%- i === 0 ? 'fetchpriority="high"' : 'loading="lazy"' %> decoding="async" draggable="false">
+        </div>
+      <% }); } else { %>
+        <div class="ag-slide ag-banner-default">
+          <h2><%= settings?.siteName || 'AGHA NL' %> <span>DIGITAL STORE</span></h2>
+          <p><%= settings?.about || 'Top up, files & access game premium. Proses cepat, aman, dan terpercaya.' %></p>
+        </div>
+      <% } %>
+    </div>
+    <% if (_bn.length > 1) { %><div class="ag-banner-dots" id="bannerDots"><% _bn.forEach(function (_, i) { %><i class="<%= i === 0 ? 'on' : '' %>"></i><% }) %></div><% } %>
+  </section>
+
+  <% if (settings?.marqueeText) { %>
+  <div class="ag-marquee" aria-label="Info">
+    <div class="marquee-track">
+      <% for (var m = 0; m < 4; m++) { %><span class="item"><span><%= settings.marqueeText %></span><iconify-icon icon="mdi:lightning-bolt"></iconify-icon></span><% } %>
+    </div>
+  </div>
+  <% } %>
+
+  <a class="ag-howto" href="https://youtube.com/shorts/EQBM--1dZ8o?si=EcE0JZyYqx7BArH8" target="_blank" rel="noopener">
+    <iconify-icon icon="mdi:youtube" style="font-size:17px;"></iconify-icon> CARA BELI KEY DI WEB <%= (settings?.siteName || 'AGHA NL').toUpperCase() %>
+  </a>
+
+  <% if (storeMaintenance) { %>
+  <div class="ag-maint-banner" role="status"><iconify-icon icon="mdi:wrench-clock"></iconify-icon><div><b>Toko sedang maintenance</b><span>Pembelian dibuka kembali setelah perbaikan selesai. Terima kasih sudah menunggu.</span></div></div>
+  <% } %>
+
+  <!-- ══ KATALOG ══ -->
+  <h2 class="ag-section-title" id="games">PRODUK TERSEDIA <span class="ag-dot live" aria-hidden="true"></span></h2>
+
+  <div class="ag-toolbar" id="agToolbar">
+    <span class="ag-toolbar-icon" aria-hidden="true"><iconify-icon icon="mdi:filter-variant"></iconify-icon></span>
+    <div class="ag-chips" id="filterRow" role="tablist" aria-label="Kategori">
+      <button type="button" class="ag-chip active" data-pf="all">SEMUA</button>
+      <% (categories || []).forEach(function (cat) { %>
+      <button type="button" class="ag-chip" data-pf="<%= cat %>"><%= String(categoryLabels[cat] || cat).toUpperCase() %></button>
+      <% }) %>
+    </div>
+    <button type="button" class="ag-search-toggle" id="agSearchOpen" aria-label="Cari produk"><iconify-icon icon="mdi:magnify"></iconify-icon></button>
+    <div class="ag-search">
+      <input type="search" id="agSearchInput" placeholder="Cari produk..." autocomplete="off" aria-label="Cari produk">
+      <button type="button" class="ag-search-toggle" id="agSearchClose" aria-label="Tutup pencarian"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    </div>
+  </div>
+
+  <div class="ag-products" id="agProducts">
+    <% products.forEach(function (product, idx) {
+      var stock = Number(product._catalogStock || 0);
+      var stockUnknown = !!product._providerStockUnknown;
+      var isMaint = !!(product.maintenance || storeMaintenance);
+      var isOut = !isMaint && stock <= 0 && !stockUnknown;
+      var prodCategories = Array.isArray(product.categories) ? product.categories
+        : (Array.isArray(product.platforms) ? product.platforms : (product.category ? [product.category] : []));
+      var pricingArr = product.pricingOptions || product.items || [];
+      var priceList = pricingArr.map(function (x) { return typeof x === 'object' ? (x.price != null ? x.price : x.p) : x; }).filter(function (v) { return typeof v === 'number'; });
+      var minPrice = priceList.length ? Math.min.apply(null, priceList) : (product.price || 0);
+      var displaySold = (product.fakeSold != null) ? product.fakeSold : (product.sold || 0);
+      var catLabel = prodCategories.length ? String(categoryLabels[prodCategories[0]] || prodCategories[0]) : 'PRODUK';
+      var desc = String(product.description || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+    %>
+    <article class="ag-card" data-stock-product-id="<%= product.id %>" data-name="<%= String(product.name).toLowerCase() %>" data-categories='<%- safeJson(prodCategories).replace(/'/g, '&#39;') %>'>
+      <div class="ag-card-side">
+        <a href="/?buy=<%= product.id %>" onclick="agOpenBuy('<%= product.id %>');return false;" class="ag-card-img" aria-label="<%= product.name %>">
+          <% if (product.image) { %>
+          <img src="<%= imgW(product.image, 240) %>" alt="<%= product.name %>" width="92" height="92" <%- idx < 2 ? '' : 'loading="lazy"' %> decoding="async" onerror="this.style.display='none'">
+          <% } %>
+        </a>
+        <% if (pricingArr.length > 0) { %><span class="ag-tag dur"><iconify-icon icon="mdi:clock-outline"></iconify-icon> <%= pricingArr.length %> DURASI</span><% } %>
+        <% if (product.downloadUrl) { %><a class="ag-tag dl" href="<%= product.downloadUrl %>" target="_blank" rel="noopener"><iconify-icon icon="mdi:download"></iconify-icon> UNDUH</a><% } %>
+      </div>
+      <div class="ag-card-main">
+        <div class="ag-card-top">
+          <span class="ag-card-cat"><%= catLabel %></span>
+          <span class="ag-card-price">Rp <%= minPrice.toLocaleString('id-ID') %></span>
+        </div>
+        <h3 class="ag-card-name"><%= product.name %></h3>
+        <% if (desc) { %><p class="ag-card-desc"><%= desc %></p><% } %>
+        <div class="ag-card-meta">
+          <span><iconify-icon icon="mdi:cart-outline"></iconify-icon> <%= displaySold.toLocaleString('id-ID') %>+ terjual</span>
+          <% if (isMaint) { %><span class="ag-pill-status maint" data-status><span class="ag-dot maint"></span> Maintenance</span>
+          <% } else if (!isOut) { %><span class="ag-pill-status online" data-status><span class="ag-dot"></span> Tersedia</span>
+          <% } else { %><span class="ag-pill-status out" data-status><span class="ag-dot" style="background:var(--red)"></span> Habis</span><% } %>
+        </div>
+        <div class="ag-buy">
+          <% if (isMaint) { %>
+          <button type="button" class="fz-stock-btn" disabled><iconify-icon icon="mdi:wrench-outline"></iconify-icon> SEDANG MAINTENANCE</button>
+          <% } else if (!isOut) { %>
+          <button type="button" class="fz-stock-btn" data-stock-buy="1" onclick="agOpenBuy('<%= product.id %>')"><iconify-icon icon="mdi:cart"></iconify-icon> BELI SEKARANG</button>
+          <% } else { %>
+          <button type="button" class="fz-stock-btn" data-stock-disabled="1" disabled><iconify-icon icon="mdi:block-helper"></iconify-icon> STOK HABIS</button>
+          <% } %>
+        </div>
+      </div>
+    </article>
+    <% }) %>
+  </div>
+  <% if (products.length === 0) { %><div class="ag-empty">Belum ada produk tersedia.</div><% } %>
+  <div class="ag-empty" id="agNoResult" hidden>Produk tidak ditemukan.</div>
+
+  <!-- ══ ULASAN ══ -->
+  <% if (testimonialsForHome && testimonialsForHome.length) { %>
+  <section class="ag-reviews" aria-label="Ulasan pembeli">
+    <div class="ag-reviews-head">
+      <span class="ag-reviews-icon"><iconify-icon icon="mdi:comment-text-multiple"></iconify-icon></span>
+      <div>
+        <h3>ULASAN PEMBELI</h3>
+        <div class="ag-stars" aria-label="Rating <%= avgRating %>"><% for (var s = 1; s <= 5; s++) { %><span class="<%= s <= Math.round(avgRating) ? 'on' : '' %>">★</span><% } %> <small style="color:var(--text-2);font-weight:800;"><%= avgRating %></small></div>
+      </div>
+      <div class="ag-reviews-total"><b><%= Number(reviewCount).toLocaleString('id-ID') %></b><small>TOTAL ULASAN</small></div>
+    </div>
+    <div class="ag-reviews-track">
+      <% testimonialsForHome.forEach(function (t) { %>
+      <div class="ag-review">
+        <div class="ag-review-who">
+          <span class="ag-avatar"><%= String(t.name).charAt(0).toUpperCase() %></span>
+          <div>
+            <div class="ag-review-name"><%= t.name %></div>
+            <% if (t.verified) { %><div class="ag-verified"><iconify-icon icon="mdi:shield-check-outline"></iconify-icon> VERIFIED BUYER</div><% } %>
+          </div>
+          <span class="ag-review-time"><%= t.time %></span>
+        </div>
+        <p class="ag-review-text">&ldquo;<%= t.text %>&rdquo;</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <span class="ag-stars"><% for (var r = 1; r <= 5; r++) { %><span class="<%= r <= Math.round(t.rating) ? 'on' : '' %>">★</span><% } %></span>
+          <% if (t.productName) { %><span class="ag-review-prod"><%= t.productName %></span><% } %>
+        </div>
+      </div>
+      <% }) %>
+    </div>
+  </section>
+  <% } %>
+
+  <section class="ag-benefits">
+    <div class="ag-benefit"><iconify-icon icon="mdi:shield-check-outline"></iconify-icon><span>Pembayaran Aman</span></div>
+    <div class="ag-benefit"><iconify-icon icon="mdi:flash-outline"></iconify-icon><span>Key Instan</span></div>
+    <div class="ag-benefit"><iconify-icon icon="mdi:headset"></iconify-icon><span>CS 24/7</span></div>
+    <div class="ag-benefit"><iconify-icon icon="mdi:star-outline"></iconify-icon><span>Rating <%= avgRating %></span></div>
+  </section>
+</main>
+
+<%
+  var AGP = {};
+  products.forEach(function (p) {
+    var its = p.items || [], sb = p._stockByOption || [];
+    AGP[p.id] = { n: p.name, m: (p.maintenance || storeMaintenance) ? 1 : 0, c: String(p.channelUrl || p.downloadUrl || ''), o: its.map(function (it, idx) {
+      var v = sb[idx] || {}, st = Math.max(0, Number(v.stock) || 0);
+      return { l: it.l, d: it.durationValue != null ? Number(it.durationValue) : null, u: it.durationUnit || 'd', p: Number(it.p) || 0, s: st, k: (v.providerBacked && !v.providerKnown && st <= 0) ? 1 : 0 };
+    }) };
+  });
+%>
+<%- include('../partials/buy-sheet') %>
+<script>window.AG_PRODUCTS = <%- safeJson(AGP) %>;</script>
+
+<!-- ══ MODAL LOGIN / DAFTAR ══ -->
+<div id="authModalOverlay" class="ag-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+  <div class="ag-modal">
+    <button type="button" class="ag-modal-close" onclick="closeAuthModal()" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    <div style="text-align:center;">
+      <img src="<%= imgW(settings?.logoUrl || '/uploads/logo-main.png', 96) %>" alt="" width="44" height="44" style="height:44px;width:44px;object-fit:contain;border-radius:12px;margin:0 auto 8px;display:block;">
+      <h3 id="authModalTitle">Masuk ke Akun Anda</h3>
+    </div>
+    <div class="ag-tabs">
+      <button type="button" id="authTabLogin" class="ag-tab on" onclick="switchAuthTab('login')">MASUK</button>
+      <button type="button" id="authTabRegister" class="ag-tab" onclick="switchAuthTab('register')">DAFTAR</button>
+    </div>
+    <div id="authErrorBox" class="ag-err hidden"></div>
+
+    <form id="authFormLogin" onsubmit="return handleAuthSubmit(event,'login')">
+      <div class="ag-field"><label>Username</label><input type="text" name="username" required class="ag-input" placeholder="Masukkan username" autocomplete="username"></div>
+      <div class="ag-field"><label>Password</label>
+        <input type="password" id="loginPasswordInput" name="password" required class="ag-input" placeholder="Masukkan password" style="padding-right:40px;" autocomplete="current-password">
+        <button type="button" class="ag-eye" onclick="togglePasswordVisibility('loginPasswordInput', this)" aria-label="Lihat password"><iconify-icon icon="mdi:eye-outline"></iconify-icon></button>
+      </div>
+      <% if (turnstileSiteKey) { %><div style="margin:12px 0;display:flex;justify-content:center;"><div id="turnstileWidgetLogin"></div></div><% } %>
+      <button type="submit" id="authSubmitBtnLogin" class="ag-submit">MASUK</button>
+      <% if (googleOAuthEnabled) { %><a href="/auth/google" class="ag-google"><iconify-icon icon="flat-color-icons:google"></iconify-icon> Masuk dengan Google</a><% } %>
+    </form>
+
+    <form id="authFormRegister" class="hidden" onsubmit="return handleAuthSubmit(event,'register')">
+      <div class="ag-field"><label>Username</label><input type="text" name="username" required class="ag-input" placeholder="Pilih username" autocomplete="username"></div>
+      <div class="ag-field"><label>Nomor WhatsApp</label><input type="text" name="wa" required class="ag-input" placeholder="Contoh: 6281234567890" inputmode="numeric"></div>
+      <div class="ag-field"><label>Password</label>
+        <input type="password" id="registerPasswordInput" name="password" required minlength="8" class="ag-input" placeholder="Buat password" style="padding-right:40px;" autocomplete="new-password">
+        <button type="button" class="ag-eye" onclick="togglePasswordVisibility('registerPasswordInput', this)" aria-label="Lihat password"><iconify-icon icon="mdi:eye-outline"></iconify-icon></button>
+        <div style="font-size:10px;color:var(--text-3);margin-top:4px;">Minimal 8 karakter, kombinasi huruf &amp; angka</div>
+      </div>
+      <div class="ag-field"><label>Konfirmasi Password</label>
+        <input type="password" id="registerConfirmPasswordInput" name="confirmPassword" required class="ag-input" placeholder="Ulangi password" style="padding-right:40px;" autocomplete="new-password">
+        <button type="button" class="ag-eye" onclick="togglePasswordVisibility('registerConfirmPasswordInput', this)" aria-label="Lihat password"><iconify-icon icon="mdi:eye-outline"></iconify-icon></button>
+      </div>
+      <% if (turnstileSiteKey) { %><div style="margin:12px 0;display:flex;justify-content:center;"><div id="turnstileWidgetRegister"></div></div><% } %>
+      <button type="submit" id="authSubmitBtnRegister" class="ag-submit">DAFTAR</button>
+      <% if (googleOAuthEnabled) { %><a href="/auth/google" class="ag-google"><iconify-icon icon="flat-color-icons:google"></iconify-icon> Daftar dengan Google</a><% } %>
+    </form>
+  </div>
+</div>
+
+<% if (_cs) { %>
+<!-- POPUP HUBUNGI CS (sekali per 24 jam) -->
+<div id="csPopup" class="ag-overlay" style="display:none;z-index:9000;">
+  <div class="ag-modal ag-cs">
+    <button type="button" class="ag-modal-close" onclick="csPopupClose()" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    <div class="ico"><iconify-icon icon="mdi:whatsapp"></iconify-icon></div>
+    <h3>Butuh Bantuan?</h3>
+    <p>Ada kendala pembayaran, key belum masuk, atau mau tanya produk? Chat CS kami langsung lewat WhatsApp.</p>
+    <a class="go" href="https://wa.me/<%= _cs %>?text=<%= encodeURIComponent(_csMsg) %>" target="_blank" rel="noopener" onclick="csPopupClose()"><iconify-icon icon="mdi:whatsapp"></iconify-icon> Chat CS via WhatsApp</a>
+    <button type="button" class="later" onclick="csPopupClose()">Nanti saja</button>
+  </div>
+</div>
+<% } %>
+
+<% if (turnstileSiteKey) { %><script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onTurnstileLoad" async defer></script><% } %>
+<script>window.AG = { turnstileKey: <%- JSON.stringify(turnstileSiteKey || '') %>, hasCS: <%= _cs ? 'true' : 'false' %>, tsReady: false };
+function onTurnstileLoad(){ window.AG.tsReady = true; if (window.renderTurnstileWidgets) window.renderTurnstileWidgets(); }</script>
+<script src="/js/home.js?v=<%= assetV %>" defer></script>

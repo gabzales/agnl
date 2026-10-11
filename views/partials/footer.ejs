@@ -1,0 +1,63 @@
+<%
+  var _c = settings?.contact || {};
+  var _ig = _c.instagram ? (/^https?:\/\//i.test(_c.instagram) ? _c.instagram : 'https://instagram.com/' + String(_c.instagram).replace('@', '')) : '';
+  var _wa = String(_c.whatsapp || '').replace(/\D/g, '');
+  var _tg = String(_c.telegram || '').replace('@', '');
+  var _yt = _c.youtube || '';
+%>
+<footer class="ag-footer">
+  <div class="ag-wrap">
+    <h4>METODE PEMBAYARAN</h4>
+    <div class="ag-pay">
+      <% if ((settings?.paymentMethods || []).length > 0) { %>
+        <% settings.paymentMethods.forEach(function (pm) { %>
+          <span class="ag-pay-box" title="<%= pm.name || '' %>"><img src="<%= imgW(pm.logoUrl, 96) %>" alt="<%= pm.name || 'Metode pembayaran' %>" loading="lazy" decoding="async" onerror="this.parentElement.style.display='none'"></span>
+        <% }) %>
+      <% } else { %>
+        <span class="ag-pay-badge">QRIS</span><span class="ag-pay-badge">TRANSFER BANK</span><span class="ag-pay-badge">E-WALLET</span>
+      <% } %>
+    </div>
+
+    <div class="cols">
+      <div>
+        <a href="/" class="ag-brand">
+          <img class="ag-logo" src="<%= imgW(settings?.logoUrl || '/uploads/logo-main.png', 96) %>" alt="" width="34" height="34" loading="lazy">
+          <%- include('logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '15px' }) %>
+        </a>
+        <p class="about"><%= settings?.about || 'Toko mod menu & cheat game terpercaya.' %></p>
+      </div>
+      <div>
+        <h4>LAYANAN</h4>
+        <div class="links">
+          <a href="/">Beranda</a>
+          <a href="/invoice">Lacak Pesanan</a>
+          <a href="/activate-key">Aktivasi Key</a>
+          <% if (settings?.resellerEnabled !== false) { %><a href="/reseller">Jadi Reseller</a><% } %>
+        </div>
+      </div>
+      <div>
+        <h4>BANTUAN</h4>
+        <div class="links">
+          <a href="/informasi?tab=syarat">Syarat Ketentuan</a>
+          <a href="/informasi?tab=faq">FAQ</a>
+          <a href="/informasi?tab=cara-beli">Cara Beli</a>
+        </div>
+      </div>
+    </div>
+
+    <% if (_wa || _tg || _ig || _yt) { %>
+    <h4 style="margin-top:22px;">JOIN OUR COMMUNITY</h4>
+    <div class="ag-pills">
+      <% if (_wa) { %><a class="ag-pill" href="https://wa.me/<%= _wa %>" target="_blank" rel="noopener"><i class="wa"><iconify-icon icon="mdi:whatsapp"></iconify-icon></i>WHATSAPP</a><% } %>
+      <% if (_tg) { %><a class="ag-pill" href="https://t.me/<%= _tg %>" target="_blank" rel="noopener"><i class="tg"><iconify-icon icon="mdi:telegram"></iconify-icon></i>TELEGRAM</a><% } %>
+      <% if (_ig) { %><a class="ag-pill" href="<%= _ig %>" target="_blank" rel="noopener"><i class="ig"><iconify-icon icon="mdi:instagram"></iconify-icon></i>INSTAGRAM</a><% } %>
+      <% if (_yt) { %><a class="ag-pill" href="<%= _yt %>" target="_blank" rel="noopener"><i class="yt"><iconify-icon icon="mdi:youtube"></iconify-icon></i>YOUTUBE</a><% } %>
+    </div>
+    <% } %>
+
+    <div class="bottom">
+      <div class="ag-secure"><iconify-icon icon="mdi:shield-check-outline"></iconify-icon> SYSTEM SECURED | PEMBAYARAN AMAN | VERIFIED</div>
+      <div>&copy; <%= new Date().getFullYear() %> <b><%= settings?.siteName || 'AGHA NL' %></b>. All rights reserved.</div>
+    </div>
+  </div>
+</footer>
