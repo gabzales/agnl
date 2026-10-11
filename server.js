@@ -3345,7 +3345,7 @@ app.post('/reseller/join', requireAuth, async (req, res) => {
     if (!user) return res.json({ success: false, message: 'User tidak ditemukan' });
     if (user.is_reseller) return res.json({ success: false, message: 'Kamu sudah menjadi Reseller VIP!' });
 
-    const settings = readDB('settings.json');
+    const settings = await readFresh('settings.json');
     const price = settings.resellerPrice || 50000;
     const orderId = `RES-${Date.now()}`;
     const refId = uuidv4();
@@ -3408,7 +3408,7 @@ app.post('/wallet/topup', requireAuth, async (req, res) => {
     if (!user) return res.json({ success: false, message: 'User tidak ditemukan' });
     if (!user.is_reseller) return res.json({ success: false, message: 'Top up saldo khusus untuk Reseller VIP. Gabung reseller dulu yuk!' });
 
-    const settings = readDB('settings.json');
+    const settings = await readFresh('settings.json');
     const minDeposit = settings.resellerMinDeposit || 50000;
     // FIX (bug 14 Sep 2026, sama kayak harga produk): bersihin dulu
     // titik/koma nyempil sebelum parseInt biar "100.000" gak kebaca 100.
@@ -4029,7 +4029,7 @@ app.post('/create-order', async (req, res) => {
       const m = duration.match(/(\d+)/); selectedDays = m ? parseInt(m[1]) : null;
     }
 
-    const settings = readDB('settings.json');
+    const settings = await readFresh('settings.json');
     // Terapkan harga reseller: gunakan harga manual per-produk jika ada,
     // fallback ke global diskon % jika tidak ada
     const orderUser = getSessionUser(req);
@@ -4547,7 +4547,7 @@ app.get('/check-payment/:refId', requireAuth, async (req, res) => {
     // Static QRIS: tunggu konfirmasi manual admin
     if (transaction.isStatic) return res.json({ success: true, status: 'pending_static' });
 
-    const settings = readDB('settings.json');
+    const settings = await readFresh('settings.json');
     let paid = false;
     // PENTING: selalu verifikasi ke gateway yang SAMA dengan yang dipakai
     // saat transaksi ini dibuat (transaction.paymentGateway), BUKAN

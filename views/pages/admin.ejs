@@ -31,6 +31,10 @@
 <script src="/js/icons.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
+/* Ikon lokal (<iconify-icon> dari /js/icons.js): ukuran mengikuti font-size (1em), sama seperti app.css di halaman publik.
+   Tanpa aturan ini SVG tidak punya ukuran dan melar memenuhi container (segitiga peringatan raksasa di Pengaturan QRIS). */
+iconify-icon{display:inline-block;width:1em;height:1em;line-height:1;vertical-align:-.125em;flex-shrink:0}
+iconify-icon>svg{display:block;width:1em;height:1em}
 :root{--bg:#ffffff;--card:#ffffff;--card2:#f8f8f9;--border:#ececee;--accent:#71717a;
 /* ══ DARK MODE (23 Agu 2026, DIGANTI 24 Agu 2026) ══
    Sebelumnya pakai CSS invert filter (lihat riwayat di bawah untuk
@@ -1284,9 +1288,16 @@ html.dark .badge-featured { color:#fca5a5 !important; }
 
         <!-- QRIS API (WijayaPay / GensPay) -->
         <div id="sectionApi" class="<%= (settings.qrisMode||'static')==='api' ? '' : 'hidden' %> space-y-3">
-            <div class="p-3 rounded-xl bg-red-500/8 border border-red-500/20 text-[11px] text-red-400 mb-2">
-                <iconify-icon icon="mdi:alert"></iconify-icon> Pastikan API key dan URL yang dimasukkan sudah benar. Test koneksi sebelum menyimpan.
+            <% var wpReady = !!(settings.wijayapay && settings.wijayapay.codeMerchant && settings.wijayapay.apiKey) && qrisGw === 'wijayapay' && (settings.qrisMode||'static') === 'api'; %>
+            <% if (wpReady) { %>
+            <div class="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-300 mb-2">
+                <iconify-icon icon="mdi:check-circle"></iconify-icon> Mode API aktif: pembayaran memakai QRIS dinamis WijayaPay (dikonfirmasi otomatis lewat webhook). Kalau halaman bayar masih menampilkan QRIS pribadi, lihat /admin/logs.
             </div>
+            <% } else { %>
+            <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-300 mb-2">
+                <iconify-icon icon="mdi:alert"></iconify-icon> WijayaPay belum aktif sepenuhnya: isi Code Merchant &amp; API Key, klik Test Koneksi, lalu Simpan. Selama belum aktif, pembayaran memakai QRIS statis (manual).
+            </div>
+            <% } %>
 
             <!-- Gateway Selector -->
             <div class="flex gap-2 mb-1">
