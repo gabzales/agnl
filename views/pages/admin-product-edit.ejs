@@ -367,7 +367,9 @@ async function loadProduct() {
       price: o.price,
       reseller_price: (o.reseller_price !== undefined && o.reseller_price !== null) ? o.reseller_price : null,
       strike_price: (o.strike_price !== undefined && o.strike_price !== null) ? o.strike_price : null,
-      dripstoreVariantId: o.dripstoreVariantId || null
+      dripstoreVariantId: o.dripstoreVariantId || null,
+      bhProductId: o.bhProductId || null,
+      bhDuration: o.bhDuration || null
     }));
   } else if (currentProduct.items && currentProduct.items.length > 0) {
     // Fallback untuk produk lama yang cuma punya 'items' tanpa 'pricingOptions'.
@@ -526,6 +528,16 @@ function renderPricingRows() {
           <iconify-icon icon="mdi:cloud-download-outline"></iconify-icon> Preload (opsional)
         </button>
       </div>
+      <div class="flex gap-2 items-center mt-2">
+        <input type="text" value="${opt.bhProductId || ''}" placeholder="BH Product ID (Bantibhaiya)"
+          class="hm-input text-xs flex-1" style="border-color:rgba(245,158,11,.25)"
+          title="Opsional. PID produk di Bantibhaiya. Dipakai otomatis jika DripStore tidak punya varian / gagal."
+          oninput="pricingOptions[${i}].bhProductId=this.value.trim()||null;">
+        <input type="text" value="${opt.bhDuration || ''}" placeholder='Durasi BH, mis. "1 Day"'
+          class="hm-input text-xs flex-1" style="border-color:rgba(245,158,11,.25)"
+          title="Teks durasi PERSIS seperti di Bantibhaiya (mis. 1 Day, 7 Days, 30 Days)."
+          oninput="pricingOptions[${i}].bhDuration=this.value.trim()||null;">
+      </div>
     </div>
   `).join('');
 }
@@ -631,7 +643,7 @@ function renderKeyInfo() {
       localStok = tagged;
       totalStok = tagged;
       const opt = (p.pricingOptions || [])[itemIdx];
-      providerBacked = !!opt?.dripstoreVariantId;
+      providerBacked = !!opt?.dripstoreVariantId || !!(opt?.bhProductId && opt?.bhDuration);
     }
 
     let right;

@@ -1,0 +1,12 @@
+Timpa ke root project AGNL (struktur folder sama):
+  bantibhaiya.js                       (BARU, taruh di root sebelah server.js)
+  server.js                            (ganti)
+  views/pages/admin.ejs                (ganti)
+  views/pages/admin-product-edit.ejs   (ganti)
+
+Cara pakai:
+1. Admin > Settings > kartu "Bantibhaiya": isi API Key + Master Key, Simpan, lalu "Tes Kunci".
+2. Admin > Edit Produk: tiap paket durasi ada 2 kolom baru: "BH Product ID" dan "Durasi BH" (teks persis, mis. 1 Day).
+3. Alur: DripStore dulu; kalau tidak ada varian / gagal / saldo kurang -> otomatis Bantibhaiya.
+   Kalau DripStore token kosong, Bantibhaiya jadi satu-satunya provider.
+   Gagal karena stok -> durasi itu ditandai habis 10 menit. Semua tercatat di Admin > Log.
