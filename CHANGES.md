@@ -144,3 +144,8 @@ Di halaman `/pay/:id`, kalau pesanan masih menunggu pembayaran setelah **1 menit
 - Urutan fulfillment: stok lokal → DripStore → Bantibhaiya → Panelstore. Error timeout/5xx menghentikan rantai (anti beli ganda); stok habis/saldo kurang/rate-limit lanjut ke provider berikutnya.
 - Admin → "Panelstore — Provider Auto Restock" (API Key + Tes Kunci); Edit Produk → field "Panelstore PID" per paket.
 - API key TIDAK di-hardcode; disimpan di settings (Supabase) atau env `PANELSTORE_API_KEY`.
+
+## Edit Produk: import key dengan pilihan varian
+- Dropdown "Masukkan ke varian" di Keys & Stok. Tempel/Import key ASLI, tag `=1h`/`=7d` ditambahkan otomatis saat simpan (baris yang sudah bertag dipertahankan).
+- Produk dengan 1 varian: varian langsung terpilih. Hint live: "N key akan masuk ke varian X".
+- Daftar key tersimpan menampilkan key asli + badge varian.
