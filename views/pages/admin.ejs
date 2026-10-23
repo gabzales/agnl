@@ -1464,15 +1464,15 @@ html.dark .badge-featured { color:#fca5a5 !important; }
         <div class="text-xs font-bold text-blue-400 mb-1 flex items-center gap-2">
             <iconify-icon icon="mdi:cloud-sync-outline"></iconify-icon> DripStore — Supplier Stok Key
         </div>
-        <p class="text-[11px] text-zinc-500 mb-3">Beda dari QRIS di atas -- ini buat GENERATE KEY dari supplier DripStore (dripclientstore.shop), otomatis motong saldo reseller di sana. Untuk produk yang punya Variant ID, pembelian LIVE terjadi saat customer selesai bayar. Preload/restock tetap opsional dan tidak pernah otomatis membeli tanpa approval.</p>
+        <p class="text-[11px] text-zinc-500 mb-3">Beda dari QRIS di atas -- ini buat GENERATE KEY dari supplier DripStore (dripclientofficial.shop), otomatis motong saldo reseller di sana. Untuk produk yang punya Variant ID, pembelian LIVE terjadi saat customer selesai bayar. Preload/restock tetap opsional dan tidak pernah otomatis membeli tanpa approval.</p>
         <form id="dripstoreForm" class="space-y-3">
             <div>
                 <div class="setting-row-label">API Token DripStore</div>
                 <input type="text" name="apiToken" value="<%= settings.dripstore?.apiToken||'' %>" class="hm-input font-mono text-xs" placeholder="X-API-Token dari dashboard DripStore">
             </div>
             <div>
-                <div class="setting-row-label">Base URL <span class="text-zinc-600 font-normal">(default: dripclientstore.shop/api/v1)</span></div>
-                <input type="text" name="baseUrl" value="<%= settings.dripstore?.baseUrl||'https://dripclientstore.shop/api/v1' %>" class="hm-input font-mono text-xs" placeholder="https://dripclientstore.shop/api/v1">
+                <div class="setting-row-label">Base URL <span class="text-zinc-600 font-normal">(default: dripclientofficial.shop/api/v1)</span></div>
+                <input type="text" name="baseUrl" value="<%= settings.dripstore?.baseUrl||'https://dripclientofficial.shop/api/v1' %>" class="hm-input font-mono text-xs" placeholder="https://dripclientofficial.shop/api/v1">
             </div>
             <div>
                 <div class="setting-row-label">Mode penyaluran key</div>
