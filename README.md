@@ -39,11 +39,21 @@ Lihat `VERCEL_DEPLOYMENT.md` untuk panduan lengkap. Ringkas:
 ```
 server.js              # entrypoint utama (Express app)
 supabase.js             # semua akses database & storage
+dripstore2.js           # provider tambahan: DripStore Web 2 (domain + token terpisah)
+bantibhaiya.js          # provider tambahan: Bantibhaiya
+panelstore.js           # provider tambahan: Panelstore
 seed-settings.js        # push/update settings awal ke Supabase
 views/                  # EJS templates (layout.ejs + partials/ + pages/)
 public/uploads/         # asset statis (logo-main.png, logo-text.png) — dibundle ke deploy
 src/input.css           # source Tailwind, di-build ke public/css/tailwind.css saat `npm run build`
 ```
+
+## Provider Key (fulfillment otomatis)
+
+Setelah pembayaran lunas, key diambil dengan urutan: **stok lokal → DripStore → DripStore Web 2 → Bantibhaiya → Panelstore**.
+Tiap provider diisi kuncinya di Admin → Settings (ada tombol *Tes*) dan dipetakan per paket di Edit Produk
+(Variant ID / PID). Timeout atau error 5xx menghentikan rantai supaya key tidak terbeli ganda.
+Detail: `LOKASI.txt`, `CHANGES.md`, `docs/PANDUAN-STOK-KEY-QRIS-PRIBADI.md`.
 
 ## Catatan Penting
 

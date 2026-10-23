@@ -1,12 +1,32 @@
 Timpa ke root project AGNL (struktur folder sama):
-  bantibhaiya.js                       (BARU, taruh di root sebelah server.js)
+  panelstore.js                        (BARU, root sebelah server.js)
+  dripstore2.js                        (BARU, root sebelah server.js)
   server.js                            (ganti)
   views/pages/admin.ejs                (ganti)
   views/pages/admin-product-edit.ejs   (ganti)
+  .env.example, CHANGES.md, README.md, docs/*.md   (opsional, dokumentasi)
+  (bantibhaiya.js tetap dipakai, tidak berubah)
 
-Cara pakai:
-1. Admin > Settings > kartu "Bantibhaiya": isi API Key + Master Key, Simpan, lalu "Tes Kunci".
-2. Admin > Edit Produk: tiap paket durasi ada 2 kolom baru: "BH Product ID" dan "Durasi BH" (teks persis, mis. 1 Day).
-3. Alur: DripStore dulu; kalau tidak ada varian / gagal / saldo kurang -> otomatis Bantibhaiya.
-   Kalau DripStore token kosong, Bantibhaiya jadi satu-satunya provider.
-   Gagal karena stok -> durasi itu ditandai habis 10 menit. Semua tercatat di Admin > Log.
+Provider & urutan pengambilan key saat pesanan dibayar:
+  stok lokal -> DripStore -> DripStore Web 2 -> Bantibhaiya -> Panelstore
+
+Setup tiap provider (Admin > Settings, lalu klik tombol Tes):
+1. DripStore Web 2 : kartu "DripStore Web 2" -> API Token (+ Base URL). Tes = baca saldo, tidak membeli.
+   Edit Produk: kolom "Variant ID DripStore Web 2" per paket.
+   Kalau tes menyebut Cloudflare: IP server harus di-allowlist admin toko.
+   Tes juga menampilkan jumlah varian & berapa yang Bala Mod v1 (butuh Android ID pembeli -> JANGAN dipetakan;
+   kalau terlanjur dipetakan, otomatis ditolak sebelum membeli & lanjut ke provider berikutnya).
+   Varian Bala Mod mode "both" otomatis dibeli sebagai v2 (key langsung tanpa Android ID).
+   Batas server: 60 req/menit per IP.
+2. Bantibhaiya     : kartu "Bantibhaiya" -> API Key + Master Key.
+   Edit Produk: "BH Product ID" + "Durasi BH" (teks persis, mis. 1 Day).
+3. Panelstore      : kartu "Panelstore" -> API Key.
+   Edit Produk: "Panelstore PID" per paket.
+
+Aturan: provider tanpa pemetaan di paket itu dilewati. Gagal karena stok/saldo -> paket ditandai habis
+10 menit & lanjut ke provider berikutnya. Timeout/error 5xx -> rantai BERHENTI (anti beli ganda), pesanan
+masuk alur retry. Semua tercatat di Admin > Log. API key/token JANGAN ditulis di kode: simpan lewat Admin
+atau env (lihat .env.example).
+
+Input key manual per varian: Edit Produk > Keys & Stok > dropdown "Masukkan ke varian" > tempel key ASLI.
+Tag =1h/=7d dipasang otomatis dan tidak pernah terlihat pembeli.

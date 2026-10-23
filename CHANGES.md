@@ -149,3 +149,11 @@ Di halaman `/pay/:id`, kalau pesanan masih menunggu pembayaran setelah **1 menit
 - Dropdown "Masukkan ke varian" di Keys & Stok. Tempel/Import key ASLI, tag `=1h`/`=7d` ditambahkan otomatis saat simpan (baris yang sudah bertag dipertahankan).
 - Produk dengan 1 varian: varian langsung terpilih. Hint live: "N key akan masuk ke varian X".
 - Daftar key tersimpan menampilkan key asli + badge varian.
+
+## Provider baru: DripStore Web 2 (dripclientofficial.shop)
+- `dripstore2.js`: API sama dengan DripStore utama (header `X-API-Token`, `generate_key.php`), domain + token + saldo terpisah.
+- Urutan fulfillment: stok lokal → DripStore → DripStore Web 2 → Bantibhaiya → Panelstore. Timeout/5xx menghentikan rantai (anti beli ganda).
+- Admin → "DripStore Web 2" (Token + Tes Token & Saldo — tes memakai balance.php, tidak membeli); Edit Produk → field "Variant ID DripStore Web 2" per paket.
+- Token TIDAK di-hardcode; disimpan di settings atau env `DRIPSTORE2_API_TOKEN`.
+- Mengikuti dokumentasi resmi toko (dripstore-client.js): 5xx origin yang dibungkus HTTP 200 `{success:false, code}` dianggap sementara (anti beli ganda); 403 IP diblokir / 423 batas reset ditangani; varian Bala Mod v1 ditolak sebelum membeli; Bala Mod `both` dibeli sebagai `api_version=v2`.
+- Tes Token & Saldo juga membaca products.php (jumlah varian, jumlah Bala Mod v1).

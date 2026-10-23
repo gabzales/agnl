@@ -379,7 +379,8 @@ async function loadProduct() {
       dripstoreVariantId: o.dripstoreVariantId || null,
       bhProductId: o.bhProductId || null,
       bhDuration: o.bhDuration || null,
-      psProductId: o.psProductId || null
+      psProductId: o.psProductId || null,
+      ds2VariantId: o.ds2VariantId || null
     }));
   } else if (currentProduct.items && currentProduct.items.length > 0) {
     // Fallback untuk produk lama yang cuma punya 'items' tanpa 'pricingOptions'.
@@ -554,6 +555,10 @@ function renderPricingRows() {
           class="hm-input text-xs flex-1" style="border-color:rgba(139,92,246,.3)"
           title="Opsional. PID produk di Panelstore (angka dari halaman Quickstart & PIDs). Dipakai otomatis jika DripStore & Bantibhaiya tidak punya varian / gagal."
           oninput="pricingOptions[${i}].psProductId=this.value.trim()||null;">
+        <input type="text" value="${opt.ds2VariantId || ''}" placeholder="Variant ID DripStore Web 2"
+          class="hm-input text-xs flex-1" style="border-color:rgba(59,130,246,.3)"
+          title="Opsional. Variant ID di DripStore Web 2 (dripclientofficial.shop). Dipakai otomatis jika DripStore utama tidak punya varian / gagal."
+          oninput="pricingOptions[${i}].ds2VariantId=this.value.trim()||null;">
       </div>
     </div>
   `).join('');
@@ -660,7 +665,7 @@ function renderKeyInfo() {
       localStok = tagged;
       totalStok = tagged;
       const opt = (p.pricingOptions || [])[itemIdx];
-      providerBacked = !!opt?.dripstoreVariantId || !!(opt?.bhProductId && opt?.bhDuration) || !!opt?.psProductId;
+      providerBacked = !!opt?.dripstoreVariantId || !!(opt?.bhProductId && opt?.bhDuration) || !!opt?.psProductId || !!opt?.ds2VariantId;
     }
 
     let right;
