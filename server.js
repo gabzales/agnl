@@ -1027,7 +1027,7 @@ const initDB = async () => {
     wijayapay: { codeMerchant: '', apiKey: '' },
     panelstore: { apiKey: '', url: 'https://www.panelstore.shop/api/v1/index.php' },
     dripstore2: { apiToken: '', baseUrl: 'https://dripclientofficial.shop/api/v1' },
-    dripstore: { apiToken: '', baseUrl: 'https://dripclientstore.shop/api/v1', fulfillmentMode: 'live', balanceGuardEnabled: true, autoRestockEnabled: false, lowStockThreshold: 3, restockQty: 10 },
+    dripstore: { apiToken: '', baseUrl: 'https://dripclientofficial.shop/api/v1', fulfillmentMode: 'live', balanceGuardEnabled: true, autoRestockEnabled: false, lowStockThreshold: 3, restockQty: 10 },
     apiGateway: 'wijayapay',
     adminUsername: fallbackUsername,
     adminPassword: bcrypt.hashSync(fallbackPassword, 12),
@@ -1081,6 +1081,11 @@ const initDB = async () => {
         currentSettings[k] = v;
         dirty = true;
       }
+    }
+    if (currentSettings.dripstore && /dripclientstore\.shop/i.test(String(currentSettings.dripstore.baseUrl || ''))) {
+      currentSettings.dripstore.baseUrl = normalizeDripBaseUrl(currentSettings.dripstore.baseUrl);
+      dirty = true;
+      console.log('✅ Migrasi Base URL DripStore -> dripclientofficial.shop');
     }
     if (dirty) {
       await writeDB('settings.json', currentSettings);
@@ -1382,7 +1387,13 @@ const createQRISPaymentWijayapay = async (orderId, amount, settings) => {
   }
 };
 
-// DRIP STORE RESELLER API (dripclientstore.shop) — supplier key/stok
+// Domain lama supplier (sudah mati / ENOTFOUND) -> domain resmi baru.
+// Base URL lama bisa masih tersimpan di settings (Supabase), jadi dinormalisasi saat dipakai.
+function normalizeDripBaseUrl(u) {
+  return String(u || '').trim().replace(/dripclientstore\.shop/gi, 'dripclientofficial.shop');
+}
+
+// DRIP STORE RESELLER API (dripclientofficial.shop) — supplier key/stok
 // buat produk-produk mod-menu (dokumentasi dari client library resmi
 function _dsTransientError(message) {
   const err = new Error(message);
@@ -1498,7 +1509,7 @@ function _dripstoreCallOnce(settings, endpoint, params = {}, method = 'GET', _re
 function _dripstoreCallOnceRaw(settings, endpoint, params = {}, method = 'GET', _retried = false) {
   return new Promise((resolve, reject) => {
     const token = (settings.dripstore?.apiToken || '').trim();
-    const baseUrl = (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1').trim();
+    const baseUrl = normalizeDripBaseUrl(settings.dripstore?.baseUrl || 'https://dripclientofficial.shop/api/v1');
     if (!token) return reject(new Error('API Token DripStore belum dikonfigurasi di Settings'));
     let url;
     try { url = new URL(baseUrl.replace(/\/+$/, '') + '/' + endpoint.replace(/^\/+/, '')); } catch (e) { return reject(new Error('Base URL DripStore tidak valid')); }
@@ -2149,7 +2160,7 @@ function _getDripstoreCatalogSignature(settings) {
   const token = String(ds.apiToken || '').trim();
   if (!token) return '';
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex').slice(0, 16);
-  return `${String(ds.baseUrl || 'https://dripclientstore.shop/api/v1').trim()}|${tokenHash}`;
+  return `${normalizeDripBaseUrl(ds.baseUrl || 'https://dripclientofficial.shop/api/v1')}|${tokenHash}`;
 }
 
 // Ambil last-known-good dari memori instance ini, atau dari snapshot yang
@@ -5776,7 +5787,7 @@ app.post('/admin/settings/dripstore', requireAdmin, async (req, res) => {
     const requestedAutoRestock = autoRestockEnabled === 'on' || autoRestockEnabled === true;
     settings.dripstore = {
       apiToken: apiToken !== undefined ? apiToken.trim() : (settings.dripstore?.apiToken || ''),
-      baseUrl: baseUrl !== undefined ? baseUrl.trim() : (settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1'),
+      baseUrl: baseUrl !== undefined ? normalizeDripBaseUrl(baseUrl) : (settings.dripstore?.baseUrl || 'https://dripclientofficial.shop/api/v1'),
       fulfillmentMode: savedMode,
       balanceGuardEnabled: balanceGuardEnabled === undefined ? (settings.dripstore?.balanceGuardEnabled !== false) : (balanceGuardEnabled === 'on' || balanceGuardEnabled === true),
       // Auto-restock hanya masuk akal di HYBRID karena LIVE sudah JIT provider
@@ -6305,7 +6316,7 @@ app.post('/admin/dripstore/refresh', requireAdmin, async (req, res) => {
 app.get('/admin/dripstore/health', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
-    const out = { success: true, tokenConfigured: !!settings.dripstore?.apiToken, baseUrl: settings.dripstore?.baseUrl || 'https://dripclientstore.shop/api/v1', fulfillmentMode: settings.dripstore?.fulfillmentMode || 'live' };
+    const out = { success: true, tokenConfigured: !!settings.dripstore?.apiToken, baseUrl: settings.dripstore?.baseUrl || 'https://dripclientofficial.shop/api/v1', fulfillmentMode: settings.dripstore?.fulfillmentMode || 'live' };
     const brk = dripstoreBreakerState();
     out.breaker = { open: !!brk.open, retryAfterSec: brk.retryAfterSec || 0 };
     const lg = _dsLastGood(settings);
