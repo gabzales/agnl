@@ -14,7 +14,7 @@
 Mau jual dari stok sendiri + QRIS pribadi saja => pilih LOCAL STOCK.
 
 Provider cadangan (aktif di mode HYBRID/LIVE, hanya untuk paket yang sudah dipetakan di Edit Produk):
-DripStore -> DripStore Web 2 -> Bantibhaiya -> Panelstore. Kalau satu provider habis stok/saldo, otomatis lanjut
+DripStore -> DripStore Web 2 -> Panelstore. Kalau satu provider habis stok/saldo, otomatis lanjut
 ke berikutnya. Kalau timeout/error server, berhenti dan pesanan masuk retry (supaya tidak beli ganda).
 Mode LOCAL STOCK tidak pernah memakai provider manapun.
 

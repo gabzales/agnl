@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Provider tambahan: panelstore.shop (API reseller v1), dipakai bersama DripStore & Bantibhaiya.
+ * Provider tambahan: panelstore.shop (API reseller v1), dipakai bersama DripStore.
  *   POST JSON ke /api/v1/index.php:
  *     { key, action: "order", pid, quantity, custom_notes }
  *   Sukses : { status: "success", license_key, message }

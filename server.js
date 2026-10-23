@@ -948,7 +948,6 @@ const readFresh = db.readFresh;
 // Riwayat pembayaran permanen + halaman /admin/payment-history (bukti banding payment gateway)
 const paymentAudit = require('./payment-audit');
 const wijayapay = require('./wijayapay');
-const bantibhaiya = require('./bantibhaiya');
 const panelstore = require('./panelstore');
 const dripstore2 = require('./dripstore2');
 paymentAudit.init({ readFresh: (f) => db.readFresh(f), writeDB: (f, d) => db.writeDB(f, d) });
@@ -1026,7 +1025,6 @@ const initDB = async () => {
     fonnteToken: '',
     genspay: { apiKey: '', baseUrl: 'https://genspay.my.id/api/v1' },
     wijayapay: { codeMerchant: '', apiKey: '' },
-    bantibhaiya: { apiKey: '', masterKey: '', url: 'https://bantibhaiya.to/api/reseller_v1.php' },
     panelstore: { apiKey: '', url: 'https://www.panelstore.shop/api/v1/index.php' },
     dripstore2: { apiToken: '', baseUrl: 'https://dripclientofficial.shop/api/v1' },
     dripstore: { apiToken: '', baseUrl: 'https://dripclientstore.shop/api/v1', fulfillmentMode: 'live', balanceGuardEnabled: true, autoRestockEnabled: false, lowStockThreshold: 3, restockQty: 10 },
@@ -2440,18 +2438,18 @@ function getLocalOptionStock(product, opt) {
   return normalizeUsableLocalKeys(keys).filter(isGenericKey).length;
 }
 
-// Bantibhaiya = provider tambahan. Tidak ada API cek stok, jadi bila durasi sudah dipetakan
-// (bhProductId+bhDuration), kunci terisi & tidak ditandai habis => tampil stok provider maya.
+// Provider tambahan tidak punya API cek stok, jadi bila durasi sudah dipetakan,
+// kunci terisi & tidak ditandai habis => tampil stok provider maya.
 function getOptionStockView(product, opt, snapshot, mode, providerConfigured = false) {
   const v = _getOptionStockViewBase(product, opt, snapshot, mode, providerConfigured);
   if (mode === 'local') return v;
-  // Provider tambahan (DripStore Web 2, Bantibhaiya, Panelstore) tanpa API cek stok: tampil stok maya
+  // Provider tambahan (DripStore Web 2, Panelstore) tanpa API cek stok: tampil stok maya
   // selama terpetakan + kunci terisi + tidak ditandai habis.
   const ok = _EXTRA_PROVIDERS.filter(p => p.mod.usable(opt));
   if (!ok.length) return v;
   const virtual = Math.max(...ok.map(p => p.mod.VIRTUAL_STOCK));
   const providerStock = Math.max(Number(v.providerStock) || 0, virtual);
-  return { ...v, providerStock, stock: (Number(v.localStock) || 0) + providerStock, providerKnown: true, providerBacked: true, bantibhaiya: bantibhaiya.usable(opt), panelstore: panelstore.usable(opt), dripstore2: dripstore2.usable(opt) };
+  return { ...v, providerStock, stock: (Number(v.localStock) || 0) + providerStock, providerKnown: true, providerBacked: true, panelstore: panelstore.usable(opt), dripstore2: dripstore2.usable(opt) };
 }
 
 function _getOptionStockViewBase(product, opt, snapshot, mode, providerConfigured = false) {
@@ -2684,7 +2682,7 @@ async function dripstoreGenerateKey(settings, variantId, quantity) {
 const _dripstoreLiveLocks = new Set();
 
 // Urutan: DripStore dulu; bila DripStore tidak dikonfigurasi / tidak punya varian / gagal,
-// jatuh ke DripStore Web 2, lalu Bantibhaiya, lalu Panelstore (kalau durasi itu dipetakan di masing-masing).
+// jatuh ke DripStore Web 2, lalu Panelstore (kalau durasi itu dipetakan di masing-masing).
 // Error DripStore dipertahankan bila provider tambahan juga tidak bisa, supaya logika
 // pending_retry yang ada tetap berlaku.
 // KEAMANAN DOUBLE-BUY: error "transient" (timeout / 5xx) berarti order MUNGKIN sudah tercatat di
@@ -2693,11 +2691,9 @@ const _dripstoreLiveLocks = new Set();
 // jelas belum membeli apa pun, jadi aman lanjut ke provider berikutnya.
 const _EXTRA_PROVIDERS = [
   { name: 'DripStore2', label: 'DripStore Web 2', mod: dripstore2, lock: 'ds2', variant: (m) => m.variantId },
-  { name: 'Bantibhaiya', mod: bantibhaiya, lock: 'bh', variant: (m) => m.pid + '|' + m.dur },
   { name: 'Panelstore', mod: panelstore, lock: 'ps', variant: (m) => m.pid },
 ];
 function _configureExtraProviders(settings) {
-  bantibhaiya.setConfig(settings?.bantibhaiya);
   panelstore.setConfig(settings?.panelstore);
   dripstore2.setConfig(settings?.dripstore2);
 }
@@ -5717,24 +5713,6 @@ app.post('/admin/settings/wijayapay', requireAdmin, async (req, res) => {
   }
 });
 
-// ── Bantibhaiya Settings (provider tambahan) ──
-app.post('/admin/settings/bantibhaiya', requireAdmin, async (req, res) => {
-  try {
-    const settings = await readFresh('settings.json');
-    const b = req.body || {};
-    const prev = settings.bantibhaiya || {};
-    // Field kosong = pertahankan nilai lama (kunci tidak ditampilkan ulang di form).
-    settings.bantibhaiya = {
-      apiKey: typeof b.apiKey === 'string' && b.apiKey.trim() ? b.apiKey.trim() : (prev.apiKey || ''),
-      masterKey: typeof b.masterKey === 'string' && b.masterKey.trim() ? b.masterKey.trim() : (prev.masterKey || ''),
-      url: typeof b.url === 'string' && /^https:\/\//.test(b.url.trim()) ? b.url.trim() : (prev.url || 'https://bantibhaiya.to/api/reseller_v1.php'),
-    };
-    await writeDB('settings.json', settings);
-    _invalidateDripstoreSnapshot({ full: true });
-    res.json({ success: true, configured: !!(settings.bantibhaiya.apiKey && settings.bantibhaiya.masterKey) });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
 // ── Panelstore Settings (provider tambahan, auto restock/fulfillment) ──
 app.post('/admin/settings/panelstore', requireAdmin, async (req, res) => {
   try {
@@ -5785,16 +5763,6 @@ app.post('/admin/panelstore/test', requireAdmin, async (req, res) => {
     panelstore.setConfig(settings.panelstore);
     const r = await panelstore.check();
     pushLog(r.ok ? 'info' : 'warn', `[provider] tes kunci Panelstore: ${r.note}`, { cat: 'dripstore' });
-    res.json({ success: true, ...r });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-app.post('/admin/bantibhaiya/test', requireAdmin, async (req, res) => {
-  try {
-    const settings = await readFresh('settings.json');
-    bantibhaiya.setConfig(settings.bantibhaiya);
-    const r = await bantibhaiya.check();
-    pushLog(r.ok ? 'info' : 'warn', `[provider] tes kunci Bantibhaiya: ${r.note}`, { cat: 'dripstore' });
     res.json({ success: true, ...r });
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
@@ -7158,8 +7126,6 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
           }
           validOpts.push({ days, unit, price, reseller_price: resellerPrice, strike_price: strikePriceVal,
             dripstoreVariantId: (o.dripstoreVariantId || '').toString().trim() || null,
-            bhProductId: (o.bhProductId || '').toString().trim().slice(0, 40) || null,
-            bhDuration: (o.bhDuration || '').toString().trim().slice(0, 60) || null,
             psProductId: (o.psProductId || '').toString().trim().slice(0, 40) || null,
             ds2VariantId: (o.ds2VariantId || '').toString().trim().slice(0, 40) || null });
         }

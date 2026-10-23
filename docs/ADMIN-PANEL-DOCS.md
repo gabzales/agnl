@@ -125,7 +125,7 @@ if (user && await bcrypt.compare(password, user.password)) {
 
 - 🔌 **Pemetaan Provider per Paket**
   - Variant ID DripStore, Variant ID DripStore Web 2, BH Product ID + Durasi BH, Panelstore PID
-  - Urutan pengambilan key: stok lokal → DripStore → DripStore Web 2 → Bantibhaiya → Panelstore
+  - Urutan pengambilan key: stok lokal → DripStore → DripStore Web 2 → Panelstore
 
 - 🔄 **Status Toggle**
   - Active / Inactive
@@ -319,8 +319,6 @@ setInterval(async () => {
 | POST | `/admin/theme` | admin | Update theme |
 | POST | `/admin/settings/dripstore2` | admin | Simpan token DripStore Web 2 |
 | POST | `/admin/dripstore2/test` | admin | Tes token + baca saldo (tidak membeli) |
-| POST | `/admin/settings/bantibhaiya` | admin | Simpan kunci Bantibhaiya |
-| POST | `/admin/bantibhaiya/test` | admin | Tes kunci Bantibhaiya |
 | POST | `/admin/settings/panelstore` | admin | Simpan API key Panelstore |
 | POST | `/admin/panelstore/test` | admin | Tes API key Panelstore |
 
