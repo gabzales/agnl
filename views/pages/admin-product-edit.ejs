@@ -369,7 +369,8 @@ async function loadProduct() {
       strike_price: (o.strike_price !== undefined && o.strike_price !== null) ? o.strike_price : null,
       dripstoreVariantId: o.dripstoreVariantId || null,
       bhProductId: o.bhProductId || null,
-      bhDuration: o.bhDuration || null
+      bhDuration: o.bhDuration || null,
+      psProductId: o.psProductId || null
     }));
   } else if (currentProduct.items && currentProduct.items.length > 0) {
     // Fallback untuk produk lama yang cuma punya 'items' tanpa 'pricingOptions'.
@@ -538,6 +539,12 @@ function renderPricingRows() {
           title="Teks durasi PERSIS seperti di Bantibhaiya (mis. 1 Day, 7 Days, 30 Days)."
           oninput="pricingOptions[${i}].bhDuration=this.value.trim()||null;">
       </div>
+      <div class="flex gap-2 items-center mt-2">
+        <input type="text" value="${opt.psProductId || ''}" placeholder="Panelstore PID (auto restock)"
+          class="hm-input text-xs flex-1" style="border-color:rgba(139,92,246,.3)"
+          title="Opsional. PID produk di Panelstore (angka dari halaman Quickstart & PIDs). Dipakai otomatis jika DripStore & Bantibhaiya tidak punya varian / gagal."
+          oninput="pricingOptions[${i}].psProductId=this.value.trim()||null;">
+      </div>
     </div>
   `).join('');
 }
@@ -643,7 +650,7 @@ function renderKeyInfo() {
       localStok = tagged;
       totalStok = tagged;
       const opt = (p.pricingOptions || [])[itemIdx];
-      providerBacked = !!opt?.dripstoreVariantId || !!(opt?.bhProductId && opt?.bhDuration);
+      providerBacked = !!opt?.dripstoreVariantId || !!(opt?.bhProductId && opt?.bhDuration) || !!opt?.psProductId;
     }
 
     let right;

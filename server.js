@@ -949,6 +949,7 @@ const readFresh = db.readFresh;
 const paymentAudit = require('./payment-audit');
 const wijayapay = require('./wijayapay');
 const bantibhaiya = require('./bantibhaiya');
+const panelstore = require('./panelstore');
 paymentAudit.init({ readFresh: (f) => db.readFresh(f), writeDB: (f, d) => db.writeDB(f, d) });
 
 // Banner lama (seed default "Open Reseller") tersimpan tanpa field `id` dan
@@ -1025,6 +1026,7 @@ const initDB = async () => {
     genspay: { apiKey: '', baseUrl: 'https://genspay.my.id/api/v1' },
     wijayapay: { codeMerchant: '', apiKey: '' },
     bantibhaiya: { apiKey: '', masterKey: '', url: 'https://bantibhaiya.to/api/reseller_v1.php' },
+    panelstore: { apiKey: '', url: 'https://www.panelstore.shop/api/v1/index.php' },
     dripstore: { apiToken: '', baseUrl: 'https://dripclientstore.shop/api/v1', fulfillmentMode: 'live', balanceGuardEnabled: true, autoRestockEnabled: false, lowStockThreshold: 3, restockQty: 10 },
     apiGateway: 'wijayapay',
     adminUsername: fallbackUsername,
@@ -2440,9 +2442,13 @@ function getLocalOptionStock(product, opt) {
 // (bhProductId+bhDuration), kunci terisi & tidak ditandai habis => tampil stok provider maya.
 function getOptionStockView(product, opt, snapshot, mode, providerConfigured = false) {
   const v = _getOptionStockViewBase(product, opt, snapshot, mode, providerConfigured);
-  if (mode === 'local' || !bantibhaiya.usable(opt)) return v;
-  const providerStock = Math.max(Number(v.providerStock) || 0, bantibhaiya.VIRTUAL_STOCK);
-  return { ...v, providerStock, stock: (Number(v.localStock) || 0) + providerStock, providerKnown: true, providerBacked: true, bantibhaiya: true };
+  if (mode === 'local') return v;
+  const bhUsable = bantibhaiya.usable(opt), psUsable = panelstore.usable(opt);
+  if (!bhUsable && !psUsable) return v;
+  // Panelstore juga provider tambahan tanpa API cek stok: sama seperti Bantibhaiya, tampil stok maya.
+  const virtual = Math.max(bhUsable ? bantibhaiya.VIRTUAL_STOCK : 0, psUsable ? panelstore.VIRTUAL_STOCK : 0);
+  const providerStock = Math.max(Number(v.providerStock) || 0, virtual);
+  return { ...v, providerStock, stock: (Number(v.localStock) || 0) + providerStock, providerKnown: true, providerBacked: true, bantibhaiya: bhUsable, panelstore: psUsable };
 }
 
 function _getOptionStockViewBase(product, opt, snapshot, mode, providerConfigured = false) {
@@ -2522,6 +2528,7 @@ function buildProductStockSummary(rawProduct, settings, snapshot = null) {
   const options = Array.isArray(product.pricingOptions) ? product.pricingOptions : [];
   const providerConfigured = !!settings?.dripstore?.apiToken;
   bantibhaiya.setConfig(settings?.bantibhaiya);
+  panelstore.setConfig(settings?.panelstore);
   const optionViews = options.map(opt => getOptionStockView(product, opt, snapshot, mode, providerConfigured));
   const stockByOption = optionViews.map((view, index) => ({
     index,
@@ -2675,10 +2682,20 @@ async function dripstoreGenerateKey(settings, variantId, quantity) {
 const _dripstoreLiveLocks = new Set();
 
 // Urutan: DripStore dulu; bila DripStore tidak dikonfigurasi / tidak punya varian / gagal,
-// jatuh ke Bantibhaiya (kalau durasi itu dipetakan). Error DripStore dipertahankan bila
-// Bantibhaiya juga tidak bisa, supaya logika pending_retry yang ada tetap berlaku.
+// jatuh ke Bantibhaiya, lalu Panelstore (kalau durasi itu dipetakan di masing-masing).
+// Error DripStore dipertahankan bila provider tambahan juga tidak bisa, supaya logika
+// pending_retry yang ada tetap berlaku.
+// KEAMANAN DOUBLE-BUY: error "transient" (timeout / 5xx) berarti order MUNGKIN sudah tercatat di
+// provider, jadi TIDAK boleh lanjut ke provider berikutnya (key bisa terbeli dua kali) — langsung
+// dilempar supaya alur pending_retry yang menangani. Rate-limit (429) dan error stok/auth/gagal
+// jelas belum membeli apa pun, jadi aman lanjut ke provider berikutnya.
+const _EXTRA_PROVIDERS = [
+  { name: 'Bantibhaiya', mod: bantibhaiya, lock: 'bh', variant: (m) => m.pid + '|' + m.dur },
+  { name: 'Panelstore', mod: panelstore, lock: 'ps', variant: (m) => m.pid },
+];
 async function fulfillProductFromDripstore(transaction, settings) {
   bantibhaiya.setConfig(settings?.bantibhaiya);
+  panelstore.setConfig(settings?.panelstore);
   const mode = settings.dripstore?.fulfillmentMode || 'live';
   if (mode === 'local') return null;
   let dsErr = null, dsRes = null;
@@ -2693,29 +2710,39 @@ async function fulfillProductFromDripstore(transaction, settings) {
   const rawProduct = products.find(p => String(p.id) === String(transaction.productId));
   const product = rawProduct ? normalizeProductBuyOptions(rawProduct) : null;
   const opt = product && (product.pricingOptions || []).find(o => Number(o.days) === days && (o.unit || 'd') === unit);
-  if (!opt || !bantibhaiya.mapping(opt)) { if (dsErr) throw dsErr; return null; }
-  const why = bantibhaiya.why(opt);
-  if (why) {
-    pushLog('warn', `[provider] Bantibhaiya dilewati untuk ${product.name} ${days}${unit}: ${why}`, { cat: 'dripstore' });
-    if (dsErr) throw dsErr; return null;
+  const mapped = opt ? _EXTRA_PROVIDERS.filter(p => p.mod.mapping(opt)) : [];
+  if (!mapped.length) { if (dsErr) throw dsErr; return null; }
+
+  let lastErr = null;
+  for (const prov of mapped) {
+    const why = prov.mod.why(opt);
+    if (why) {
+      pushLog('warn', `[provider] ${prov.name} dilewati untuk ${product.name} ${days}${unit}: ${why}`, { cat: 'dripstore' });
+      continue;
+    }
+    const lockKey = `${prov.lock}:${transaction.id}`;
+    if (_dripstoreLiveLocks.has(lockKey)) throw new Error(`Pesanan sedang mengambil key dari ${prov.name}, tunggu sebentar.`);
+    _dripstoreLiveLocks.add(lockKey);
+    const t0 = Date.now();
+    try {
+      if (dsErr && !lastErr) pushLog('warn', `[provider] DripStore gagal (${dsErr.message}) -> coba ${prov.name} untuk ${product.name} ${days}${unit}`, { cat: 'dripstore' });
+      else if (lastErr) pushLog('warn', `[provider] ${lastErr.message} -> coba ${prov.name} untuk ${product.name} ${days}${unit}`, { cat: 'dripstore' });
+      const r = await prov.mod.buy(opt, transaction.orderId || transaction.id);
+      prov.mod.clearDown(opt);
+      pushLog('info', `[provider] ${prov.name} buy OK ${Date.now() - t0}ms ${product.name} ${days}${unit}`, { cat: 'dripstore' });
+      return { key: r.key, source: prov.name.toLowerCase(), variantId: prov.variant(prov.mod.mapping(opt)), providerTransactionId: r.tx || null };
+    } catch (e) {
+      if (e.stock) prov.mod.markDown(opt, e.message);
+      pushLog(e.rateLimited ? 'warn' : 'error', `[provider] ${prov.name} buy GAGAL ${Date.now() - t0}ms ${product.name} ${days}${unit}: ${e.message}`, { cat: 'dripstore' });
+      if (e.transient && !e.rateLimited) throw e; // order mungkin sudah masuk: jangan beli di provider lain
+      lastErr = e;
+    } finally {
+      _dripstoreLiveLocks.delete(lockKey);
+    }
   }
-  const lockKey = `bh:${transaction.id}`;
-  if (_dripstoreLiveLocks.has(lockKey)) throw new Error('Pesanan sedang mengambil key dari Bantibhaiya, tunggu sebentar.');
-  _dripstoreLiveLocks.add(lockKey);
-  const t0 = Date.now();
-  try {
-    if (dsErr) pushLog('warn', `[provider] DripStore gagal (${dsErr.message}) -> coba Bantibhaiya untuk ${product.name} ${days}${unit}`, { cat: 'dripstore' });
-    const r = await bantibhaiya.buy(opt);
-    bantibhaiya.clearDown(opt);
-    pushLog('info', `[provider] Bantibhaiya buy OK ${Date.now() - t0}ms ${product.name} ${days}${unit}`, { cat: 'dripstore' });
-    return { key: r.key, source: 'bantibhaiya', variantId: bantibhaiya.mapping(opt).pid + '|' + bantibhaiya.mapping(opt).dur, providerTransactionId: r.tx || null };
-  } catch (e) {
-    if (e.stock) bantibhaiya.markDown(opt, e.message);
-    pushLog(e.rateLimited ? 'warn' : 'error', `[provider] Bantibhaiya buy GAGAL ${Date.now() - t0}ms ${product.name} ${days}${unit}: ${e.message}`, { cat: 'dripstore' });
-    throw dsErr && !e.transient ? dsErr : e;
-  } finally {
-    _dripstoreLiveLocks.delete(lockKey);
-  }
+  if (dsErr) throw dsErr;
+  if (lastErr) throw lastErr;
+  return null;
 }
 
 async function _fulfillProductFromDripstoreOnly(transaction, settings) {
@@ -4122,7 +4149,8 @@ app.post('/create-order', async (req, res) => {
     const localDurationStock = selectedOpt ? getLocalOptionStock(product, selectedOpt) : 0;
     const providerNeededAtCreate = !!selectedOpt && (dsMode === 'live' || (dsMode === 'hybrid' && localDurationStock <= 0));
     bantibhaiya.setConfig(settings.bantibhaiya);
-    const bhOk = !!selectedOpt && bantibhaiya.usable(selectedOpt);
+    panelstore.setConfig(settings.panelstore);
+    const bhOk = !!selectedOpt && (bantibhaiya.usable(selectedOpt) || panelstore.usable(selectedOpt)); // ada provider cadangan
     if (providerNeededAtCreate) {
       if (!settings.dripstore?.apiToken && dsMode === 'live' && !bhOk) {
         return res.json({ success: false, message: 'Provider DripStore belum dikonfigurasi untuk produk ini.' });
@@ -4131,7 +4159,7 @@ app.post('/create-order', async (req, res) => {
         try {
           const av = await checkDripstoreOptionAvailability(settings, product.name, selectedOpt, 1);
           if (!av.ok && bhOk) {
-            pushLog('info', `[checkout] DripStore tidak bisa (${av.reason || 'saldo'}), Bantibhaiya jadi cadangan: ${product.name}`, { cat: 'dripstore' });
+            pushLog('info', `[checkout] DripStore tidak bisa (${av.reason || 'saldo'}), provider cadangan dipakai: ${product.name}`, { cat: 'dripstore' });
           } else if (!av.ok) {
             // Hanya tampilkan angka saldo/kebutuhan kalau memang dua-duanya terbaca. Kalau penyebabnya
             // variant belum ke-mapping / saldo tak terbaca, tampilkan alasan sebenarnya (bukan "$?").
@@ -4142,7 +4170,7 @@ app.post('/create-order', async (req, res) => {
             return res.json({ success: false, message: `Stok variant ini belum bisa diproses: ${av.reason || 'data provider tidak lengkap'}. Hubungi CS.` });
           }
         } catch (e) {
-          if (bhOk) pushLog('warn', `[checkout] verifikasi DripStore gagal (${e.message}), lanjut via Bantibhaiya`, { cat: 'dripstore' });
+          if (bhOk) pushLog('warn', `[checkout] verifikasi DripStore gagal (${e.message}), lanjut via provider cadangan`, { cat: 'dripstore' });
           else return res.json({ success: false, message: 'Tidak bisa memverifikasi stok provider sebelum checkout: ' + e.message });
         }
       }
@@ -5701,6 +5729,33 @@ app.post('/admin/settings/bantibhaiya', requireAdmin, async (req, res) => {
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
+// ── Panelstore Settings (provider tambahan, auto restock/fulfillment) ──
+app.post('/admin/settings/panelstore', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const b = req.body || {};
+    const prev = settings.panelstore || {};
+    // Field kosong = pertahankan nilai lama (kunci tidak ditampilkan ulang di form).
+    settings.panelstore = {
+      apiKey: typeof b.apiKey === 'string' && b.apiKey.trim() ? b.apiKey.trim() : (prev.apiKey || ''),
+      url: typeof b.url === 'string' && /^https:\/\//.test(b.url.trim()) ? b.url.trim() : (prev.url || 'https://www.panelstore.shop/api/v1/index.php'),
+    };
+    await writeDB('settings.json', settings);
+    _invalidateDripstoreSnapshot({ full: true });
+    res.json({ success: true, configured: !!settings.panelstore.apiKey });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+app.post('/admin/panelstore/test', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    panelstore.setConfig(settings.panelstore);
+    const r = await panelstore.check();
+    pushLog(r.ok ? 'info' : 'warn', `[provider] tes kunci Panelstore: ${r.note}`, { cat: 'dripstore' });
+    res.json({ success: true, ...r });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
 app.post('/admin/bantibhaiya/test', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
@@ -7071,7 +7126,8 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
           validOpts.push({ days, unit, price, reseller_price: resellerPrice, strike_price: strikePriceVal,
             dripstoreVariantId: (o.dripstoreVariantId || '').toString().trim() || null,
             bhProductId: (o.bhProductId || '').toString().trim().slice(0, 40) || null,
-            bhDuration: (o.bhDuration || '').toString().trim().slice(0, 60) || null });
+            bhDuration: (o.bhDuration || '').toString().trim().slice(0, 60) || null,
+            psProductId: (o.psProductId || '').toString().trim().slice(0, 40) || null });
         }
         if (validOpts.length > 0) {
           validOpts.sort((a, b) => a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1));

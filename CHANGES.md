@@ -138,3 +138,9 @@ Di halaman `/pay/:id`, kalau pesanan masih menunggu pembayaran setelah **1 menit
 - `vercel.json`: cron `/cron/reconcile` dikembalikan ke **1x sehari** (`0 3 * * *`, 03:00 UTC). Plan Vercel Hobby menolak cron yang lebih sering dari 1x/hari sehingga deploy GAGAL. Untuk cek tiap 5 menit pakai Vercel Pro atau pinger eksternal (cron-job.org) ke `/cron/reconcile` dengan header `Authorization: Bearer <CRON_SECRET>`.
 - Order & pembayaran (create-order, check-payment, top-up/reseller) sekarang membaca settings SEGAR dari database (bukan cache memori). Di Vercel tiap instance punya cache sendiri, sehingga setelah admin menyimpan mode API/WijayaPay, instance lama masih memakai mode statis dan order tetap jatuh ke QRIS pribadi.
 - Admin: tambah CSS ukuran untuk <iconify-icon> (1em). Sebelumnya ikon SVG tanpa ukuran melar memenuhi container, mis. segitiga peringatan raksasa di Pengaturan QRIS.
+
+## Provider baru: Panelstore (auto restock)
+- `panelstore.js`: beli key via `POST /api/v1/index.php` (`action: order`, `pid`, `quantity`, `custom_notes` = nomor pesanan).
+- Urutan fulfillment: stok lokal → DripStore → Bantibhaiya → Panelstore. Error timeout/5xx menghentikan rantai (anti beli ganda); stok habis/saldo kurang/rate-limit lanjut ke provider berikutnya.
+- Admin → "Panelstore — Provider Auto Restock" (API Key + Tes Kunci); Edit Produk → field "Panelstore PID" per paket.
+- API key TIDAK di-hardcode; disimpan di settings (Supabase) atau env `PANELSTORE_API_KEY`.
