@@ -2609,7 +2609,7 @@ async function bmPreview() {
         m.matches.forEach(p => {
             const opts = p.options;
             const find = r => opts.find(o => o.days === r.days && o.unit === r.unit);
-            let lines = [], changed = 0, warn = [], blockedAll = false, whole = false;
+            let lines = [], changed = 0, warn = [], blockedAll = false, emptyAll = false, whole = false;
             if (del && b.rows.length === 0) {
                 whole = true; changed = 1;
                 lines.push(`<span class="text-red-400">HAPUS SELURUH PRODUK (${opts.length} varian)</span>`);
@@ -2624,7 +2624,7 @@ async function bmPreview() {
                     lines.push(`<span class="text-red-300">✕ ${bmLabel(r.days, r.unit)} (${bmRp(o.price)})</span>${diff ? ` <span class="text-amber-400">harga di file ${bmRp(r.price)} ≠ saat ini</span>` : ''}`);
                 });
                 changed = hit;
-                if (hit >= opts.length && hit > 0) { blockedAll = true; warn.push('Ini SEMUA varian produk — tidak diizinkan. Untuk hapus produk, pakai blok yang hanya berisi nama.'); }
+                if (hit >= opts.length && hit > 0) { emptyAll = true; warn.push('Ini SEMUA varian produk: produk dikosongkan & dinonaktifkan sementara, lalu aktif lagi otomatis setelah diisi lewat Edit Massal.'); }
                 if (mismatch) warn.push('Ada harga di file yang berbeda dari harga saat ini — cek dulu.');
             } else {
                 const add = document.getElementById('bmAddMissing').checked;
@@ -2641,7 +2641,7 @@ async function bmPreview() {
             const canApply = changed > 0 && !blockedAll;
             const risky = whole || warn.length > 0 || multi;
             const idx = bmItems.length;
-            bmItems.push({ productId: p.id, rows: b.rows, whole, include: canApply && !risky, canApply });
+            bmItems.push({ productId: p.id, rows: b.rows, whole, allowEmpty: emptyAll, include: canApply && !risky, canApply });
             if (canApply) nOk++;
             const color = !canApply ? '113,113,122' : (whole ? '239,68,68' : (del ? '245,158,11' : '34,197,94'));
             html += `<label class="flex items-start gap-2 p-2 rounded-lg border text-xs ${canApply ? 'cursor-pointer' : ''}" style="border-color:rgba(${color},.3);background:rgba(${color},.06);">
@@ -2691,7 +2691,7 @@ async function bmSubmit() {
     try {
         for (let i = 0; i < picked.length; i += CH) {
             label.textContent = `Memproses ${Math.min(i + CH, picked.length)}/${picked.length}...`;
-            const targets = picked.slice(i, i + CH).map(t => ({ productId: t.productId, rows: t.rows, whole: t.whole }));
+            const targets = picked.slice(i, i + CH).map(t => ({ productId: t.productId, rows: t.rows, whole: t.whole, allowEmpty: t.allowEmpty }));
             const d = await (await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targets, addMissing }) })).json();
             if (!d.success) { fail += targets.length; detail.push(d.message); continue; }
             d.results.forEach(r => { if (r.ok) ok++; else { fail++; detail.push(`${r.name || r.productId}: ${r.message}`); } });

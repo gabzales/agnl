@@ -5608,7 +5608,7 @@ app.post('/admin/products/bulk-edit', requireAdmin, async (req, res) => {
         const rows = _bulkCleanRows(t.rows, true);
         if (!rows.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Tidak ada baris varian yang valid' }); continue; }
         p.pricingOptions = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
-        const before = { pricingOptions: JSON.parse(JSON.stringify(p.pricingOptions)), items: JSON.parse(JSON.stringify(p.items || [])) };
+        const before = { pricingOptions: JSON.parse(JSON.stringify(p.pricingOptions)), items: JSON.parse(JSON.stringify(p.items || [])), status: p.status, bulkEmptied: p.bulkEmptied || null };
         let updated = 0, added = 0, same = 0, skipped = 0;
         for (const r of rows) {
           const o = p.pricingOptions.find(x => Number(x.days) === r.days && _bulkUnit(x.unit) === r.unit);
@@ -5622,7 +5622,7 @@ app.post('/admin/products/bulk-edit', requireAdmin, async (req, res) => {
             added++;
           } else skipped++;
         }
-        if (updated || added) { _bulkRebuildItems(p); undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, ...before }); }
+        if (updated || added) { _bulkRebuildItems(p); if (p.bulkEmptied && p.pricingOptions.length) { p.status = p.bulkEmptied.prevStatus || 'active'; delete p.bulkEmptied; } undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, ...before }); }
         results.push({ productId: p.id, name: p.name, ok: true, updated, added, same, skipped });
       }
       if (undoEntries.length) {
@@ -5658,11 +5658,16 @@ app.post('/admin/products/bulk-delete', requireAdmin, async (req, res) => {
         const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
         const drop = new Set(opts.filter(o => rows.some(r => r.days === Number(o.days) && r.unit === _bulkUnit(o.unit))));
         if (!drop.size) { results.push({ productId: p.id, name: p.name, ok: true, removed: 0, notFound: rows.length }); continue; }
-        if (drop.size >= opts.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Menghapus SEMUA varian tidak diizinkan (produk jadi kosong). Untuk hapus produk, pakai blok yang hanya berisi nama.' }); continue; }
-        undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, pricingOptions: JSON.parse(JSON.stringify(opts)), items: JSON.parse(JSON.stringify(p.items || [])) });
+        const emptying = drop.size >= opts.length;
+        if (emptying && t.allowEmpty !== true) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Ini SEMUA varian produk; perlu konfirmasi khusus (allowEmpty).' }); continue; }
+        undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, pricingOptions: JSON.parse(JSON.stringify(opts)), items: JSON.parse(JSON.stringify(p.items || [])), status: p.status, bulkEmptied: p.bulkEmptied || null });
         p.pricingOptions = opts.filter(o => !drop.has(o));
-        _bulkRebuildItems(p);
-        results.push({ productId: p.id, name: p.name, ok: true, removed: drop.size, notFound: rows.length - drop.size });
+        if (emptying) {
+          // Produk kosong disembunyikan dulu (nonaktif) sampai diisi lagi lewat Edit Massal, yang otomatis mengaktifkannya kembali.
+          p.bulkEmptied = { prevStatus: p.bulkEmptied ? p.bulkEmptied.prevStatus : (p.status || 'active'), at: new Date().toISOString() };
+          p.status = 'inactive'; p.items = [];
+        } else _bulkRebuildItems(p);
+        results.push({ productId: p.id, name: p.name, ok: true, removed: drop.size, notFound: rows.length - drop.size, emptied: emptying });
       }
       if (undoEntries.length) {
         await writeDB('products.json', products);
@@ -5691,7 +5696,12 @@ app.post('/admin/products/bulk-undo', requireAdmin, async (req, res) => {
           if (!products.some(p => p.id === e.product.id)) { products.push(e.product); restored++; }
         } else if (e.mode === 'restore-options') {
           const p = products.find(x => x.id === e.id);
-          if (p) { p.pricingOptions = e.pricingOptions; p.items = e.items; restored++; }
+          if (p) {
+            p.pricingOptions = e.pricingOptions; p.items = e.items;
+            if (e.status !== undefined) p.status = e.status;
+            if (e.bulkEmptied) p.bulkEmptied = e.bulkEmptied; else delete p.bulkEmptied;
+            restored++;
+          }
         }
       }
       await writeDB('products.json', products);
