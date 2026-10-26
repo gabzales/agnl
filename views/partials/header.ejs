@@ -1,0 +1,26 @@
+<%
+  var _cp = (typeof currentPath !== 'undefined' && currentPath) ? currentPath : '/';
+  var _act = function (p) { return (p === '/' ? _cp === '/' : _cp.indexOf(p) === 0) ? 'active' : ''; };
+%>
+<header class="ag-header">
+  <div class="ag-header-in">
+    <a href="/" class="ag-brand" aria-label="<%= settings?.siteName || 'AGHA NL' %>">
+      <img class="ag-logo" src="<%= imgW(settings?.logoUrl || '/uploads/logo-main.png', 96) %>" alt="" width="34" height="34">
+      <%- include('logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '15px' }) %>
+    </a>
+
+    <nav class="ag-nav" aria-label="Menu utama">
+      <a href="/" class="<%= _act('/') %>">BERANDA</a>
+      <a href="/invoice" class="<%= _act('/invoice') %>">CEK PESANAN</a>
+      <a href="/informasi" class="<%= _act('/informasi') %>">INFORMASI</a>
+      <% if (settings?.resellerEnabled !== false) { %><a href="/reseller" class="<%= _act('/reseller') %>">RESELLER</a><% } %>
+    </nav>
+
+    <div class="ag-actions">
+      <a href="/dashboard" id="agAccountLink" class="ag-icon-btn ag-user-only" aria-label="Akun"><iconify-icon icon="mdi:account"></iconify-icon></a>
+      <a href="/login" onclick="return agAuth('login')" class="ag-btn-sm ag-guest-only">Masuk</a>
+      <a href="/register" onclick="return agAuth('register')" class="ag-btn-sm solid ag-guest-only">Daftar</a>
+      <button type="button" class="ag-icon-btn" onclick="openMenu()" aria-label="Buka menu"><iconify-icon icon="mdi:menu"></iconify-icon></button>
+    </div>
+  </div>
+</header>

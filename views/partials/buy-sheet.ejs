@@ -1,0 +1,64 @@
+<!-- ══ BUY SHEET (2 langkah: Durasi -> Konfirmasi), struktur sama dengan ThanHub ══ -->
+<div class="ag-sheet-overlay" id="buyModal" onclick="if(event.target===this)agCloseBuy()">
+  <div class="ag-sheet" role="dialog" aria-modal="true" aria-labelledby="modalProductName">
+    <div class="ag-sheet-handle"></div>
+
+    <div class="ag-stepper">
+      <div class="ag-step"><div class="ag-step-dot active" id="stepDot1">1</div><div class="ag-step-label">DURASI</div></div>
+      <div class="ag-step-line"></div>
+      <div class="ag-step"><div class="ag-step-dot" id="stepDot2">2</div><div class="ag-step-label">KONFIRMASI</div></div>
+    </div>
+
+    <div class="ag-sheet-head">
+      <div>
+        <div class="ag-sheet-kicker"><iconify-icon icon="mdi:clock-outline"></iconify-icon> <span id="sheetKicker">PILIH DURASI</span></div>
+        <h3 class="ag-sheet-title" id="modalProductName">Produk</h3>
+      </div>
+      <button type="button" class="ag-sheet-close" onclick="agCloseBuy()" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    </div>
+
+    <!-- STEP 1: pilih durasi (klik = langsung lanjut) -->
+    <div class="ag-panel active" id="stepPanel1">
+      <div class="ag-dur-list" id="durationCardList"></div>
+    </div>
+
+    <!-- STEP 2: konfirmasi -->
+    <div class="ag-panel" id="stepPanel2">
+      <div class="ag-summary">
+        <div class="ag-summary-row"><span id="summaryProductName">-</span><span>x1</span></div>
+        <div class="ag-summary-row" id="summarySubtotalRow" hidden><span>Subtotal</span><span id="summarySubtotal">Rp 0</span></div>
+        <div class="ag-summary-row" id="summaryDiscountRow" hidden><span id="summaryDiscountLabel">Voucher</span><span id="summaryDiscount" class="ag-discount">- Rp 0</span></div>
+        <div class="ag-summary-row total"><span>Total</span><span class="ag-total" id="summaryTotal">Rp 0</span></div>
+        <div class="ag-summary-row" id="summaryResellerNote" hidden style="margin:8px 0 0;font-size:11px;color:#fbbf24;"><span>Harga reseller VIP berlaku otomatis saat bayar pakai saldo</span></div>
+      </div>
+
+      <div class="ag-tfield">
+        <label class="ag-tlabel" for="voucherCodeInput"><iconify-icon icon="mdi:ticket-percent-outline"></iconify-icon> Kode Voucher <small>(opsional)</small></label>
+        <div class="ag-voucher">
+          <input type="text" id="voucherCodeInput" class="ag-tinput" placeholder="Contoh: DISKONHEBOH" autocomplete="off" oninput="this.value=this.value.toUpperCase();agResetVoucher()">
+          <button type="button" id="btnApplyVoucher" class="ag-voucher-btn" onclick="agApplyVoucher()">Terapkan</button>
+        </div>
+        <p id="voucherFeedback" class="ag-voucher-fb"></p>
+      </div>
+
+      <div class="ag-tfield">
+        <label class="ag-tlabel" for="customerName"><iconify-icon icon="mdi:account-outline"></iconify-icon> Nama Anda</label>
+        <input type="text" id="customerName" class="ag-tinput" placeholder="John Doe" autocomplete="name">
+      </div>
+      <div class="ag-tfield">
+        <label class="ag-tlabel" for="waInput"><iconify-icon icon="mdi:whatsapp"></iconify-icon> Nomor WhatsApp</label>
+        <input type="tel" id="waInput" class="ag-tinput" placeholder="08xxxxxxxxxx" inputmode="tel" autocomplete="tel">
+      </div>
+
+      <button type="button" class="ag-pay-btn" id="checkoutBtn" onclick="agCheckout()"><iconify-icon icon="mdi:credit-card-outline"></iconify-icon> BAYAR SEKARANG</button>
+      <button type="button" class="ag-pay-btn wallet" id="walletBtn" onclick="agCheckout(true)" hidden><iconify-icon icon="mdi:wallet"></iconify-icon> BAYAR PAKAI SALDO</button>
+      <a id="channelBtn" class="ag-btn-line" href="#" target="_blank" rel="noopener" hidden><iconify-icon icon="mdi:download"></iconify-icon> <span>Download APK / Saluran</span></a>
+      <button type="button" class="ag-back-btn" onclick="agGoStep(1)"><iconify-icon icon="mdi:arrow-left"></iconify-icon> Ganti durasi</button>
+    </div>
+
+    <!-- STEP 3: menuju pembayaran -->
+    <div class="ag-panel" id="stepPanel3">
+      <div class="ag-redirect"><span class="ag-spinner"></span><p>Menyiapkan halaman pembayaran...</p></div>
+    </div>
+  </div>
+</div>
