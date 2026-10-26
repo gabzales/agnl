@@ -806,6 +806,9 @@ app.locals.csWaOf = getCsWhatsapp;
 
 // Inject settings + isAdmin ke semua view otomatis
 app.use(async (req, res, next) => {
+  if (req.method === 'GET' && (req.path === '/' || req.path.startsWith('/admin')) && typeof _healLast !== 'undefined' && !_healRunning && Date.now() - _healLast > 20 * 60 * 1000) {
+    setImmediate(() => autoHealMappings('lazy').catch(() => {}));
+  }
   // Kalau cache settings kosong, fetch dari Supabase dulu
   let settings = readDB('settings.json');
   if (!settings || Object.keys(settings).length === 0) {
@@ -4181,14 +4184,23 @@ app.post('/create-order', async (req, res) => {
     const localDurationStock = selectedOpt ? getLocalOptionStock(product, selectedOpt) : 0;
     const providerNeededAtCreate = !!selectedOpt && (dsMode === 'live' || (dsMode === 'hybrid' && localDurationStock <= 0));
     _configureExtraProviders(settings);
-    const bhOk = !!selectedOpt && _EXTRA_PROVIDERS.some(p => p.mod.usable(selectedOpt)); // ada provider cadangan
+    let bhOk = !!selectedOpt && _EXTRA_PROVIDERS.some(p => p.mod.usable(selectedOpt)); // ada provider cadangan
     if (providerNeededAtCreate) {
       if (!settings.dripstore?.apiToken && dsMode === 'live' && !bhOk) {
         return res.json({ success: false, message: 'Provider DripStore belum dikonfigurasi untuk produk ini.' });
       }
       if (settings.dripstore?.apiToken && settings.dripstore?.balanceGuardEnabled !== false) {
         try {
-          const av = await checkDripstoreOptionAvailability(settings, product.name, selectedOpt, 1);
+          let av = await checkDripstoreOptionAvailability(settings, product.name, selectedOpt, 1);
+          if (!av.ok && av.variantMissing && !bhOk && Date.now() - _healLast > 60 * 1000) {
+            // Durasi ini belum ter-mapping: perbaiki otomatis sekarang (tanpa ubah harga) lalu cek ulang sekali
+            const hr = await autoHealMappings('checkout', { noPrice: true });
+            if (hr && hr.changed) {
+              const fresh = (await readFresh('products.json')).find(x => x.id === product.id);
+              const so = fresh && (fresh.pricingOptions || []).find(o => Number(o.days) === Number(selectedDays) && (o.unit || 'd') === selectedUnit);
+              if (so) { Object.assign(selectedOpt, { dripstoreVariantId: so.dripstoreVariantId, ds2VariantId: so.ds2VariantId }); av = await checkDripstoreOptionAvailability(settings, fresh.name, so, 1); bhOk = _EXTRA_PROVIDERS.some(p => p.mod.usable(so)); }
+            }
+          }
           if (!av.ok && bhOk) {
             pushLog('info', `[checkout] DripStore tidak bisa (${av.reason || 'saldo'}), provider cadangan dipakai: ${product.name}`, { cat: 'dripstore' });
           } else if (!av.ok) {
@@ -6324,6 +6336,319 @@ function _dsCheckKurs(currency, prefs) {
   if (String(currency || '').toUpperCase() === 'USD' && prefs.kurs < 1000) {
     throw new Error(`Harga provider dalam USD. Isi kurs ke Rupiah (mis. ${DS_DEFAULT_USD_RATE}), bukan ${prefs.kurs}.`);
   }
+}
+
+// ── AUDIT HARGA & MAPPING DRIPSTORE: bandingkan tiap durasi produk dengan varian DripStore yang terhubung ──
+const DS_AUDIT_HTML = "<!doctype html>\n<html lang=\"id\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Audit Harga & Mapping DripStore</title>\n<style>\n*{box-sizing:border-box}body{margin:0 auto;background:#0b0b0f;color:#e4e4e7;font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:14px;max-width:1000px}\nh1{font-size:16px;margin:0 0 4px}a{color:#7dd3fc}.sub{color:#71717a;font-size:12px;margin-bottom:10px}\n.bar{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;background:#14141a;border:1px solid #27272a;border-radius:10px;padding:10px;margin-bottom:10px}\n.bar label{font-size:11px;color:#a1a1aa;display:block;margin-bottom:3px}.bar input[type=number]{width:90px}\ninput,select{background:#0b0b0f;color:#e4e4e7;border:1px solid #3f3f46;border-radius:8px;padding:7px;font-size:12px}\nbutton{cursor:pointer;border:1px solid #3f3f46;background:#18181b;color:#e4e4e7;border-radius:8px;padding:7px 11px;font-weight:700;font-size:12px}\nbutton.pri{background:#0e7490;border-color:#0891b2}button.ok{background:#065f46;border-color:#059669}button.bad{background:#7f1d1d;border-color:#b91c1c}button:disabled{opacity:.5}\n.box{padding:10px;border-radius:10px;border:1px solid #3f3f46;background:#18181b;margin:8px 0}.err{background:#450a0a;border-color:#991b1b;color:#fecaca}\n.card{background:#14141a;border:1px solid #27272a;border-radius:10px;padding:10px;margin:10px 0}\n.card h3{font-size:14px;margin:0 0 6px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}\n.r{border-top:1px solid #222228;padding:7px 0}.r:first-of-type{border-top:0}\n.top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.dur{font-weight:700;min-width:64px}.price{color:#fca5a5;font-weight:700;min-width:84px}\n.muted{color:#71717a}.sup{color:#a1a1aa;font-size:12px;flex:1;min-width:180px}\n.b{display:inline-block;font-size:10px;padding:2px 7px;border-radius:99px;margin:0 3px 3px 0;font-weight:700}\n.red{background:#450a0a;color:#fca5a5;border:1px solid #991b1b}.amb{background:#451a03;color:#fcd34d;border:1px solid #92400e}.grn{background:#052e2b;color:#6ee7b7;border:1px solid #0f766e}\n.act{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center}.act select{max-width:100%;flex:1;min-width:180px}\n</style></head><body>\n<h1>Audit Harga & Mapping DripStore</h1>\n<div class=\"sub\">Membandingkan tiap durasi produk tokomu dengan varian DripStore yang terhubung. Harga rekomendasi = modal × kurs × (1 + margin%), dibulatkan ke atas. &nbsp;<a href=\"/admin#products\">← Admin</a></div>\n<div class=\"bar\">\n <div><label>Margin %</label><input id=\"mg\" type=\"number\" step=\"0.5\" value=\"\"></div>\n <div><label>Kurs (1 = Rupiah)</label><input id=\"ku\" type=\"number\" value=\"\"></div>\n <div><label>Pembulatan (Rp)</label><input id=\"rt\" type=\"number\" value=\"\"></div>\n <div><label>Cari produk</label><input id=\"qq\" placeholder=\"nama...\" oninput=\"draw()\"></div>\n <label style=\"display:flex;gap:5px;align-items:center;margin:0\"><input type=\"checkbox\" id=\"onlyBad\" checked onchange=\"draw()\"> hanya yang bermasalah</label>\n <button class=\"pri\" id=\"bGo\" onclick=\"load()\">Hitung / Refresh</button>\n</div>\n<div class=\"card\" style=\"border-color:#0e7490\">\n <h3><span>🔧 Perbaiki Otomatis <span class=\"b grn\">AUTO AKTIF</span> <span class=\"muted\">(hapus durasi dobel • hubungkan ke varian DripStore yang paling cocok • betulkan harga yang meleset)</span></span></h3>\n <div class=\"act\"><button class=\"pri\" id=\"bPlan\" onclick=\"plan()\">1. Lihat rencana perbaikan</button><button class=\"ok\" id=\"bApply\" onclick=\"applyFix()\" disabled>2. Terapkan semua</button><button class=\"bad\" onclick=\"undoFix()\">Urungkan perbaikan terakhir</button></div>\n <div id=\"healBox\" class=\"muted\" style=\"margin-top:8px\"></div>\n <div id=\"planOut\" style=\"margin-top:8px\"></div>\n</div>\n<div id=\"msg\"></div><div id=\"out\"></div>\n<script>\nvar $=function(i){return document.getElementById(i)},A=null;\nvar esc=function(v){return String(v==null?'':v).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})};\nvar rp=function(n){return n==null?'-':'Rp '+Number(n).toLocaleString('id-ID')};\nvar L={belum_terhubung:['belum terhubung ke DripStore','amb'],id_hilang:['ID varian tidak ada di DripStore','red'],durasi_beda:['durasi varian BEDA dgn opsi','red'],nama_beda:['nama produk varian BEDA','red'],harga_beda:['harga ≠ rumus','amb'],dobel:['durasi dobel','red'],harga_turun:['lebih murah dari durasi yang lebih pendek','red']};\nvar dur=function(d,u){return d+(u==='h'?' Jam':' Hari')};\nasync function post(u,d){var r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)});return r.json()}\nasync function load(){\n  $('bGo').disabled=true;$('msg').innerHTML='<div class=\"box\">Memuat data DripStore…</div>';\n  var q='?margin='+encodeURIComponent($('mg').value)+'&kurs='+encodeURIComponent($('ku').value)+'&roundTo='+encodeURIComponent($('rt').value);\n  try{var r=await fetch('/admin/dripstore/price-audit'+q);var d=await r.json();if(!d.success)throw new Error(d.message||'gagal');A=d;\n    $('mg').placeholder=(d.marginAuto?'otomatis ':'')+d.prefs.marginPercent;$('ku').placeholder=d.prefs.kurs;$('rt').placeholder=d.prefs.roundTo;\n    $('msg').innerHTML='<div class=\"box\">'+d.supplierCount+' varian di DripStore • '+d.problemProducts+' produk bermasalah dari '+d.products.length+(d.currency?' • mata uang modal: '+esc(d.currency):'')+' • margin dipakai: '+d.prefs.marginPercent+'%'+(d.marginAuto?' (terdeteksi otomatis dari harga tokomu)':'')+'</div>';draw()}\n  catch(e){$('out').innerHTML='';$('msg').innerHTML='<div class=\"box err\">'+esc(e.message)+'</div>'}\n  $('bGo').disabled=false;\n}\nfunction draw(){\n  if(!A)return;var q=$('qq').value.toLowerCase().trim(),only=$('onlyBad').checked,h='';\n  A.products.forEach(function(p){\n    if(q&&p.name.toLowerCase().indexOf(q)<0)return;\n    var bad=p.rows.filter(function(r){return r.flags.some(function(f){return f!=='harga_beda'})||r.flags.indexOf('harga_beda')>-1});\n    if(only&&!bad.length)return;\n    var fixable=p.rows.filter(function(r){return r.flags.indexOf('harga_beda')>-1&&!r.flags.some(function(f){return['durasi_beda','nama_beda','id_hilang','belum_terhubung'].indexOf(f)>-1})});\n    h+='<div class=\"card\"><h3><span>'+esc(p.name)+' <span class=\"muted\">('+p.rows.length+' opsi, '+bad.length+' perlu dicek)</span></span>'+(fixable.length?'<button class=\"ok\" onclick=\"applyAll(\\''+esc(p.id)+'\\',this)\">Terapkan '+fixable.length+' harga rekomendasi</button>':'')+'</h3>';\n    p.rows.forEach(function(r){\n      if(only&&!r.flags.length)return;\n      h+='<div class=\"r\"><div class=\"top\"><span class=\"dur\">'+dur(r.days,r.unit)+'</span><span class=\"price\">'+rp(r.price)+'</span><span class=\"sup\">'+\n        (r.supplier?'→ '+esc(r.supplier.name)+' / '+esc(r.supplier.variant)+' <span class=\"muted\">(durasi '+dur(r.supplier.days,r.supplier.unit)+', modal '+esc(r.supplier.cost)+(r.expected!=null?' → rekomendasi '+rp(r.expected):'')+')</span>':'<span class=\"muted\">(tidak ada varian terhubung)</span>')+'</span></div><div>'+\n        (r.flags.length?r.flags.map(function(f){return'<span class=\"b '+L[f][1]+'\">'+L[f][0]+'</span>'}).join(''):'<span class=\"b grn\">OK</span>')+'</div>';\n      var act='';\n      if(r.flags.indexOf('harga_beda')>-1&&r.expected!=null)act+='<button class=\"ok\" onclick=\"fix(\\''+esc(p.id)+'\\','+r.idx+','+r.days+',\\''+r.unit+'\\',{price:'+r.expected+'},this)\">Pakai harga '+rp(r.expected)+'</button>';\n      if(r.suggest.length)act+='<select id=\"sg'+esc(p.id)+'_'+r.idx+'\">'+r.suggest.map(function(s){return'<option value=\"'+esc(s.variantId)+'\" data-p=\"'+(s.price==null?'':s.price)+'\">'+esc(s.label)+' • modal '+esc(s.cost)+' → '+rp(s.price)+' ('+s.score+'%)</option>'}).join('')+'</select><button class=\"pri\" onclick=\"link(\\''+esc(p.id)+'\\','+r.idx+','+r.days+',\\''+r.unit+'\\',this)\">Hubungkan + pakai harga</button>';\n      if(r.flags.indexOf('dobel')>-1)act+='<button class=\"bad\" onclick=\"del(\\''+esc(p.id)+'\\','+r.idx+','+r.days+',\\''+r.unit+'\\',this)\">Hapus opsi ini</button>';\n      if(act)h+='<div class=\"act\">'+act+'</div>';\n      h+='</div>';\n    });\n    h+='</div>';\n  });\n  $('out').innerHTML=h||'<div class=\"box\">Tidak ada yang cocok dengan filter.</div>';\n}\nasync function fix(pid,idx,days,unit,extra,b){b.disabled=true;var d=await post('/admin/dripstore/price-fix',Object.assign({productId:pid,idx:idx,days:days,unit:unit},extra));if(!d.success){alert(d.message);b.disabled=false;return}await load()}\nasync function link(pid,idx,days,unit,b){var s=$('sg'+pid+'_'+idx),o=s.options[s.selectedIndex],ex={variantId:s.value};if(o.getAttribute('data-p'))ex.price=Number(o.getAttribute('data-p'));await fix(pid,idx,days,unit,ex,b)}\nasync function del(pid,idx,days,unit,b){if(!confirm('Hapus opsi durasi ini dari produk?'))return;await fix(pid,idx,days,unit,{remove:true},b)}\nasync function applyAll(pid,b){\n  var p=A.products.filter(function(x){return x.id===pid})[0];b.disabled=true;\n  for(var i=0;i<p.rows.length;i++){var r=p.rows[i];\n    if(r.flags.indexOf('harga_beda')>-1&&r.expected!=null&&!r.flags.some(function(f){return['durasi_beda','nama_beda','id_hilang','belum_terhubung'].indexOf(f)>-1})){\n      var d=await post('/admin/dripstore/price-fix',{productId:pid,idx:r.idx,days:r.days,unit:r.unit,price:r.expected});if(!d.success){alert(d.message);break}}}\n  await load();\n}\n\nfunction planBody(){var b={apply:false};if($('mg').value)b.margin=$('mg').value;if($('ku').value)b.kurs=$('ku').value;if($('rt').value)b.roundTo=$('rt').value;return b}\nfunction sec(t,a,c){return a&&a.length?'<div style=\"margin-top:8px\"><b style=\"color:'+c+'\">'+t+' ('+a.length+'):</b><div class=\"muted\" style=\"max-height:260px;overflow:auto;margin-top:3px\">'+a.map(esc).join('<br>')+'</div></div>':''}\nfunction showRep(d,applied){\n  $('planOut').innerHTML='<div class=\"box\"><b>'+(applied?'✅ Sudah diterapkan':'Rencana (belum ada yang diubah)')+'</b> • margin dipakai '+d.margin+'%'+\n   sec('Durasi dobel dihapus',d.removed,'#fca5a5')+sec('Dihubungkan ke varian DripStore',d.linked,'#7dd3fc')+sec('Harga dibetulkan',d.priced,'#6ee7b7')+sec('Sisa — perlu dicek manual',d.manual,'#fcd34d')+\n   (!d.removed.length&&!d.linked.length&&!d.priced.length?'<div class=\"muted\" style=\"margin-top:6px\">Tidak ada yang perlu diperbaiki otomatis.</div>':'')+'</div>';\n}\nasync function plan(){$('bPlan').disabled=true;$('planOut').innerHTML='<div class=\"box\">Menghitung…</div>';\n  try{var d=await post('/admin/dripstore/auto-fix',planBody());if(!d.success)throw new Error(d.message);showRep(d,false);$('bApply').disabled=!(d.removed.length||d.linked.length||d.priced.length)}\n  catch(e){$('planOut').innerHTML='<div class=\"box err\">'+esc(e.message)+'</div>'}$('bPlan').disabled=false}\nasync function applyFix(){if(!confirm('Terapkan semua perbaikan di atas ke produk toko? (bisa diurungkan lewat tombol \"Urungkan\")'))return;\n  $('bApply').disabled=true;var b=planBody();b.apply=true;\n  try{var d=await post('/admin/dripstore/auto-fix',b);if(!d.success)throw new Error(d.message);showRep(d,true);await load()}\n  catch(e){$('planOut').innerHTML='<div class=\"box err\">'+esc(e.message)+'</div>'}}\nasync function undoFix(){if(!confirm('Urungkan perbaikan otomatis terakhir (kembalikan opsi yang dihapus, variant & harga lama)?'))return;\n  var d=await post('/admin/dripstore/auto-fix-undo',{});if(!d.success){alert(d.message);return}\n  $('planOut').innerHTML='<div class=\"box\">↩️ Diurungkan: '+d.restored+' opsi dikembalikan, '+d.readded+' opsi dobel ditambahkan lagi.</div>';await load()}\n\nasync function heal(){try{var r=await fetch('/admin/dripstore/heal-status');var d=await r.json();var l=d.last;\n  $('healBox').innerHTML='Berjalan <b>otomatis</b> tiap 20 menit, saat checkout menemukan produk belum ter-mapping, dan saat toko/admin dibuka. '+\n   (l?'Terakhir: '+new Date(l.at).toLocaleString('id-ID')+' ('+esc(l.reason)+')'+(l.ds1?' • DripStore: '+l.ds1.linked+' dihubungkan, '+l.ds1.removed+' dobel dihapus, '+l.ds1.priced+' harga dibetulkan, '+l.ds1.manual+' perlu cek':'')+(l.ds2?' • DripStore 2: '+l.ds2.mapped+' dipasang':'')+(l.errors&&l.errors.length?' • <span style=\"color:#fca5a5\">'+esc(l.errors.join('; '))+'</span>':''):'Belum pernah jalan sejak server nyala.')+\n   ' <button class=\"pri\" onclick=\"healNow(this)\">Jalankan sekarang</button>'}catch(e){}}\nasync function healNow(b){b.disabled=true;b.textContent='Memproses…';await post('/admin/dripstore/heal-now',{});await heal();await load()}\nheal();\nload();\n</script></body></html>\n";
+app.get('/admin/dripstore/audit', requireAdmin, (req, res) => { res.set('Cache-Control', 'no-store'); res.type('html').send(DS_AUDIT_HTML); });
+
+function _dsNormDur(days, unit) {
+  let d = Number(days), u = unit === 'h' ? 'h' : 'd';
+  if (u === 'h' && d >= 24 && d % 24 === 0) { d = d / 24; u = 'd'; }
+  return { days: d, unit: u };
+}
+const _dsHours = (d, u) => (u === 'h' ? d : d * 24);
+
+// Margin yang selama ini dipakai toko, ditebak dari opsi yang sudah benar (varian terhubung, durasi & nama cocok): median harga/(modal×kurs).
+function _dsDetectMargin(products, byId, prefs) {
+  const ratios = [];
+  for (const p of products) for (const o of (p.pricingOptions || [])) {
+    const s = byId.get(String(o.dripstoreVariantId || '').trim());
+    if (!s || !(s.cost > 0)) continue;
+    const ld = _dsNormDur(o.days, o.unit);
+    if (s.days !== ld.days || s.unit !== ld.unit) continue;
+    if (_ds2NameScore(p.name, s.productName) < 0.6) continue;
+    const pr = Number(o.price); if (!(pr > 0)) continue;
+    ratios.push(pr / (s.cost * prefs.kurs));
+  }
+  if (ratios.length < 5) return null;
+  ratios.sort((a, b) => a - b);
+  const m = (ratios[Math.floor(ratios.length / 2)] - 1) * 100;
+  return Number.isFinite(m) && m >= 0 && m <= 1000 ? Math.round(m * 2) / 2 : null;
+}
+async function _dsLoadSupplierFlat() {
+  const settings = await readFresh('settings.json');
+  if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
+  const resp = await dripstoreCall(settings, 'products.php');
+  const items = _dsExtractProductItems(resp);
+  if (!items.length) throw new Error('Daftar produk DripStore kosong / format products.php belum dikenali.');
+  const currency = String(_dsFirst(items[0].raw || {}, ['currency', 'currency_code', 'cur']) || '').toUpperCase() || null;
+  const sup = items.map(it => { const d = _dsNormDur(it.days, it.unit); return { variantId: String(it.variantId), productName: String(it.productName || ''), variantName: String(it.variantName || ''), days: d.days, unit: d.unit, cost: _dsVariantCost(it.raw) }; });
+  return { settings, sup, currency, byId: new Map(sup.map(v => [v.variantId, v])) };
+}
+
+app.get('/admin/dripstore/price-audit', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
+    const resp = await dripstoreCall(settings, 'products.php');
+    const items = _dsExtractProductItems(resp);
+    if (!items.length) throw new Error('Daftar produk DripStore kosong / format products.php belum dikenali.');
+    const currency = String(_dsFirst(items[0].raw || {}, ['currency', 'currency_code', 'cur']) || '').toUpperCase() || null;
+    const prefs = _dsImportPrefs(settings, { kurs: req.query.kurs, marginPercent: req.query.margin, roundTo: req.query.roundTo }, currency);
+    _dsCheckKurs(currency, prefs);
+    const sup = items.map(it => { const d = _dsNormDur(it.days, it.unit); return { variantId: String(it.variantId), productName: String(it.productName || ''), variantName: String(it.variantName || ''), days: d.days, unit: d.unit, cost: _dsVariantCost(it.raw) }; });
+    const byId = new Map(sup.map(v => [v.variantId, v]));
+    const products = await readFresh('products.json');
+    let marginAuto = false;
+    if (String(req.query.margin ?? '').trim() === '') { const dm = _dsDetectMargin(products, byId, prefs); if (dm !== null) { prefs.marginPercent = dm; marginAuto = true; } }
+    const out = [];
+    let problemProducts = 0;
+    for (const p of products) {
+      const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
+      if (!opts.length) continue;
+      const rows = opts.map((o, idx) => {
+        const ld = _dsNormDur(o.days, o.unit);
+        const vid = String(o.dripstoreVariantId || '').trim();
+        const s = vid ? byId.get(vid) : null;
+        const expected = s ? _dsSellPrice(s.cost, prefs.marginPercent, prefs) : null;
+        const flags = [];
+        if (!vid) flags.push('belum_terhubung');
+        else if (!s) flags.push('id_hilang');
+        else {
+          if (s.days !== ld.days || s.unit !== ld.unit) flags.push('durasi_beda');
+          if (_ds2NameScore(p.name, s.productName) < 0.6) flags.push('nama_beda');
+          if (expected !== null && Number(o.price) !== expected) flags.push('harga_beda');
+        }
+        let suggest = [];
+        if (!vid || !s || flags.includes('durasi_beda') || flags.includes('nama_beda')) {
+          suggest = sup.filter(v => v.days === ld.days && v.unit === ld.unit)
+            .map(v => ({ v, score: _ds2NameScore(p.name, v.productName) })).filter(x => x.score >= 0.6)
+            .sort((a, b) => b.score - a.score).slice(0, 5)
+            .map(x => ({ variantId: x.v.variantId, label: `${x.v.productName} / ${x.v.variantName}`, cost: x.v.cost, price: _dsSellPrice(x.v.cost, prefs.marginPercent, prefs), score: Math.round(x.score * 100) }));
+          if (!suggest.length) { // tak ada nama yang mirip: tetap tampilkan semua varian berdurasi sama supaya bisa dipilih manual
+            suggest = sup.filter(v => v.days === ld.days && v.unit === ld.unit)
+              .map(v => ({ v, score: _ds2NameScore(p.name, v.productName) })).sort((a, b) => b.score - a.score).slice(0, 25)
+              .map(x => ({ variantId: x.v.variantId, label: `${x.v.productName} / ${x.v.variantName}`, cost: x.v.cost, price: _dsSellPrice(x.v.cost, prefs.marginPercent, prefs), score: Math.round(x.score * 100) }));
+          }
+        }
+        return { idx, days: Number(o.days), unit: o.unit === 'h' ? 'h' : 'd', price: Number(o.price), variantId: vid, supplier: s ? { name: s.productName, variant: s.variantName, days: s.days, unit: s.unit, cost: s.cost } : null, expected, flags, suggest };
+      });
+      const cnt = new Map();
+      rows.forEach(r => { const k = r.days + r.unit; cnt.set(k, (cnt.get(k) || 0) + 1); });
+      rows.forEach(r => { if (cnt.get(r.days + r.unit) > 1) r.flags.push('dobel'); });
+      let maxPrev = 0;
+      for (const r of [...rows].sort((a, b) => _dsHours(a.days, a.unit) - _dsHours(b.days, b.unit) || a.price - b.price)) {
+        if (r.price < maxPrev) r.flags.push('harga_turun');
+        maxPrev = Math.max(maxPrev, r.price);
+      }
+      rows.sort((a, b) => _dsHours(a.days, a.unit) - _dsHours(b.days, b.unit) || a.idx - b.idx);
+      if (rows.some(r => r.flags.length)) problemProducts++;
+      out.push({ id: p.id, name: p.name, rows });
+    }
+    res.json({ success: true, prefs, marginAuto, currency, supplierCount: sup.length, problemProducts, products: out });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+// Perbaiki satu opsi durasi: hubungkan variant, ganti harga, atau hapus (untuk durasi dobel). idx = posisi di pricingOptions.
+app.post('/admin/dripstore/price-fix', requireAdmin, async (req, res) => {
+  try {
+    const { productId, idx, days, unit, remove } = req.body || {};
+    const hasVariant = req.body && req.body.variantId !== undefined;
+    const variantId = String(req.body?.variantId ?? '').trim();
+    if (hasVariant && variantId && !/^[A-Za-z0-9_-]{1,40}$/.test(variantId)) return res.json({ success: false, message: 'Variant ID tidak valid' });
+    await withProductsWriteLock(async () => {
+      const products = await readFresh('products.json');
+      const p = products.find(x => String(x.id) === String(productId));
+      if (!p) throw new Error('Produk tidak ditemukan');
+      const o = (p.pricingOptions || [])[Number(idx)];
+      if (!o || Number(o.days) !== Number(days) || (o.unit === 'h' ? 'h' : 'd') !== (unit === 'h' ? 'h' : 'd')) throw new Error('Data produk sudah berubah — muat ulang halaman');
+      if (remove) {
+        if (p.pricingOptions.length <= 1) throw new Error('Tidak bisa menghapus satu-satunya opsi durasi');
+        p.pricingOptions.splice(Number(idx), 1);
+      } else {
+        if (hasVariant) o.dripstoreVariantId = variantId || null;
+        if (req.body.price !== undefined) {
+          const n = Math.round(Number(req.body.price));
+          if (!Number.isFinite(n) || n < 0) throw new Error('Harga tidak valid');
+          o.price = n;
+          if (o.strike_price != null && Number(o.strike_price) <= n) o.strike_price = null;
+        }
+      }
+      p.items = p.pricingOptions.map(x => ({ l: `${String(p.name).toUpperCase()} ${formatDurationLabel(x.days, x.unit)}`, p: x.price, reseller_price: x.reseller_price ?? null, strike_price: x.strike_price ?? null }));
+      await writeDB('products.json', products);
+    });
+    _invalidateDripstoreSnapshot({ full: true });
+    res.json({ success: true });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+// ── PERBAIKI OTOMATIS: hapus durasi dobel, hubungkan ke varian DripStore yang paling cocok, betulkan harga yang meleset jauh ──
+function _dsAutoFixPlan(products, sup, byId, prefs, opt = {}) {
+  const rep = { removed: [], linked: [], priced: [], manual: [], margin: prefs.marginPercent };
+  const log = { removed: [], changes: [] };
+  const label = (p, o) => `${p.name} — ${o.days}${o.unit === 'h' ? 'h' : 'd'}`;
+  const isGood = (p, o) => {
+    const s = byId.get(String(o.dripstoreVariantId || '').trim()); if (!s) return false;
+    const ld = _dsNormDur(o.days, o.unit);
+    return s.days === ld.days && s.unit === ld.unit && _ds2NameScore(p.name, s.productName) >= 0.6;
+  };
+  const bestVariant = (p, o) => {
+    const ld = _dsNormDur(o.days, o.unit);
+    const ranked = sup.filter(v => v.days === ld.days && v.unit === ld.unit)
+      .map(v => ({ v, score: _ds2NameScore(p.name, v.productName) })).filter(x => x.score >= 0.85).sort((a, b) => b.score - a.score);
+    if (!ranked.length) return null;
+    const top = ranked.filter(x => x.score >= ranked[0].score - 0.02);
+    const names = new Set(top.map(x => x.v.productName.toLowerCase()));
+    if (names.size > 1) return { ambiguous: top.slice(0, 3).map(x => x.v.productName) };
+    const other = ranked.find(x => !names.has(x.v.productName.toLowerCase()));
+    if (other && other.score > ranked[0].score - 0.1) return { ambiguous: [top[0].v.productName, other.v.productName] };
+    return { v: top.slice().sort((a, b) => (a.v.cost ?? Infinity) - (b.v.cost ?? Infinity))[0].v }; // varian kembar durasi sama: ambil yang termurah
+  };
+  for (const p of products) {
+    if (!Array.isArray(p.pricingOptions) || !p.pricingOptions.length) continue;
+    // 1) durasi dobel
+    const groups = new Map();
+    p.pricingOptions.forEach(o => { const ld = _dsNormDur(o.days, o.unit); const k = ld.days + ld.unit; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(o); });
+    let touched = false;
+    const drop = new Set();
+    for (const arr of groups.values()) {
+      if (arr.length < 2) continue;
+      const good = arr.filter(o => isGood(p, o));
+      const pool = good.length ? good : arr;
+      const keep = pool.slice().sort((a, b) => {
+        const ca = byId.get(String(a.dripstoreVariantId || '').trim())?.cost ?? Infinity, cb = byId.get(String(b.dripstoreVariantId || '').trim())?.cost ?? Infinity;
+        return ca - cb || Number(a.price) - Number(b.price);
+      })[0];
+      for (const o of arr) if (o !== keep) { drop.add(o); rep.removed.push(`${label(p, o)} (Rp ${Number(o.price).toLocaleString('id-ID')}) — dobel, dipertahankan Rp ${Number(keep.price).toLocaleString('id-ID')}`); log.removed.push({ productId: p.id, option: JSON.parse(JSON.stringify(o)) }); }
+    }
+    if (drop.size) { p.pricingOptions = p.pricingOptions.filter(o => !drop.has(o)); touched = true; }
+    // 2) hubungkan + 3) harga
+    for (const o of p.pricingOptions) {
+      const oldV = String(o.dripstoreVariantId || '').trim(), oldP = Number(o.price);
+      let relinked = false;
+      if (!isGood(p, o)) {
+        const b = bestVariant(p, o);
+        if (b && b.v) { o.dripstoreVariantId = b.v.variantId; relinked = true; touched = true; rep.linked.push(`${label(p, o)} → ${b.v.productName} / ${b.v.variantName}${oldV ? ' (sebelumnya ID ' + oldV + ')' : ''}`); }
+        else rep.manual.push(`${label(p, o)} — ${b && b.ambiguous ? 'ambigu: ' + b.ambiguous.join(' | ') : 'tidak ada varian DripStore yang cocok (durasi/nama)'}`);
+      }
+      const s = byId.get(String(o.dripstoreVariantId || '').trim());
+      if (!opt.noPrice && s && s.cost > 0 && isGood(p, o)) {
+        const exp = _dsSellPrice(s.cost, prefs.marginPercent, prefs);
+        const loss = oldP < s.cost * prefs.kurs, far = Math.abs(oldP - exp) / exp > 0.25;
+        if (exp && (opt.safePrice ? (loss || (relinked && far)) : (loss || far))) { touched = true; o.price = exp; if (o.strike_price != null && Number(o.strike_price) <= exp) o.strike_price = null; rep.priced.push(`${label(p, o)}: Rp ${oldP.toLocaleString('id-ID')} → Rp ${exp.toLocaleString('id-ID')}`); }
+      }
+      if (relinked || Number(o.price) !== oldP) log.changes.push({ productId: p.id, days: Number(o.days), unit: o.unit === 'h' ? 'h' : 'd', oldVariantId: oldV, newVariantId: String(o.dripstoreVariantId || ''), oldPrice: oldP, newPrice: Number(o.price) });
+    }
+    // urutkan & susun ulang items (hanya produk yang berubah)
+    if (touched) p.pricingOptions.sort((a, b) => (a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1)));
+    if (touched) p.items = p.pricingOptions.map(x => ({ l: `${String(p.name).toUpperCase()} ${formatDurationLabel(x.days, x.unit)}`, p: x.price, reseller_price: x.reseller_price ?? null, strike_price: x.strike_price ?? null }));
+    // sisa: harga yang masih turun padahal durasi lebih panjang
+    let mx = 0, mxO = null;
+    for (const o of p.pricingOptions.slice().sort((a, b) => _dsHours(a.days, a.unit) - _dsHours(b.days, b.unit))) {
+      if (mxO && Number(o.price) < mx) rep.manual.push(`${label(p, o)} — harga Rp ${Number(o.price).toLocaleString('id-ID')} lebih murah dari ${label(p, mxO)} (Rp ${mx.toLocaleString('id-ID')}); cek manual`);
+      if (Number(o.price) > mx) { mx = Number(o.price); mxO = o; }
+    }
+  }
+  return { rep, log };
+}
+
+app.post('/admin/dripstore/auto-fix', requireAdmin, async (req, res) => {
+  try {
+    const { settings, sup, currency, byId } = await _dsLoadSupplierFlat();
+    const prefs = _dsImportPrefs(settings, { kurs: req.body?.kurs, marginPercent: req.body?.margin, roundTo: req.body?.roundTo }, currency);
+    _dsCheckKurs(currency, prefs);
+    const apply = req.body?.apply === true;
+    const result = await withProductsWriteLock(async () => {
+      const products = await readFresh('products.json');
+      const work = JSON.parse(JSON.stringify(products));
+      if (String(req.body?.margin ?? '').trim() === '') { const dm = _dsDetectMargin(work, byId, prefs); if (dm !== null) prefs.marginPercent = dm; }
+      const { rep, log } = _dsAutoFixPlan(work, sup, byId, prefs);
+      rep.margin = prefs.marginPercent;
+      if (apply && (log.removed.length || log.changes.length)) {
+        await writeDB('autofix-undo.json', { ts: new Date().toISOString(), ...log });
+        await writeDB('products.json', work);
+      }
+      return rep;
+    });
+    if (apply) _invalidateDripstoreSnapshot({ full: true });
+    res.json({ success: true, applied: apply, ...result });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+app.post('/admin/dripstore/auto-fix-undo', requireAdmin, async (req, res) => {
+  try {
+    const log = await readFresh('autofix-undo.json');
+    if (!log || !Array.isArray(log.changes)) return res.json({ success: false, message: 'Tidak ada perbaikan otomatis yang bisa diurungkan' });
+    let restored = 0, readded = 0;
+    await withProductsWriteLock(async () => {
+      const products = await readFresh('products.json');
+      for (const c of log.changes) {
+        const p = products.find(x => x.id === c.productId); if (!p) continue;
+        const o = (p.pricingOptions || []).find(x => Number(x.days) === c.days && (x.unit === 'h' ? 'h' : 'd') === c.unit && (String(x.dripstoreVariantId || '') === c.newVariantId || Number(x.price) === c.newPrice));
+        if (!o) continue;
+        o.dripstoreVariantId = c.oldVariantId || null; o.price = c.oldPrice; restored++;
+      }
+      for (const r of (log.removed || [])) {
+        const p = products.find(x => x.id === r.productId); if (!p) continue;
+        p.pricingOptions = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
+        p.pricingOptions.push(r.option); readded++;
+      }
+      for (const p of products) {
+        if (!Array.isArray(p.pricingOptions)) continue;
+        p.pricingOptions.sort((a, b) => (a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1)));
+        p.items = p.pricingOptions.map(x => ({ l: `${String(p.name).toUpperCase()} ${formatDurationLabel(x.days, x.unit)}`, p: x.price, reseller_price: x.reseller_price ?? null, strike_price: x.strike_price ?? null }));
+      }
+      await writeDB('products.json', products);
+      await writeDB('autofix-undo.json', {});
+    });
+    _invalidateDripstoreSnapshot({ full: true });
+    res.json({ success: true, restored, readded });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+// ══ AUTO-HEAL: menjaga mapping produk ↔ provider tetap benar TANPA tombol apa pun ══
+// Jalan otomatis: saat server nyala, tiap 20 menit, saat halaman utama/admin dibuka (bila sudah basi), dan saat checkout
+// menemukan durasi yang belum ter-mapping. Isinya: hapus durasi dobel, hubungkan ke varian DripStore terbaik,
+// pasang ID DripStore Web 2, bersihkan ID yang sudah tidak ada di provider, dan cegah harga di bawah modal.
+let _healRunning = false, _healLast = 0, _healResult = null;
+async function autoHealMappings(reason = 'timer', opts = {}) {
+  if (_healRunning) return _healResult;
+  _healRunning = true; _healLast = Date.now();
+  const out = { at: new Date().toISOString(), reason, ds1: null, ds2: null, errors: [], changed: false };
+  try {
+    const settings = await readFresh('settings.json');
+    let d1 = null, v2 = null;
+    if (settings.dripstore?.apiToken) { try { d1 = await _dsLoadSupplierFlat(); } catch (e) { out.errors.push('DripStore: ' + e.message); } }
+    if (settings.dripstore2?.apiToken) { try { v2 = await _ds2LoadCatalog(); } catch (e) { out.errors.push('DripStore Web 2: ' + e.message); } }
+    if (!d1 && !(v2 && v2.length)) return (_healResult = out);
+    await withProductsWriteLock(async () => {
+      const products = await readFresh('products.json');
+      const work = JSON.parse(JSON.stringify(products));
+      if (d1) {
+        const prefs = _dsImportPrefs(d1.settings, {}, d1.currency);
+        let priceOk = !opts.noPrice;
+        try { _dsCheckKurs(d1.currency, prefs); } catch { priceOk = false; }
+        const dm = _dsDetectMargin(work, d1.byId, prefs); if (dm !== null) prefs.marginPercent = dm;
+        const { rep, log } = _dsAutoFixPlan(work, d1.sup, d1.byId, prefs, { safePrice: true, noPrice: !priceOk });
+        out.ds1 = { removed: rep.removed.length, linked: rep.linked.length, priced: rep.priced.length, manual: rep.manual.length, manualList: rep.manual.slice(0, 30) };
+        if (log.removed.length || log.changes.length) await writeDB('autofix-undo.json', { ts: out.at, auto: true, ...log });
+      }
+      if (v2 && v2.length) {
+        const ids = new Set(v2.map(v => v.variantId));
+        let mapped = 0, cleared = 0;
+        for (const p of work) for (const o of (p.pricingOptions || [])) {
+          const cur = String(o.ds2VariantId || '').trim();
+          if (cur) { if (ids.has(cur)) continue; o.ds2VariantId = null; cleared++; }
+          const ranked = _ds2Rank(p.name, o, v2);
+          const best = ranked[0], second = ranked[1];
+          if (best && best.score >= 0.85 && (!second || second.score <= best.score - 0.1)) { o.ds2VariantId = best.v.variantId; mapped++; }
+        }
+        out.ds2 = { mapped, cleared };
+      }
+      if (JSON.stringify(work) !== JSON.stringify(products)) { await writeDB('products.json', work); out.changed = true; }
+    });
+    if (out.changed) _invalidateDripstoreSnapshot({ full: true });
+    if (out.changed) pushLog('info', `[auto-heal/${reason}] ${JSON.stringify({ ds1: out.ds1 && { removed: out.ds1.removed, linked: out.ds1.linked, priced: out.ds1.priced }, ds2: out.ds2 })}`, { cat: 'dripstore' });
+  } catch (e) { out.errors.push(e.message); }
+  finally { _healRunning = false; }
+  return (_healResult = out);
+}
+app.get('/admin/dripstore/heal-status', requireAdmin, (req, res) => res.json({ success: true, running: _healRunning, last: _healResult, lastRun: _healLast || null }));
+app.post('/admin/dripstore/heal-now', requireAdmin, async (req, res) => { const r = await autoHealMappings('manual'); res.json({ success: true, result: r }); });
+if (!isVercel) {
+  setTimeout(() => autoHealMappings('start').catch(() => {}), 30 * 1000).unref?.();
+  setInterval(() => autoHealMappings('timer').catch(() => {}), 20 * 60 * 1000).unref?.();
 }
 
 // PREVIEW: tidak mengubah apa pun, cuma menghitung apa yang AKAN terjadi.
