@@ -2003,6 +2003,9 @@ HG APK MOD
 
             <div id="bmPreview" class="hidden">
                 <div class="text-[11px] font-bold text-zinc-300 mb-2" id="bmSummary"></div>
+                <label class="flex items-center gap-2 text-[11px] font-bold mb-2" style="color:var(--text-2);cursor:pointer;">
+                    <input type="checkbox" id="bmSelectAll" onchange="bmToggleAll(this.checked)" class="accent-red-500"> Centang semua
+                </label>
                 <div id="bmList" class="space-y-1.5 max-h-72 overflow-y-auto mb-3"></div>
                 <button type="button" id="bmSubmitBtn" onclick="bmSubmit()" class="btn-primary text-xs w-full justify-center" style="background:#dc2626;">
                     <iconify-icon icon="mdi:check-all"></iconify-icon> <span id="bmSubmitLabel">Terapkan</span>
@@ -2642,7 +2645,7 @@ async function bmPreview() {
             if (canApply) nOk++;
             const color = !canApply ? '113,113,122' : (whole ? '239,68,68' : (del ? '245,158,11' : '34,197,94'));
             html += `<label class="flex items-start gap-2 p-2 rounded-lg border text-xs ${canApply ? 'cursor-pointer' : ''}" style="border-color:rgba(${color},.3);background:rgba(${color},.06);">
-                <input type="checkbox" ${bmItems[idx].include ? 'checked' : ''} ${canApply ? '' : 'disabled'} onchange="bmItems[${idx}].include=this.checked" class="mt-0.5 accent-red-500">
+                <input type="checkbox" data-bm="${idx}" ${bmItems[idx].include ? 'checked' : ''} ${canApply ? '' : 'disabled'} onchange="bmItems[${idx}].include=this.checked;bmSyncAll()" class="mt-0.5 accent-red-500">
                 <div class="flex-1 min-w-0">
                     ${head}
                     <div class="text-[10px] text-zinc-500">${bmEsc(meta)}${multi ? ` · <span class="text-amber-400">NAMA KEMBAR (${m.matches.length} produk) — pilih yang benar</span>` : ''}</div>
@@ -2656,7 +2659,18 @@ async function bmPreview() {
     document.getElementById('bmSummary').textContent =
         `${blocks.length} blok — ${nOk} produk siap diproses, ${nMissing} nama tidak ditemukan, ${nInvalid} format salah. Centang yang mau diterapkan.`;
     document.getElementById('bmList').innerHTML = html;
+    bmSyncAll();
     document.getElementById('bmPreview').classList.remove('hidden');
+}
+
+function bmToggleAll(on) {
+    bmItems.forEach(i => { if (i.canApply) i.include = on; });
+    document.querySelectorAll('#bmList input[data-bm]').forEach(cb => { if (!cb.disabled) cb.checked = on; });
+}
+function bmSyncAll() {
+    const ok = bmItems.filter(i => i.canApply);
+    const all = document.getElementById('bmSelectAll');
+    if (all) all.checked = ok.length > 0 && ok.every(i => i.include);
 }
 
 async function bmSubmit() {
