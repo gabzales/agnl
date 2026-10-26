@@ -5635,19 +5635,65 @@ app.post('/admin/products/bulk-edit', requireAdmin, async (req, res) => {
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
+// ── Pembersihan duplikat (aman) ──
+// Produk BOLEH dihapus hanya kalau: (1) tidak punya varian, (2) tidak punya riwayat (sold=0, tanpa key, tidak ada transaksi),
+// dan (3) ada produk lain bernama sama yang tetap dipertahankan. Dicek ulang di server saat eksekusi.
+const _bulkIsEmpty = (p) => !(Array.isArray(p.pricingOptions) && p.pricingOptions.length);
+const _bulkHistory = (p, txIds) => Number(p.sold || 0) > 0 || (Array.isArray(p.keys) && p.keys.length > 0) || txIds.has(String(p.id));
+async function _bulkTxProductIds() {
+  const tx = await readFresh('transactions.json').catch(() => []);
+  const ids = new Set();
+  for (const t of (Array.isArray(tx) ? tx : [])) if (t && t.productId != null) ids.add(String(t.productId));
+  return ids;
+}
+function _bulkDupeCandidates(products, txIds, nameSet) {
+  const groups = new Map();
+  for (const p of products) { const k = _bulkNorm(p.name); if (!k) continue; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
+  const out = [];
+  for (const [k, members] of groups) {
+    if (members.length < 2 || (nameSet && !nameSet.has(k))) continue;
+    const safe = members.filter(m => _bulkIsEmpty(m) && !_bulkHistory(m, txIds));
+    if (!safe.length) continue;
+    let keepers = members.filter(m => !safe.includes(m));
+    let del = safe;
+    if (!keepers.length) {            // semuanya kosong & tanpa riwayat: sisakan yang paling lama
+      const sorted = safe.slice().sort((x, y) => String(x.createdAt || '').localeCompare(String(y.createdAt || '')));
+      keepers = [sorted[0]]; del = sorted.slice(1);
+    }
+    const keeper = keepers.slice().sort((x, y) => Number(y.sold || 0) - Number(x.sold || 0))[0];
+    for (const d of del) out.push({ id: d.id, name: d.name, status: d.status || 'active', createdAt: d.createdAt || null,
+      keeperId: keeper.id, keeperSold: Number(keeper.sold || 0), keeperVariants: (keeper.pricingOptions || []).length });
+  }
+  return out;
+}
+
+// Preview: daftar duplikat kosong tanpa riwayat. names (opsional) = batasi ke nama dari file; tanpa names = scan seluruh toko.
+app.post('/admin/products/bulk-dupes', requireAdmin, async (req, res) => {
+  try {
+    const names = Array.isArray(req.body?.names) ? req.body.names.map(_bulkNorm).filter(Boolean) : null;
+    const [products, txIds] = await Promise.all([readFresh('products.json'), _bulkTxProductIds()]);
+    res.json({ success: true, candidates: _bulkDupeCandidates(products, txIds, names ? new Set(names) : null) });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+// Hapus: (a) varian tertentu (tidak boleh mengosongkan produk), atau (b) produk duplikat kosong tanpa riwayat (dicek ulang di sini).
+// TIDAK ADA opsi hapus produk/varian "semua".
 app.post('/admin/products/bulk-delete', requireAdmin, async (req, res) => {
   try {
     const targets = (Array.isArray(req.body?.targets) ? req.body.targets : []).slice(0, _BULK_MAX_TARGETS);
     if (!targets.length) return res.json({ success: false, message: 'Tidak ada produk yang dipilih' });
     const results = [];
     const undoEntries = [];
+    const txIds = await _bulkTxProductIds();
     await withProductsWriteLock(async () => {
       let products = await readFresh('products.json');
       for (const t of targets) {
         const idx = products.findIndex(x => String(x.id) === String(t && t.productId));
         if (idx < 0) { results.push({ productId: t && t.productId, ok: false, message: 'Produk tidak ditemukan (sudah dihapus?)' }); continue; }
         const p = products[idx];
-        if (t.whole === true) {
+        if (t.dupe === true) {
+          const okIds = new Set(_bulkDupeCandidates(products, txIds, null).map(c => c.id));
+          if (!okIds.has(p.id)) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Ditolak: produk ini punya varian/riwayat, atau tidak ada duplikat lain yang dipertahankan.' }); continue; }
           undoEntries.push({ mode: 'restore-product', product: JSON.parse(JSON.stringify(p)) });
           products.splice(idx, 1);
           results.push({ productId: p.id, name: p.name, ok: true, removedProduct: true });
@@ -5658,16 +5704,11 @@ app.post('/admin/products/bulk-delete', requireAdmin, async (req, res) => {
         const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
         const drop = new Set(opts.filter(o => rows.some(r => r.days === Number(o.days) && r.unit === _bulkUnit(o.unit))));
         if (!drop.size) { results.push({ productId: p.id, name: p.name, ok: true, removed: 0, notFound: rows.length }); continue; }
-        const emptying = drop.size >= opts.length;
-        if (emptying && t.allowEmpty !== true) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Ini SEMUA varian produk; perlu konfirmasi khusus (allowEmpty).' }); continue; }
+        if (drop.size >= opts.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Ditolak: ini akan menghapus SEMUA varian. Isi varian baru dulu lewat Edit Massal, baru hapus yang lama.' }); continue; }
         undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, pricingOptions: JSON.parse(JSON.stringify(opts)), items: JSON.parse(JSON.stringify(p.items || [])), status: p.status, bulkEmptied: p.bulkEmptied || null });
         p.pricingOptions = opts.filter(o => !drop.has(o));
-        if (emptying) {
-          // Produk kosong disembunyikan dulu (nonaktif) sampai diisi lagi lewat Edit Massal, yang otomatis mengaktifkannya kembali.
-          p.bulkEmptied = { prevStatus: p.bulkEmptied ? p.bulkEmptied.prevStatus : (p.status || 'active'), at: new Date().toISOString() };
-          p.status = 'inactive'; p.items = [];
-        } else _bulkRebuildItems(p);
-        results.push({ productId: p.id, name: p.name, ok: true, removed: drop.size, notFound: rows.length - drop.size, emptied: emptying });
+        _bulkRebuildItems(p);
+        results.push({ productId: p.id, name: p.name, ok: true, removed: drop.size, notFound: rows.length - drop.size });
       }
       if (undoEntries.length) {
         await writeDB('products.json', products);
@@ -5710,6 +5751,88 @@ app.post('/admin/products/bulk-undo', requireAdmin, async (req, res) => {
     _invalidateDripstoreSnapshot({ full: true });
     pushLog('info', `[bulk-undo] ${restored} produk dikembalikan`, { cat: 'app' });
     res.json({ success: true, restored });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// MAINTENANCE OTOMATIS UNTUK PRODUK YANG TIDAK ADA DI DRIPSTORE (26 Okt 2026)
+// Memindai katalog DripStore (products.php) lalu membandingkan dengan tiap produk di web.
+// Kelas:  none    = tidak ada varian di DripStore, tidak ada provider lain, tidak ada key lokal -> disarankan maintenance
+//         other   = tidak ada di DripStore, tapi masih bisa dipenuhi provider lain / key lokal -> pilihan manual
+//         partial = sebagian varian tidak ada di DripStore (maintenance hanya per produk, jadi hanya info)
+//         ok      = semua varian ada
+// Produk yang dimaintenance oleh tool ini diberi tanda maintenanceAuto, sehingga bisa dibuka lagi otomatis
+// begitu variannya muncul kembali. Maintenance manual dari admin tidak pernah disentuh.
+// Kalau katalog DripStore gagal dibaca, TIDAK ada yang diubah.
+// ══════════════════════════════════════════════════════════════════════════
+async function _provLoadCatalog() {
+  const settings = await readFresh('settings.json');
+  if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
+  const resp = await dripstoreCall(settings, 'products.php');
+  const items = _dsExtractProductItems(resp);
+  if (!items.length) throw new Error('Katalog DripStore kosong / tidak terbaca — tidak ada yang diubah.');
+  _configureExtraProviders(settings);
+  return { resp, count: items.length };
+}
+function _provClassify(products, resp) {
+  const out = [];
+  for (const p of products) {
+    const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
+    if (!opts.length) continue;
+    const rows = opts.map(o => ({
+      label: formatDurationLabel(o.days, o.unit),
+      ds: !!resolveDripstoreVariantForOption(resp, p.name, o),
+      other: _EXTRA_PROVIDERS.some(x => { try { return x.mod.usable(o); } catch { return false; } }) || getLocalOptionStock(p, o) > 0
+    }));
+    const anyDs = rows.some(r => r.ds), anyOther = rows.some(r => r.other);
+    const missing = rows.filter(r => !r.ds).map(r => r.label);
+    let cls = 'ok';
+    if (!anyDs) cls = anyOther ? 'other' : 'none';
+    else if (missing.length) cls = 'partial';
+    out.push({ id: p.id, name: p.name, status: p.status || 'active', maintenance: !!p.maintenance, auto: !!p.maintenanceAuto, sold: Number(p.sold || 0), total: opts.length, missing, cls });
+  }
+  return out;
+}
+
+app.post('/admin/products/provider-scan', requireAdmin, async (req, res) => {
+  try {
+    const { resp, count } = await _provLoadCatalog();
+    const list = _provClassify(await readFresh('products.json'), resp);
+    const turnOn = list.filter(x => x.status !== 'inactive' && !x.maintenance && (x.cls === 'none' || x.cls === 'other'));
+    const turnOff = list.filter(x => x.maintenance && x.auto && x.cls !== 'none');
+    const partial = list.filter(x => x.status !== 'inactive' && x.cls === 'partial');
+    res.json({ success: true, catalogCount: count, turnOn, turnOff, partial, okCount: list.filter(x => x.cls === 'ok').length });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+app.post('/admin/products/provider-maintenance', requireAdmin, async (req, res) => {
+  try {
+    const ids = new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).slice(0, 500));
+    const on = req.body?.on === true;
+    if (!ids.size) return res.json({ success: false, message: 'Tidak ada produk dipilih' });
+    const { resp } = await _provLoadCatalog();
+    let changed = 0, refused = 0;
+    await withProductsWriteLock(async () => {
+      const products = await readFresh('products.json');
+      const cls = new Map(_provClassify(products, resp).map(x => [x.id, x]));
+      for (const p of products) {
+        if (!ids.has(String(p.id))) continue;
+        const c = cls.get(p.id);
+        if (!c) { refused++; continue; }
+        if (on) {
+          if (c.cls !== 'none' && c.cls !== 'other') { refused++; continue; }   // dicek ulang: sekarang ternyata ada di DripStore
+          if (p.maintenance) continue;
+          p.maintenance = true; p.maintenanceAuto = { at: new Date().toISOString(), reason: c.cls === 'none' ? 'tidak ada di DripStore' : 'tidak ada di DripStore (provider lain tersedia)' };
+          changed++;
+        } else {
+          if (!p.maintenance || !p.maintenanceAuto || c.cls === 'none') { refused++; continue; }  // hanya yang dimatikan oleh tool ini
+          p.maintenance = false; delete p.maintenanceAuto; changed++;
+        }
+      }
+      if (changed) await writeDB('products.json', products);
+    });
+    if (changed) pushLog('info', `[provider-maintenance] ${on ? 'ON' : 'OFF'} ${changed} produk`, { cat: 'app' });
+    res.json({ success: true, changed, refused });
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
@@ -5785,6 +5908,7 @@ app.post('/admin/product/maintenance/:id', requireAdmin, async (req, res) => {
       const pr = list.find(x => x.id === req.params.id);
       if (!pr) return null;
       pr.maintenance = !pr.maintenance;
+      delete pr.maintenanceAuto;   // toggle manual = bukan lagi 'otomatis dari cek DripStore'
       await writeDB('products.json', list);
       return pr.maintenance;
     });
