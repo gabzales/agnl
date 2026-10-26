@@ -1993,6 +1993,17 @@ HG APK MOD
                 <textarea id="bmText" rows="6" class="hm-input text-xs font-mono"></textarea>
             </div>
 
+            <div id="bmDelModeWrap" class="hidden mb-3 p-2.5 rounded-lg" style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.25);">
+                <label class="flex items-start gap-2 text-[11px] mb-1.5" style="color:var(--text-2);cursor:pointer;">
+                    <input type="radio" name="bmDelMode" value="whole" checked onchange="bmModeChanged()" class="mt-0.5 accent-red-500">
+                    <span><b>Hapus seluruh produk</b> (jumlah produk berkurang). Gambar, key, jumlah terjual &amp; mapping produk itu ikut hilang.</span>
+                </label>
+                <label class="flex items-start gap-2 text-[11px]" style="color:var(--text-2);cursor:pointer;">
+                    <input type="radio" name="bmDelMode" value="variants" onchange="bmModeChanged()" class="mt-0.5 accent-red-500">
+                    <span><b>Hapus varian saja</b> (produk tetap ada; kalau semua varian habis, produk jadi kosong &amp; nonaktif).</span>
+                </label>
+            </div>
+
             <label id="bmAddMissingWrap" class="flex items-center gap-2 text-[11px] mb-3" style="color:var(--text-2);cursor:pointer;">
                 <input type="checkbox" id="bmAddMissing" checked class="accent-red-500"> Tambahkan varian baru kalau durasinya belum ada di produk
             </label>
@@ -2522,9 +2533,10 @@ function openBulkManage(mode) {
     document.getElementById('bmTitle').textContent = del ? 'Hapus Massal Varian / Produk' : 'Edit Massal Varian';
     document.getElementById('bmIcon').setAttribute('icon', del ? 'mdi:trash-can-outline' : 'mdi:pencil');
     document.getElementById('bmHelp').innerHTML = del
-        ? 'Hapus varian berdasarkan <b>nama produk + durasi</b> (harga di file hanya dicocokkan sebagai pengaman). Blok yang <b>hanya berisi nama</b> = hapus <b>seluruh produk</b>. Bisa diurungkan setelahnya.'
+        ? 'Produk dicari lewat <b>nama</b>, baris durasi+harga di file dipakai sebagai pengaman/pencocok. Pilih di bawah: hapus <b>seluruh produk</b> atau hanya <b>variannya</b>. Bisa diurungkan setelahnya.'
         : 'Ubah <b>harga varian</b> produk yang <b>sudah ada</b> (dicari lewat nama). Tidak membuat produk baru. Mapping provider, harga reseller &amp; harga coret varian yang ada tetap dipertahankan.';
     document.getElementById('bmAddMissingWrap').classList.toggle('hidden', del);
+    document.getElementById('bmDelModeWrap').classList.toggle('hidden', !del);
     document.getElementById('bmSubmitLabel').textContent = del ? 'Hapus yang Dicentang' : 'Terapkan Perubahan';
     document.getElementById('bmSubmitBtn').style.background = del ? '#b91c1c' : '#dc2626';
     document.getElementById('bmPreview').classList.add('hidden');
@@ -2610,9 +2622,10 @@ async function bmPreview() {
             const opts = p.options;
             const find = r => opts.find(o => o.days === r.days && o.unit === r.unit);
             let lines = [], changed = 0, warn = [], blockedAll = false, emptyAll = false, whole = false;
-            if (del && b.rows.length === 0) {
+            if (del && (b.rows.length === 0 || bmDelWhole())) {
                 whole = true; changed = 1;
                 lines.push(`<span class="text-red-400">HAPUS SELURUH PRODUK (${opts.length} varian)</span>`);
+                if (p.sold > 0 || p.keyCount > 0) warn.push(`Produk ini punya riwayat terjual ${p.sold} & ${p.keyCount} key yang ikut hilang.`);
             } else if (del) {
                 let hit = 0, mismatch = false;
                 b.rows.forEach(r => {
@@ -2661,6 +2674,14 @@ async function bmPreview() {
     document.getElementById('bmList').innerHTML = html;
     bmSyncAll();
     document.getElementById('bmPreview').classList.remove('hidden');
+}
+
+function bmDelWhole() {
+    const r = document.querySelector('input[name="bmDelMode"]:checked');
+    return bmMode === 'delete' && (!r || r.value === 'whole');
+}
+function bmModeChanged() {
+    if (!document.getElementById('bmPreview').classList.contains('hidden')) bmPreview();
 }
 
 function bmToggleAll(on) {
