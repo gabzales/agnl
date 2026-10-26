@@ -5535,6 +5535,174 @@ app.post('/admin/product/delete/:id', requireAdmin, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════════════
+// EDIT MASSAL + HAPUS MASSAL VARIAN PRODUK (26 Okt 2026)
+// Masalah: "Import Massal" selalu memanggil /admin/product/add sehingga produk yang sudah ada
+// jadi dobel. Di sini formatnya SAMA (nama produk + baris "7 day 45k"), tapi produk yang sudah ada
+// dicari berdasarkan NAMA lalu variannya diedit/dihapus — TIDAK PERNAH membuat produk baru.
+//   /admin/products/bulk-match  : cari produk yang cocok dengan nama (untuk preview, tidak mengubah apa pun)
+//   /admin/products/bulk-edit   : ubah harga varian (durasi+unit sama); durasi belum ada -> ditambah (opsional)
+//   /admin/products/bulk-delete : hapus varian tertentu, atau seluruh produk (blok hanya nama)
+//   /admin/products/bulk-undo   : kembalikan perubahan terakhir
+// Mapping provider (DripStore/DripStore2/Panelstore), harga reseller & harga coret varian yang sudah ada TETAP dipertahankan.
+// ══════════════════════════════════════════════════════════════════════════
+const _bulkNorm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+const _bulkUnit = (u) => (u === 'h' ? 'h' : 'd');
+const _bulkOptSort = (a, b) => (a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1));
+function _bulkRebuildItems(p) {
+  p.pricingOptions.sort(_bulkOptSort);
+  p.items = p.pricingOptions.map(o => ({ l: `${String(p.name).toUpperCase()} ${formatDurationLabel(o.days, o.unit)}`, p: o.price, reseller_price: o.reseller_price ?? null, strike_price: o.strike_price ?? null }));
+}
+function _bulkCleanRows(rows, needPrice) {
+  const out = []; const seen = new Set();
+  for (const r of (Array.isArray(rows) ? rows : [])) {
+    const days = Math.round(Number(r && r.days)), unit = _bulkUnit(r && r.unit);
+    const price = Math.round(Number(r && r.price));
+    if (!(days > 0) || seen.has(`${days}${unit}`)) continue;
+    if (needPrice && !(Number.isFinite(price) && price >= 0)) continue;
+    seen.add(`${days}${unit}`);
+    out.push({ days, unit, price: Number.isFinite(price) ? price : null });
+  }
+  return out;
+}
+const _BULK_MAX_TARGETS = 200;
+
+app.post('/admin/products/bulk-match', requireAdmin, async (req, res) => {
+  try {
+    const blocks = Array.isArray(req.body?.blocks) ? req.body.blocks.slice(0, 500) : [];
+    const products = await readFresh('products.json');
+    const byNorm = new Map();
+    for (const p of products) { const k = _bulkNorm(p.name); if (!k) continue; if (!byNorm.has(k)) byNorm.set(k, []); byNorm.get(k).push(p); }
+    const result = blocks.map(b => {
+      const key = _bulkNorm(b && b.name);
+      const matches = (byNorm.get(key) || []).map(p => ({
+        id: p.id, name: p.name, status: p.status || 'active', createdAt: p.createdAt || null,
+        sold: p.sold || 0, keyCount: Array.isArray(p.keys) ? p.keys.length : 0,
+        options: (p.pricingOptions || []).map(o => ({
+          days: Number(o.days), unit: _bulkUnit(o.unit), price: Number(o.price),
+          mapped: !!(o.dripstoreVariantId || o.ds2VariantId || o.psProductId)
+        }))
+      }));
+      let suggestions = [];
+      if (!matches.length && key) {
+        suggestions = products.filter(p => { const n = _bulkNorm(p.name); return n && (n.includes(key) || key.includes(n)); }).slice(0, 3).map(p => p.name);
+      }
+      return { name: b && b.name, matches, suggestions };
+    });
+    res.json({ success: true, blocks: result });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+app.post('/admin/products/bulk-edit', requireAdmin, async (req, res) => {
+  try {
+    const targets = (Array.isArray(req.body?.targets) ? req.body.targets : []).slice(0, _BULK_MAX_TARGETS);
+    const addMissing = req.body?.addMissing !== false;
+    if (!targets.length) return res.json({ success: false, message: 'Tidak ada produk yang dipilih' });
+    const results = [];
+    const undoEntries = [];
+    await withProductsWriteLock(async () => {
+      const products = await readFresh('products.json');
+      for (const t of targets) {
+        const p = products.find(x => String(x.id) === String(t && t.productId));
+        if (!p) { results.push({ productId: t && t.productId, ok: false, message: 'Produk tidak ditemukan (sudah dihapus?)' }); continue; }
+        const rows = _bulkCleanRows(t.rows, true);
+        if (!rows.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Tidak ada baris varian yang valid' }); continue; }
+        p.pricingOptions = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
+        const before = { pricingOptions: JSON.parse(JSON.stringify(p.pricingOptions)), items: JSON.parse(JSON.stringify(p.items || [])) };
+        let updated = 0, added = 0, same = 0, skipped = 0;
+        for (const r of rows) {
+          const o = p.pricingOptions.find(x => Number(x.days) === r.days && _bulkUnit(x.unit) === r.unit);
+          if (o) {
+            if (Number(o.price) === r.price) { same++; continue; }
+            o.price = r.price;
+            if (o.strike_price != null && Number(o.strike_price) <= r.price) o.strike_price = null;
+            updated++;
+          } else if (addMissing) {
+            p.pricingOptions.push({ days: r.days, unit: r.unit, price: r.price, reseller_price: null, strike_price: null, dripstoreVariantId: null, psProductId: null, ds2VariantId: null });
+            added++;
+          } else skipped++;
+        }
+        if (updated || added) { _bulkRebuildItems(p); undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, ...before }); }
+        results.push({ productId: p.id, name: p.name, ok: true, updated, added, same, skipped });
+      }
+      if (undoEntries.length) {
+        await writeDB('products.json', products);
+        await writeDB('bulk-undo.json', { ts: new Date().toISOString(), action: 'edit', entries: undoEntries });
+      }
+    });
+    if (undoEntries.length) { _invalidateDripstoreSnapshot({ full: true }); pushLog('info', `[bulk-edit] ${undoEntries.length} produk diubah`, { cat: 'app' }); }
+    res.json({ success: true, results });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+app.post('/admin/products/bulk-delete', requireAdmin, async (req, res) => {
+  try {
+    const targets = (Array.isArray(req.body?.targets) ? req.body.targets : []).slice(0, _BULK_MAX_TARGETS);
+    if (!targets.length) return res.json({ success: false, message: 'Tidak ada produk yang dipilih' });
+    const results = [];
+    const undoEntries = [];
+    await withProductsWriteLock(async () => {
+      let products = await readFresh('products.json');
+      for (const t of targets) {
+        const idx = products.findIndex(x => String(x.id) === String(t && t.productId));
+        if (idx < 0) { results.push({ productId: t && t.productId, ok: false, message: 'Produk tidak ditemukan (sudah dihapus?)' }); continue; }
+        const p = products[idx];
+        if (t.whole === true) {
+          undoEntries.push({ mode: 'restore-product', product: JSON.parse(JSON.stringify(p)) });
+          products.splice(idx, 1);
+          results.push({ productId: p.id, name: p.name, ok: true, removedProduct: true });
+          continue;
+        }
+        const rows = _bulkCleanRows(t.rows, false);
+        if (!rows.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Tidak ada baris varian yang valid' }); continue; }
+        const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
+        const drop = new Set(opts.filter(o => rows.some(r => r.days === Number(o.days) && r.unit === _bulkUnit(o.unit))));
+        if (!drop.size) { results.push({ productId: p.id, name: p.name, ok: true, removed: 0, notFound: rows.length }); continue; }
+        if (drop.size >= opts.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Menghapus SEMUA varian tidak diizinkan (produk jadi kosong). Untuk hapus produk, pakai blok yang hanya berisi nama.' }); continue; }
+        undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, pricingOptions: JSON.parse(JSON.stringify(opts)), items: JSON.parse(JSON.stringify(p.items || [])) });
+        p.pricingOptions = opts.filter(o => !drop.has(o));
+        _bulkRebuildItems(p);
+        results.push({ productId: p.id, name: p.name, ok: true, removed: drop.size, notFound: rows.length - drop.size });
+      }
+      if (undoEntries.length) {
+        await writeDB('products.json', products);
+        await writeDB('bulk-undo.json', { ts: new Date().toISOString(), action: 'delete', entries: undoEntries });
+      }
+    });
+    if (undoEntries.length) { _invalidateDripstoreSnapshot({ full: true }); pushLog('info', `[bulk-delete] ${undoEntries.length} produk terpengaruh`, { cat: 'app' }); }
+    res.json({ success: true, results });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+app.get('/admin/products/bulk-undo', requireAdmin, async (req, res) => {
+  const u = await readFresh('bulk-undo.json').catch(() => null);
+  res.json({ success: true, available: !!(u && Array.isArray(u.entries) && u.entries.length), ts: u && u.ts || null, action: u && u.action || null, count: u && u.entries ? u.entries.length : 0 });
+});
+
+app.post('/admin/products/bulk-undo', requireAdmin, async (req, res) => {
+  try {
+    const u = await readFresh('bulk-undo.json').catch(() => null);
+    if (!u || !Array.isArray(u.entries) || !u.entries.length) return res.json({ success: false, message: 'Tidak ada perubahan yang bisa diurungkan' });
+    let restored = 0;
+    await withProductsWriteLock(async () => {
+      const products = await readFresh('products.json');
+      for (const e of u.entries) {
+        if (e.mode === 'restore-product') {
+          if (!products.some(p => p.id === e.product.id)) { products.push(e.product); restored++; }
+        } else if (e.mode === 'restore-options') {
+          const p = products.find(x => x.id === e.id);
+          if (p) { p.pricingOptions = e.pricingOptions; p.items = e.items; restored++; }
+        }
+      }
+      await writeDB('products.json', products);
+      await writeDB('bulk-undo.json', { ts: null, action: null, entries: [] });
+    });
+    _invalidateDripstoreSnapshot({ full: true });
+    pushLog('info', `[bulk-undo] ${restored} produk dikembalikan`, { cat: 'app' });
+    res.json({ success: true, restored });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
 app.post('/admin/user/delete/:id', requireAdmin, async (req, res) => {
   try {
     let users = await readFresh('users.json');

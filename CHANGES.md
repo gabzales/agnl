@@ -1,3 +1,15 @@
+# FIX 26 Okt 2026 — Edit Massal & Hapus Massal varian produk (tab Products)
+
+- **Masalah:** Import Massal selalu memanggil `/admin/product/add`, jadi produk yang sudah ada malah dibuat dobel.
+- **Edit Massal** (tombol di Admin > Products): format file sama dengan Import Massal. Produk dicari lewat NAMA (besar/kecil & tanda baca diabaikan), lalu harga varian dengan durasi yang sama diubah. Durasi yang belum ada ditambah (bisa dimatikan lewat centang). TIDAK PERNAH membuat produk baru. Mapping DripStore/DripStore 2/Panelstore, harga reseller, dan harga coret varian tetap dipertahankan.
+- **Hapus Massal:** blok berisi nama + durasi = hapus varian itu saja. Blok yang hanya berisi nama = hapus seluruh produk. Menghapus SEMUA varian sebuah produk ditolak. Harga di file yang beda dari harga saat ini diberi peringatan.
+- Nama kembar (mis. sisa dobel dari Import Massal) ditampilkan per produk lengkap dengan jumlah terjual/key/tanggal dibuat, tidak dicentang otomatis, pilih sendiri yang benar.
+- Ada preview dulu sebelum apa pun diubah, dan tombol **Urungkan perubahan terakhir** (snapshot di `bulk-undo.json`).
+- Harga boleh `45k`, `45rb`, `45.000`. Tidak perlu SQL Supabase.
+- Endpoint baru di `server.js`: `/admin/products/bulk-match|bulk-edit|bulk-delete|bulk-undo`. UI di `views/pages/admin.ejs`.
+
+---
+
 # FIX 25 Okt 2026 — Nomor CS & stok DripStore 2
 
 - **AUTO-HEAL (tanpa tombol):** `autoHealMappings()` jalan sendiri saat server nyala, tiap 20 menit, saat beranda/admin dibuka (bila basi), dan saat checkout menemukan durasi belum ter-mapping (cek ulang otomatis). Menghubungkan ke varian DripStore terbaik, memasang ID DripStore Web 2, membersihkan ID yang hilang, menghapus durasi dobel, dan mencegah harga di bawah modal. Status & tombol manual di `/admin/dripstore/audit`.
