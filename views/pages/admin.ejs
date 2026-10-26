@@ -2820,7 +2820,7 @@ function ds2Render() {
         return `<div class="p-2 rounded-lg bg-white/5 border border-white/10">
           <div class="font-bold text-zinc-200">${_ds2Esc(l.productName)} — ${l.days}${l.unit} ${l.suggest.length ? '<span class="text-emerald-400 font-normal">(ada saran cocok)</span>' : '<span class="text-amber-400 font-normal">(tidak ada nama yang pas, pilih manual)</span>'}</div>
           <div class="flex gap-1.5 mt-1.5">
-            <select id="ds2sel${i}" class="hm-input text-[11px] flex-1 min-w-0"><option value="">— pilih varian DripStore 2 —</option>${sorted.map(v => `<option value="${_ds2Esc(v.variantId)}" ${sugg.has(v.variantId) ? 'selected' : ''}>${_ds2Esc(vLabel(v))}</option>`).join('')}</select>
+            <select id="ds2sel${i}" class="hm-input text-[11px] flex-1 min-w-0"><option value="">— pilih varian DripStore 2 —</option>${sorted.map((v, ix) => `<option value="${_ds2Esc(v.variantId)}" ${ix === 0 && sugg.has(v.variantId) ? 'selected' : ''}>${_ds2Esc(vLabel(v))}</option>`).join('')}</select>
             <button type="button" onclick="ds2Pasang(${i}, this)" class="px-3 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 font-bold">Pasang</button>
           </div></div>`;
     }).join('') : '<div class="text-zinc-600">Semua durasi produk sudah punya Variant ID DripStore 2.</div>';

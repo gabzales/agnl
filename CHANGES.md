@@ -1,5 +1,6 @@
 # FIX 25 Okt 2026 — Nomor CS & stok DripStore 2
 
+- **Auto-cocokkan DripStore 2 lebih akurat:** nama dicocokkan fuzzy (ANDRO≈ANDROID+, '/'≈'+', typo 1 huruf, 'no root'≈'non root', urutan kata bebas). Otomatis dipasang hanya bila skor ≥85% dan jelas di atas kandidat kedua; sisanya jadi saran di dropdown (≥60%) dengan skor di laporan.
 - **Nomor CS:** semua nomor hardcode dihapus (default settings di `server.js`, `seed-settings.js`, fallback di `dashboard.ejs`). Seluruh link WhatsApp (footer, menu, FAB, beranda, invoice, reseller, top up saldo, halaman bayar) kini lewat satu helper `csWaOf(settings)` = WhatsApp CS di Pengaturan admin, kalau kosong pakai WhatsApp utama. Tidak ada nomor cadangan.
 - **Stok DripStore 2 "Habis":** (1) simpan produk lewat form edit menghapus `ds2VariantId` & `psProductId` -> sekarang dipertahankan; (2) tanda "habis" 10 menit (in-memory) kini dilepas saat admin menyimpan / mengetes token DripStore Web 2.
 
