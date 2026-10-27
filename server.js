@@ -5535,307 +5535,6 @@ app.post('/admin/product/delete/:id', requireAdmin, async (req, res) => {
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════════
-// EDIT MASSAL + HAPUS MASSAL VARIAN PRODUK (26 Okt 2026)
-// Masalah: "Import Massal" selalu memanggil /admin/product/add sehingga produk yang sudah ada
-// jadi dobel. Di sini formatnya SAMA (nama produk + baris "7 day 45k"), tapi produk yang sudah ada
-// dicari berdasarkan NAMA lalu variannya diedit/dihapus — TIDAK PERNAH membuat produk baru.
-//   /admin/products/bulk-match  : cari produk yang cocok dengan nama (untuk preview, tidak mengubah apa pun)
-//   /admin/products/bulk-edit   : ubah harga varian (durasi+unit sama); durasi belum ada -> ditambah (opsional)
-//   /admin/products/bulk-delete : hapus varian tertentu, atau seluruh produk (blok hanya nama)
-//   /admin/products/bulk-undo   : kembalikan perubahan terakhir
-// Mapping provider (DripStore/DripStore2/Panelstore), harga reseller & harga coret varian yang sudah ada TETAP dipertahankan.
-// ══════════════════════════════════════════════════════════════════════════
-const _bulkNorm = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
-const _bulkUnit = (u) => (u === 'h' ? 'h' : 'd');
-const _bulkOptSort = (a, b) => (a.unit === b.unit ? a.days - b.days : (a.unit === 'h' ? -1 : 1));
-function _bulkRebuildItems(p) {
-  p.pricingOptions.sort(_bulkOptSort);
-  p.items = p.pricingOptions.map(o => ({ l: `${String(p.name).toUpperCase()} ${formatDurationLabel(o.days, o.unit)}`, p: o.price, reseller_price: o.reseller_price ?? null, strike_price: o.strike_price ?? null }));
-}
-function _bulkCleanRows(rows, needPrice) {
-  const out = []; const seen = new Set();
-  for (const r of (Array.isArray(rows) ? rows : [])) {
-    const days = Math.round(Number(r && r.days)), unit = _bulkUnit(r && r.unit);
-    const price = Math.round(Number(r && r.price));
-    if (!(days > 0) || seen.has(`${days}${unit}`)) continue;
-    if (needPrice && !(Number.isFinite(price) && price >= 0)) continue;
-    seen.add(`${days}${unit}`);
-    out.push({ days, unit, price: Number.isFinite(price) ? price : null });
-  }
-  return out;
-}
-const _BULK_MAX_TARGETS = 200;
-
-app.post('/admin/products/bulk-match', requireAdmin, async (req, res) => {
-  try {
-    const blocks = Array.isArray(req.body?.blocks) ? req.body.blocks.slice(0, 500) : [];
-    const products = await readFresh('products.json');
-    const byNorm = new Map();
-    for (const p of products) { const k = _bulkNorm(p.name); if (!k) continue; if (!byNorm.has(k)) byNorm.set(k, []); byNorm.get(k).push(p); }
-    const result = blocks.map(b => {
-      const key = _bulkNorm(b && b.name);
-      const matches = (byNorm.get(key) || []).map(p => ({
-        id: p.id, name: p.name, status: p.status || 'active', createdAt: p.createdAt || null,
-        sold: p.sold || 0, keyCount: Array.isArray(p.keys) ? p.keys.length : 0,
-        options: (p.pricingOptions || []).map(o => ({
-          days: Number(o.days), unit: _bulkUnit(o.unit), price: Number(o.price),
-          mapped: !!(o.dripstoreVariantId || o.ds2VariantId || o.psProductId)
-        }))
-      }));
-      let suggestions = [];
-      if (!matches.length && key) {
-        suggestions = products.filter(p => { const n = _bulkNorm(p.name); return n && (n.includes(key) || key.includes(n)); }).slice(0, 3).map(p => p.name);
-      }
-      return { name: b && b.name, matches, suggestions };
-    });
-    res.json({ success: true, blocks: result });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-app.post('/admin/products/bulk-edit', requireAdmin, async (req, res) => {
-  try {
-    const targets = (Array.isArray(req.body?.targets) ? req.body.targets : []).slice(0, _BULK_MAX_TARGETS);
-    const addMissing = req.body?.addMissing !== false;
-    if (!targets.length) return res.json({ success: false, message: 'Tidak ada produk yang dipilih' });
-    const results = [];
-    const undoEntries = [];
-    await withProductsWriteLock(async () => {
-      const products = await readFresh('products.json');
-      for (const t of targets) {
-        const p = products.find(x => String(x.id) === String(t && t.productId));
-        if (!p) { results.push({ productId: t && t.productId, ok: false, message: 'Produk tidak ditemukan (sudah dihapus?)' }); continue; }
-        const rows = _bulkCleanRows(t.rows, true);
-        if (!rows.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Tidak ada baris varian yang valid' }); continue; }
-        p.pricingOptions = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
-        const before = { pricingOptions: JSON.parse(JSON.stringify(p.pricingOptions)), items: JSON.parse(JSON.stringify(p.items || [])), status: p.status, bulkEmptied: p.bulkEmptied || null };
-        let updated = 0, added = 0, same = 0, skipped = 0;
-        for (const r of rows) {
-          const o = p.pricingOptions.find(x => Number(x.days) === r.days && _bulkUnit(x.unit) === r.unit);
-          if (o) {
-            if (Number(o.price) === r.price) { same++; continue; }
-            o.price = r.price;
-            if (o.strike_price != null && Number(o.strike_price) <= r.price) o.strike_price = null;
-            updated++;
-          } else if (addMissing) {
-            p.pricingOptions.push({ days: r.days, unit: r.unit, price: r.price, reseller_price: null, strike_price: null, dripstoreVariantId: null, psProductId: null, ds2VariantId: null });
-            added++;
-          } else skipped++;
-        }
-        if (updated || added) { _bulkRebuildItems(p); if (p.bulkEmptied && p.pricingOptions.length) { p.status = p.bulkEmptied.prevStatus || 'active'; delete p.bulkEmptied; } undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, ...before }); }
-        results.push({ productId: p.id, name: p.name, ok: true, updated, added, same, skipped });
-      }
-      if (undoEntries.length) {
-        await writeDB('products.json', products);
-        await writeDB('bulk-undo.json', { ts: new Date().toISOString(), action: 'edit', entries: undoEntries });
-      }
-    });
-    if (undoEntries.length) { _invalidateDripstoreSnapshot({ full: true }); pushLog('info', `[bulk-edit] ${undoEntries.length} produk diubah`, { cat: 'app' }); }
-    res.json({ success: true, results });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-// ── Pembersihan duplikat (aman) ──
-// Produk BOLEH dihapus hanya kalau: (1) tidak punya varian, (2) tidak punya riwayat (sold=0, tanpa key, tidak ada transaksi),
-// dan (3) ada produk lain bernama sama yang tetap dipertahankan. Dicek ulang di server saat eksekusi.
-const _bulkIsEmpty = (p) => !(Array.isArray(p.pricingOptions) && p.pricingOptions.length);
-const _bulkHistory = (p, txIds) => Number(p.sold || 0) > 0 || (Array.isArray(p.keys) && p.keys.length > 0) || txIds.has(String(p.id));
-async function _bulkTxProductIds() {
-  const tx = await readFresh('transactions.json').catch(() => []);
-  const ids = new Set();
-  for (const t of (Array.isArray(tx) ? tx : [])) if (t && t.productId != null) ids.add(String(t.productId));
-  return ids;
-}
-function _bulkDupeCandidates(products, txIds, nameSet) {
-  const groups = new Map();
-  for (const p of products) { const k = _bulkNorm(p.name); if (!k) continue; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
-  const out = [];
-  for (const [k, members] of groups) {
-    if (members.length < 2 || (nameSet && !nameSet.has(k))) continue;
-    const safe = members.filter(m => _bulkIsEmpty(m) && !_bulkHistory(m, txIds));
-    if (!safe.length) continue;
-    let keepers = members.filter(m => !safe.includes(m));
-    let del = safe;
-    if (!keepers.length) {            // semuanya kosong & tanpa riwayat: sisakan yang paling lama
-      const sorted = safe.slice().sort((x, y) => String(x.createdAt || '').localeCompare(String(y.createdAt || '')));
-      keepers = [sorted[0]]; del = sorted.slice(1);
-    }
-    const keeper = keepers.slice().sort((x, y) => Number(y.sold || 0) - Number(x.sold || 0))[0];
-    for (const d of del) out.push({ id: d.id, name: d.name, status: d.status || 'active', createdAt: d.createdAt || null,
-      keeperId: keeper.id, keeperSold: Number(keeper.sold || 0), keeperVariants: (keeper.pricingOptions || []).length });
-  }
-  return out;
-}
-
-// Preview: daftar duplikat kosong tanpa riwayat. names (opsional) = batasi ke nama dari file; tanpa names = scan seluruh toko.
-app.post('/admin/products/bulk-dupes', requireAdmin, async (req, res) => {
-  try {
-    const names = Array.isArray(req.body?.names) ? req.body.names.map(_bulkNorm).filter(Boolean) : null;
-    const [products, txIds] = await Promise.all([readFresh('products.json'), _bulkTxProductIds()]);
-    res.json({ success: true, candidates: _bulkDupeCandidates(products, txIds, names ? new Set(names) : null) });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-// Hapus: (a) varian tertentu (tidak boleh mengosongkan produk), atau (b) produk duplikat kosong tanpa riwayat (dicek ulang di sini).
-// TIDAK ADA opsi hapus produk/varian "semua".
-app.post('/admin/products/bulk-delete', requireAdmin, async (req, res) => {
-  try {
-    const targets = (Array.isArray(req.body?.targets) ? req.body.targets : []).slice(0, _BULK_MAX_TARGETS);
-    if (!targets.length) return res.json({ success: false, message: 'Tidak ada produk yang dipilih' });
-    const results = [];
-    const undoEntries = [];
-    const txIds = await _bulkTxProductIds();
-    await withProductsWriteLock(async () => {
-      let products = await readFresh('products.json');
-      for (const t of targets) {
-        const idx = products.findIndex(x => String(x.id) === String(t && t.productId));
-        if (idx < 0) { results.push({ productId: t && t.productId, ok: false, message: 'Produk tidak ditemukan (sudah dihapus?)' }); continue; }
-        const p = products[idx];
-        if (t.dupe === true) {
-          const okIds = new Set(_bulkDupeCandidates(products, txIds, null).map(c => c.id));
-          if (!okIds.has(p.id)) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Ditolak: produk ini punya varian/riwayat, atau tidak ada duplikat lain yang dipertahankan.' }); continue; }
-          undoEntries.push({ mode: 'restore-product', product: JSON.parse(JSON.stringify(p)) });
-          products.splice(idx, 1);
-          results.push({ productId: p.id, name: p.name, ok: true, removedProduct: true });
-          continue;
-        }
-        const rows = _bulkCleanRows(t.rows, false);
-        if (!rows.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Tidak ada baris varian yang valid' }); continue; }
-        const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
-        const drop = new Set(opts.filter(o => rows.some(r => r.days === Number(o.days) && r.unit === _bulkUnit(o.unit))));
-        if (!drop.size) { results.push({ productId: p.id, name: p.name, ok: true, removed: 0, notFound: rows.length }); continue; }
-        if (drop.size >= opts.length) { results.push({ productId: p.id, name: p.name, ok: false, message: 'Ditolak: ini akan menghapus SEMUA varian. Isi varian baru dulu lewat Edit Massal, baru hapus yang lama.' }); continue; }
-        undoEntries.push({ mode: 'restore-options', id: p.id, name: p.name, pricingOptions: JSON.parse(JSON.stringify(opts)), items: JSON.parse(JSON.stringify(p.items || [])), status: p.status, bulkEmptied: p.bulkEmptied || null });
-        p.pricingOptions = opts.filter(o => !drop.has(o));
-        _bulkRebuildItems(p);
-        results.push({ productId: p.id, name: p.name, ok: true, removed: drop.size, notFound: rows.length - drop.size });
-      }
-      if (undoEntries.length) {
-        await writeDB('products.json', products);
-        await writeDB('bulk-undo.json', { ts: new Date().toISOString(), action: 'delete', entries: undoEntries });
-      }
-    });
-    if (undoEntries.length) { _invalidateDripstoreSnapshot({ full: true }); pushLog('info', `[bulk-delete] ${undoEntries.length} produk terpengaruh`, { cat: 'app' }); }
-    res.json({ success: true, results });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-app.get('/admin/products/bulk-undo', requireAdmin, async (req, res) => {
-  const u = await readFresh('bulk-undo.json').catch(() => null);
-  res.json({ success: true, available: !!(u && Array.isArray(u.entries) && u.entries.length), ts: u && u.ts || null, action: u && u.action || null, count: u && u.entries ? u.entries.length : 0 });
-});
-
-app.post('/admin/products/bulk-undo', requireAdmin, async (req, res) => {
-  try {
-    const u = await readFresh('bulk-undo.json').catch(() => null);
-    if (!u || !Array.isArray(u.entries) || !u.entries.length) return res.json({ success: false, message: 'Tidak ada perubahan yang bisa diurungkan' });
-    let restored = 0;
-    await withProductsWriteLock(async () => {
-      const products = await readFresh('products.json');
-      for (const e of u.entries) {
-        if (e.mode === 'restore-product') {
-          if (!products.some(p => p.id === e.product.id)) { products.push(e.product); restored++; }
-        } else if (e.mode === 'restore-options') {
-          const p = products.find(x => x.id === e.id);
-          if (p) {
-            p.pricingOptions = e.pricingOptions; p.items = e.items;
-            if (e.status !== undefined) p.status = e.status;
-            if (e.bulkEmptied) p.bulkEmptied = e.bulkEmptied; else delete p.bulkEmptied;
-            restored++;
-          }
-        }
-      }
-      await writeDB('products.json', products);
-      await writeDB('bulk-undo.json', { ts: null, action: null, entries: [] });
-    });
-    _invalidateDripstoreSnapshot({ full: true });
-    pushLog('info', `[bulk-undo] ${restored} produk dikembalikan`, { cat: 'app' });
-    res.json({ success: true, restored });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-// ══════════════════════════════════════════════════════════════════════════
-// MAINTENANCE OTOMATIS UNTUK PRODUK YANG TIDAK ADA DI DRIPSTORE (26 Okt 2026)
-// Memindai katalog DripStore (products.php) lalu membandingkan dengan tiap produk di web.
-// Kelas:  none    = tidak ada varian di DripStore, tidak ada provider lain, tidak ada key lokal -> disarankan maintenance
-//         other   = tidak ada di DripStore, tapi masih bisa dipenuhi provider lain / key lokal -> pilihan manual
-//         partial = sebagian varian tidak ada di DripStore (maintenance hanya per produk, jadi hanya info)
-//         ok      = semua varian ada
-// Produk yang dimaintenance oleh tool ini diberi tanda maintenanceAuto, sehingga bisa dibuka lagi otomatis
-// begitu variannya muncul kembali. Maintenance manual dari admin tidak pernah disentuh.
-// Kalau katalog DripStore gagal dibaca, TIDAK ada yang diubah.
-// ══════════════════════════════════════════════════════════════════════════
-async function _provLoadCatalog() {
-  const settings = await readFresh('settings.json');
-  if (!settings.dripstore?.apiToken) throw new Error('API Token DripStore belum dikonfigurasi di Settings');
-  const resp = await dripstoreCall(settings, 'products.php');
-  const items = _dsExtractProductItems(resp);
-  if (!items.length) throw new Error('Katalog DripStore kosong / tidak terbaca — tidak ada yang diubah.');
-  _configureExtraProviders(settings);
-  return { resp, count: items.length };
-}
-function _provClassify(products, resp) {
-  const out = [];
-  for (const p of products) {
-    const opts = Array.isArray(p.pricingOptions) ? p.pricingOptions : [];
-    if (!opts.length) continue;
-    const rows = opts.map(o => ({
-      label: formatDurationLabel(o.days, o.unit),
-      ds: !!resolveDripstoreVariantForOption(resp, p.name, o),
-      other: _EXTRA_PROVIDERS.some(x => { try { return x.mod.usable(o); } catch { return false; } }) || getLocalOptionStock(p, o) > 0
-    }));
-    const anyDs = rows.some(r => r.ds), anyOther = rows.some(r => r.other);
-    const missing = rows.filter(r => !r.ds).map(r => r.label);
-    let cls = 'ok';
-    if (!anyDs) cls = anyOther ? 'other' : 'none';
-    else if (missing.length) cls = 'partial';
-    out.push({ id: p.id, name: p.name, status: p.status || 'active', maintenance: !!p.maintenance, auto: !!p.maintenanceAuto, sold: Number(p.sold || 0), total: opts.length, missing, cls });
-  }
-  return out;
-}
-
-app.post('/admin/products/provider-scan', requireAdmin, async (req, res) => {
-  try {
-    const { resp, count } = await _provLoadCatalog();
-    const list = _provClassify(await readFresh('products.json'), resp);
-    const turnOn = list.filter(x => x.status !== 'inactive' && !x.maintenance && (x.cls === 'none' || x.cls === 'other'));
-    const turnOff = list.filter(x => x.maintenance && x.auto && x.cls !== 'none');
-    const partial = list.filter(x => x.status !== 'inactive' && x.cls === 'partial');
-    res.json({ success: true, catalogCount: count, turnOn, turnOff, partial, okCount: list.filter(x => x.cls === 'ok').length });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
-app.post('/admin/products/provider-maintenance', requireAdmin, async (req, res) => {
-  try {
-    const ids = new Set((Array.isArray(req.body?.ids) ? req.body.ids : []).map(String).slice(0, 500));
-    const on = req.body?.on === true;
-    if (!ids.size) return res.json({ success: false, message: 'Tidak ada produk dipilih' });
-    const { resp } = await _provLoadCatalog();
-    let changed = 0, refused = 0;
-    await withProductsWriteLock(async () => {
-      const products = await readFresh('products.json');
-      const cls = new Map(_provClassify(products, resp).map(x => [x.id, x]));
-      for (const p of products) {
-        if (!ids.has(String(p.id))) continue;
-        const c = cls.get(p.id);
-        if (!c) { refused++; continue; }
-        if (on) {
-          if (c.cls !== 'none' && c.cls !== 'other') { refused++; continue; }   // dicek ulang: sekarang ternyata ada di DripStore
-          if (p.maintenance) continue;
-          p.maintenance = true; p.maintenanceAuto = { at: new Date().toISOString(), reason: c.cls === 'none' ? 'tidak ada di DripStore' : 'tidak ada di DripStore (provider lain tersedia)' };
-          changed++;
-        } else {
-          if (!p.maintenance || !p.maintenanceAuto || c.cls === 'none') { refused++; continue; }  // hanya yang dimatikan oleh tool ini
-          p.maintenance = false; delete p.maintenanceAuto; changed++;
-        }
-      }
-      if (changed) await writeDB('products.json', products);
-    });
-    if (changed) pushLog('info', `[provider-maintenance] ${on ? 'ON' : 'OFF'} ${changed} produk`, { cat: 'app' });
-    res.json({ success: true, changed, refused });
-  } catch (e) { res.json({ success: false, message: e.message }); }
-});
-
 app.post('/admin/user/delete/:id', requireAdmin, async (req, res) => {
   try {
     let users = await readFresh('users.json');
@@ -5908,7 +5607,6 @@ app.post('/admin/product/maintenance/:id', requireAdmin, async (req, res) => {
       const pr = list.find(x => x.id === req.params.id);
       if (!pr) return null;
       pr.maintenance = !pr.maintenance;
-      delete pr.maintenanceAuto;   // toggle manual = bukan lagi 'otomatis dari cek DripStore'
       await writeDB('products.json', list);
       return pr.maintenance;
     });
@@ -6149,6 +5847,30 @@ function _ds2NameScore(localName, remoteName) {
   const r = ma / A.length, pr = mb / B.length;
   return r && pr ? (2 * r * pr) / (r + pr) : 0;
 }
+// Pasangkan tiap produk toko ke SATU nama produk supplier secara EKSKLUSIF (skor tertinggi dulu).
+// Mencegah salah-pasang antar produk bernama mirip (mis. "HG CHEAT SAFE NORMAL" vs "HG CHEAT SAFE VERSION MOD"):
+// satu nama supplier hanya boleh diklaim satu produk toko (kecuali nama persis sama), dan seri/ambigu tidak ditebak.
+function _assignSupplierNames(localProducts, supplierRows, minScore = 0.7) {
+  const names = [...new Set(supplierRows.map(v => String(v.productName || '')).filter(Boolean))];
+  const byLocal = new Map(), byName = new Map();
+  for (const p of localProducts) for (const n of names) {
+    const sc = _ds2NameScore(p.name, n); if (sc < minScore) continue;
+    if (!byLocal.has(p.id)) byLocal.set(p.id, []); byLocal.get(p.id).push({ p, n, sc });
+    if (!byName.has(n)) byName.set(n, []); byName.get(n).push({ p, n, sc });
+  }
+  const tie = (arr) => { const a = arr.map(x => x.sc).sort((x, y) => y - x); return a.length > 1 && a[0] < 0.97 && a[0] - a[1] < 0.02; };
+  const pairs = [];
+  for (const [id, arr] of byLocal) { if (tie(arr)) continue; pairs.push(...arr); }
+  const contested = new Set([...byName].filter(([, arr]) => tie(arr)).map(([n]) => n));
+  pairs.sort((a, b) => b.sc - a.sc);
+  const assigned = new Map(), claimed = new Map();
+  for (const { p, n, sc } of pairs) {
+    if (assigned.has(p.id) || contested.has(n)) continue;
+    if (claimed.has(n) && (sc < 0.97 || claimed.get(n) < 0.97)) continue;
+    assigned.set(p.id, n); if (!claimed.has(n)) claimed.set(n, sc);
+  }
+  return assigned;
+}
 // Varian DS2 berdurasi sama untuk satu opsi produk, diurutkan dari nama paling mirip. Bala Mod v1 dikecualikan.
 function _ds2Rank(productName, opt, variants) {
   const u = opt.unit === 'h' ? 'h' : 'd';
@@ -6226,16 +5948,19 @@ app.post('/admin/dripstore2/auto-map', requireAdmin, async (req, res) => {
     const result = await withProductsWriteLock(async () => {
       const products = await readFresh('products.json');
       let mapped = 0, already = 0; const ambiguous = [], unmatched = [], done = [];
+      const assign2 = _assignSupplierNames(products, variants);
       for (const p of products) {
         for (const o of (p.pricingOptions || [])) {
           const label = `${p.name} — ${o.days}${o.unit === 'h' ? 'h' : 'd'}`;
           if (String(o.ds2VariantId || '').trim()) { already++; continue; }
           const ranked = _ds2Rank(p.name, o, variants);
-          const best = ranked[0], second = ranked[1];
+          const best = ranked[0];
           const pct = x => Math.round(x.score * 100) + '%';
-          if (best && best.score >= 0.85 && (!second || second.score <= best.score - 0.1)) {
-            o.ds2VariantId = best.v.variantId; mapped++;
-            done.push(`${label} → ${best.v.productName} / ${best.v.variantName} (${pct(best)})`);
+          const an = assign2.get(p.id), ou = o.unit === 'h' ? 'h' : 'd';
+          const cand = an ? variants.filter(v => v.productName === an && v.days === Number(o.days) && (v.unit || 'd') === ou && !(v.balamod && v.mode === 'v1')).sort((x, y) => (x.price ?? Infinity) - (y.price ?? Infinity)) : [];
+          if (cand.length) {
+            o.ds2VariantId = cand[0].variantId; mapped++;
+            done.push(`${label} → ${cand[0].productName} / ${cand[0].variantName}`);
           } else if (best && best.score >= 0.5) {
             ambiguous.push(`${label} (terdekat: ${ranked.slice(0, 3).map(x => x.v.productName + ' ' + pct(x)).join(' | ')})`);
           } else unmatched.push(label);
@@ -6779,23 +6504,21 @@ app.post('/admin/dripstore/price-fix', requireAdmin, async (req, res) => {
 function _dsAutoFixPlan(products, sup, byId, prefs, opt = {}) {
   const rep = { removed: [], linked: [], priced: [], manual: [], margin: prefs.marginPercent };
   const log = { removed: [], changes: [] };
+  const assign = _assignSupplierNames(products, sup);
   const label = (p, o) => `${p.name} — ${o.days}${o.unit === 'h' ? 'h' : 'd'}`;
   const isGood = (p, o) => {
     const s = byId.get(String(o.dripstoreVariantId || '').trim()); if (!s) return false;
     const ld = _dsNormDur(o.days, o.unit);
-    return s.days === ld.days && s.unit === ld.unit && _ds2NameScore(p.name, s.productName) >= 0.6;
+    if (s.days !== ld.days || s.unit !== ld.unit) return false;
+    const an = assign.get(p.id);
+    return an ? s.productName === an : _ds2NameScore(p.name, s.productName) >= 0.85;
   };
   const bestVariant = (p, o) => {
+    const an = assign.get(p.id); if (!an) return null;
     const ld = _dsNormDur(o.days, o.unit);
-    const ranked = sup.filter(v => v.days === ld.days && v.unit === ld.unit)
-      .map(v => ({ v, score: _ds2NameScore(p.name, v.productName) })).filter(x => x.score >= 0.85).sort((a, b) => b.score - a.score);
-    if (!ranked.length) return null;
-    const top = ranked.filter(x => x.score >= ranked[0].score - 0.02);
-    const names = new Set(top.map(x => x.v.productName.toLowerCase()));
-    if (names.size > 1) return { ambiguous: top.slice(0, 3).map(x => x.v.productName) };
-    const other = ranked.find(x => !names.has(x.v.productName.toLowerCase()));
-    if (other && other.score > ranked[0].score - 0.1) return { ambiguous: [top[0].v.productName, other.v.productName] };
-    return { v: top.slice().sort((a, b) => (a.v.cost ?? Infinity) - (b.v.cost ?? Infinity))[0].v }; // varian kembar durasi sama: ambil yang termurah
+    const c = sup.filter(v => v.days === ld.days && v.unit === ld.unit && v.productName === an);
+    if (!c.length) return null;
+    return { v: c.slice().sort((x, y) => (x.cost ?? Infinity) - (y.cost ?? Infinity))[0] }; // varian kembar durasi sama: ambil termurah
   };
   for (const p of products) {
     if (!Array.isArray(p.pricingOptions) || !p.pricingOptions.length) continue;
@@ -6822,7 +6545,16 @@ function _dsAutoFixPlan(products, sup, byId, prefs, opt = {}) {
       if (!isGood(p, o)) {
         const b = bestVariant(p, o);
         if (b && b.v) { o.dripstoreVariantId = b.v.variantId; relinked = true; touched = true; rep.linked.push(`${label(p, o)} → ${b.v.productName} / ${b.v.variantName}${oldV ? ' (sebelumnya ID ' + oldV + ')' : ''}`); }
-        else rep.manual.push(`${label(p, o)} — ${b && b.ambiguous ? 'ambigu: ' + b.ambiguous.join(' | ') : 'tidak ada varian DripStore yang cocok (durasi/nama)'}`);
+        else {
+          const an = assign.get(p.id);
+          let why;
+          if (an) why = `produk cocok (${an}) tapi DripStore tidak punya durasi ${o.days}${o.unit === 'h' ? 'h' : 'd'}`;
+          else {
+            const near = [...new Set(sup.map(v => v.productName))].map(n => ({ n, sc: _ds2NameScore(p.name, n) })).filter(x => x.sc >= 0.4).sort((a, b) => b.sc - a.sc).slice(0, 2);
+            why = near.length ? `nama di DripStore tidak persis (terdekat: ${near.map(x => x.n + ' ' + Math.round(x.sc * 100) + '%').join(' | ')})` : 'tidak ada produk bernama mirip di DripStore';
+          }
+          rep.manual.push(`${label(p, o)} — ${why}`);
+        }
       }
       const s = byId.get(String(o.dripstoreVariantId || '').trim());
       if (!opt.noPrice && s && s.cost > 0 && isGood(p, o)) {
@@ -6928,13 +6660,16 @@ async function autoHealMappings(reason = 'timer', opts = {}) {
       }
       if (v2 && v2.length) {
         const ids = new Set(v2.map(v => v.variantId));
+        const assign2 = _assignSupplierNames(work, v2);
         let mapped = 0, cleared = 0;
         for (const p of work) for (const o of (p.pricingOptions || [])) {
           const cur = String(o.ds2VariantId || '').trim();
           if (cur) { if (ids.has(cur)) continue; o.ds2VariantId = null; cleared++; }
-          const ranked = _ds2Rank(p.name, o, v2);
-          const best = ranked[0], second = ranked[1];
-          if (best && best.score >= 0.85 && (!second || second.score <= best.score - 0.1)) { o.ds2VariantId = best.v.variantId; mapped++; }
+          const an = assign2.get(p.id); if (!an) continue;
+          const u = o.unit === 'h' ? 'h' : 'd';
+          const c = v2.filter(v => v.productName === an && v.days === Number(o.days) && (v.unit || 'd') === u && !(v.balamod && v.mode === 'v1'))
+            .sort((x, y) => (x.price ?? Infinity) - (y.price ?? Infinity));
+          if (c.length) { o.ds2VariantId = c[0].variantId; mapped++; }
         }
         out.ds2 = { mapped, cleared };
       }
