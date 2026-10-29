@@ -676,7 +676,11 @@ app.use((req, res, next) => {
   if (GATE_GOOD_BOTS.test(req.headers['user-agent'] || '')
       && (req.method === 'GET' || req.method === 'HEAD')
       && !/^\/(api|admin|check-payment|order|buy-|topup|dashboard|auth)\b/i.test(req.path)) return next();
-  if (_gateIsValid(req)) return next();
+  if (_gateIsValid(req)) {
+    // Sliding: perpanjang cookie bila sisa umurnya < setengah TTL (pembeli yang membiarkan tab terbuka lama tidak kena 403 saat checkout)
+    try { const exp = Number(_gateParseCookie(req).split('.')[0]); if (exp - Date.now() < GATE_TTL_MS / 2 && !res.headersSent) _gateSetCookie(req, res); } catch (_) {}
+    return next();
+  }
   // Request non-GET (POST form/API) dari klien tanpa cookie: tolak jelas, jangan redirect.
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     return res.status(403).json({ success: false, message: 'Verifikasi keamanan diperlukan. Muat ulang halaman.' });
@@ -806,6 +810,7 @@ app.locals.csWaOf = getCsWhatsapp;
 
 // Inject settings + isAdmin ke semua view otomatis
 app.use(async (req, res, next) => {
+  if ((req.path === '/' || req.path.startsWith('/pay') || req.path.startsWith('/check-payment') || req.path.startsWith('/admin')) && typeof _recLast !== 'undefined') setImmediate(lazyReconcile);
   if (req.method === 'GET' && (req.path === '/' || req.path.startsWith('/admin')) && typeof _healLast !== 'undefined' && !_healRunning && Date.now() - _healLast > 20 * 60 * 1000) {
     setImmediate(() => autoHealMappings('lazy').catch(() => {}));
   }
@@ -4504,6 +4509,7 @@ async function finalizeOrder(refId, settings) {
   // dikonfirmasi, sehingga saldo DripStore hanya berkurang untuk customer nyata.
   let key = null;
   let outOfStock = false;
+  let fulfillErrorMsg = null; // penyebab gagal kirim key (ditampilkan di halaman Diagnosa)
   let keySource = 'local_stock';
   let providerTransactionId = null;
   let providerVariantId = null;
@@ -4549,6 +4555,7 @@ async function finalizeOrder(refId, settings) {
       } else {
         console.error('[DripStore hybrid fulfillment]', transaction.code, err.message);
         outOfStock = true;
+        fulfillErrorMsg = String(err.message || 'error provider').slice(0, 220);
       }
     }
   }
@@ -4577,6 +4584,7 @@ async function finalizeOrder(refId, settings) {
   transaction.providerVariantId = providerVariantId || undefined;
   transaction.providerTransactionId = providerTransactionId || undefined;
   transaction.outOfStock = outOfStock;
+  if (outOfStock) transaction.fulfillError = fulfillErrorMsg || 'Tidak ada provider yang bisa memenuhi: varian DripStore/DripStore 2/Panelstore belum ter-mapping untuk produk + durasi ini, atau stok lokal kosong';
   transaction.paidAt = new Date().toISOString();
   const txListFinal = await readFresh('transactions.json');
   const txIdxFinal = txListFinal.findIndex(t => t.id === refId);
@@ -4593,7 +4601,10 @@ async function finalizeOrder(refId, settings) {
       `Produk: ${transaction.productName}\n` +
       `Customer: ${transaction.customerName} (${transaction.wa || '-'})\n` +
       `Total: Rp ${Number(transaction.price).toLocaleString('id-ID')}\n\n` +
-      `Pembayaran sudah masuk tapi stok key kosong. Segera tambah stok & kirim key manual ke pembeli.`;
+      `Pembayaran sudah masuk tapi key belum terkirim.\n` +
+      `Penyebab: ${transaction.fulfillError || '-'}\n\n` +
+      `Sistem akan mencoba kirim ulang otomatis setelah masalah provider beres. Cek & kirim ulang di /admin/diagnose. ` +
+      `Kalau kamu sudah kirim key manual ke pembeli, tekan "Sudah kukirim manual" di halaman itu supaya tidak dikirim dobel.`;
     sendWhatsAppNotif(settings.contact?.whatsapp, waMsg, settings).catch(() => {});
   }
 
@@ -4605,6 +4616,73 @@ async function finalizeOrder(refId, settings) {
   await writeDB('notifications.json', notifs.slice(0, 50));
 
   return { status: 'done', type: 'product', key, code: transaction.code, outOfStock };
+}
+
+
+// ── KIRIM ULANG key untuk pesanan yang SUDAH DIBAYAR tapi gagal terkirim (status 'done' + outOfStock, tanpa key) ──
+// Dulu pesanan seperti ini terkunci selamanya (provider gagal sesaat -> "stok habis" permanen, harus kirim manual).
+// Sekarang dicoba ulang otomatis (setelah auto-perbaiki / saldo diisi) atau lewat tombol di /admin/diagnose.
+const _retryingOrders = new Set();
+async function retryUndeliveredOrder(refId, settings) {
+  const txs0 = await readFresh('transactions.json');
+  const t0 = txs0.find(t => t.id === refId);
+  if (!t0 || t0.status !== 'done' || t0.key || !t0.outOfStock || (t0.type && t0.type !== 'product')) return { status: 'not_retryable' };
+  if (_retryingOrders.has(refId)) return { status: 'busy' };
+  _retryingOrders.add(refId);
+  try {
+    await releaseProductFulfillmentClaim(refId);
+    if (!(await claimProductFulfillment(refId))) return { status: 'busy' };
+    let key = null, keySource = 'local_stock', providerTransactionId = null, providerVariantId = null, localCommitted = false, errMsg = null;
+    const products = await readFresh('products.json');
+    const product = products.find(p => p.id === t0.productId);
+    if (product) {
+      const lr = await consumeLocalProductKey(product.id, t0.selectedDays, t0.selectedUnit || 'd');
+      if (lr.key) { key = lr.key; localCommitted = !!lr.committed; }
+    }
+    if (!key) {
+      const lp = await fulfillProductFromDripstore(t0, settings).catch(e => ({ error: e }));
+      if (lp && !lp.error) { key = lp.key; keySource = lp.source; providerTransactionId = lp.providerTransactionId; providerVariantId = lp.variantId; }
+      else if (lp && lp.error) errMsg = String(lp.error.message || 'error provider').slice(0, 220);
+      else errMsg = 'Tidak ada provider yang bisa memenuhi: varian belum ter-mapping untuk produk + durasi ini';
+    }
+    const txs = await readFresh('transactions.json');
+    const idx = txs.findIndex(t => t.id === refId);
+    if (idx === -1) return { status: 'not_found' };
+    if (txs[idx].key) return { status: 'already_delivered' }; // sudah terisi oleh proses lain
+    if (!key) {
+      txs[idx].fulfillError = errMsg || txs[idx].fulfillError;
+      txs[idx].lastRetryAt = new Date().toISOString();
+      await writeDB('transactions.json', txs);
+      return { status: 'still_failed', error: errMsg };
+    }
+    if (!localCommitted) await incrementProductSold(t0.productId);
+    Object.assign(txs[idx], { key, keySource, outOfStock: false, providerVariantId: providerVariantId || undefined, providerTransactionId: providerTransactionId || undefined, retriedAt: new Date().toISOString() });
+    delete txs[idx].fulfillError;
+    await writeDB('transactions.json', txs);
+    paymentAudit.record('order.retry_delivered', { orderId: refId, source: keySource });
+    if (t0.wa) sendWhatsAppNotif(String(t0.wa), `Halo ${t0.customerName || 'kak'}, key pesananmu ${t0.code} (${t0.productName}) sudah terkirim. Buka halaman Cek Pesanan di web dengan kode pesanan ${t0.code} untuk melihat key. Maaf atas keterlambatannya 🙏`, settings).catch(() => {});
+    return { status: 'delivered', key };
+  } finally { _retryingOrders.delete(refId); }
+}
+async function listUndeliveredOrders(days = 14) {
+  const since = Date.now() - days * 86400000;
+  const txs = await readFresh('transactions.json');
+  return txs.filter(t => t && t.status === 'done' && t.outOfStock && !t.key && !t.manualResolved && (!t.type || t.type === 'product') && (new Date(t.paidAt || t.createdAt || 0).getTime() || 0) >= since)
+    .sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0));
+}
+async function retryUndeliveredBatch(settings, limit = 8) {
+  const out = { delivered: 0, failed: 0, errors: [] };
+  // Otomatis HANYA untuk order yang tercatat penyebabnya (order baru) & sudah >2 menit, supaya order lama yang
+  // sudah kamu kirim manual tidak ikut dibeli ulang. Order lama: pakai tombol "Kirim ulang" di /admin/diagnose.
+  const list = (await listUndeliveredOrders(3)).filter(t => t.fulfillError && Date.now() - (new Date(t.paidAt || 0).getTime() || 0) > 2 * 60 * 1000).slice(0, limit);
+  for (const t of list) {
+    try {
+      const r = await retryUndeliveredOrder(t.id, settings);
+      if (r.status === 'delivered') out.delivered++;
+      else if (r.status === 'still_failed') { out.failed++; if (r.error) out.errors.push(`${t.code}: ${r.error}`); }
+    } catch (e) { out.failed++; out.errors.push(`${t.code}: ${e.message}`); }
+  }
+  return out;
 }
 
 // ── HALAMAN PEMBAYARAN (ThanHub: /order/pay) ──
@@ -4844,14 +4922,38 @@ app.post('/webhook/genspay', async (req, res) => {
 
 // WEBHOOK WIJAYAPAY (docs.wijayapay.com) — dikirim saat pembayaran lunas.
 // URL: https://domainkamu.com/webhook/wijayapay   (dikirim juga per-transaksi
+const _webhookApiChecks = new Map();
+function _webhookApiCheckOk(refId) { // batasi: maks 1 verifikasi API per order per 15 detik (cegah dipakai untuk spam keluar)
+  const now = Date.now(); const last = _webhookApiChecks.get(refId) || 0;
+  if (now - last < 15000) return false;
+  _webhookApiChecks.set(refId, now);
+  if (_webhookApiChecks.size > 500) for (const [k, v] of _webhookApiChecks) if (now - v > 60000) _webhookApiChecks.delete(k);
+  return true;
+}
 app.post('/webhook/wijayapay', async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
     const payload = req.body || {};
     const refId = payload.data && payload.data.ref_id ? String(payload.data.ref_id) : '';
-    const sigOk = wijayapay.verifyWebhookSignature(settings, refId, req.headers['x-signature']);
-    paymentAudit.record('webhook.wijayapay.received', { ip: req.ip, ua: req.headers['user-agent'], orderId: refId || null, sigOk, ipWhitelisted: wijayapay.isWhitelistedIp(req.ip), status: payload.status || null });
-    if (!sigOk) { logWebhook('wijayapay', { result: 'invalid_signature', orderId: refId || null, ip: req.ip }); return res.status(401).json({ status: false, message: 'Invalid signature' }); }
+    let sigOk = wijayapay.verifyWebhookSignature(settings, refId, req.headers['x-signature']);
+    let verifiedVia = sigOk ? 'signature' : null;
+    // Signature tak cocok TIDAK lagi berarti pembayaran dibuang. Webhook hanya "pemicu": kalau transaksinya ada & masih pending,
+    // kita tanya langsung ke WijayaPay (API status, pakai kredensial kita) -- hanya jika gateway sendiri menjawab LUNAS, diproses.
+    // Webhook palsu tidak bisa memaksa hasil ini karena jawabannya berasal dari gateway, bukan dari isi request.
+    if (!sigOk && refId && String(payload.status || '').toLowerCase().trim() === 'paid' && _webhookApiCheckOk(refId)) {
+      try {
+        const txs0 = await readFresh('transactions.json');
+        const t0 = txs0.find(x => x.orderId === refId);
+        if (t0 && t0.status === 'pending' && (!t0.paymentGateway || t0.paymentGateway === 'wijayapay')) {
+          const st = await wijayapay.checkStatus(settings, refId);
+          if (['paid', 'completed', 'success', 'settlement', 'berhasil'].includes(String(st.status))) { sigOk = true; verifiedVia = 'status_api'; }
+        }
+      } catch (_) { /* tetap ditolak di bawah */ }
+    }
+    const _sigHdr = String(req.headers['x-signature'] || '');
+    paymentAudit.record('webhook.wijayapay.received', { ip: req.ip, ua: req.headers['user-agent'], orderId: refId || null, sigOk, verifiedVia, sigHeaderLen: _sigHdr.length, cfgSet: wijayapay.isConfigured(settings), ipWhitelisted: wijayapay.isWhitelistedIp(req.ip), status: payload.status || null });
+    if (!sigOk) { logWebhook('wijayapay', { result: 'invalid_signature', orderId: refId || null, ip: req.ip, sigHeaderLen: _sigHdr.length, cfgSet: wijayapay.isConfigured(settings) }); return res.status(401).json({ status: false, message: 'Invalid signature' }); }
+    if (verifiedVia === 'status_api') logWebhook('wijayapay', { result: 'verified_via_status_api', orderId: refId, note: 'signature webhook tidak cocok, tapi WijayaPay mengonfirmasi LUNAS lewat API status' });
     if (String(payload.status || '').toLowerCase().trim() !== 'paid') { logWebhook('wijayapay', { result: 'not_paid', orderId: refId, statusFromWebhook: payload.status || '(kosong)' }); return res.status(200).json({ status: true }); }
 
     const transactions = await readFresh('transactions.json');
@@ -5806,6 +5908,113 @@ app.post('/admin/dripstore2/test', requireAdmin, async (req, res) => {
 const DS2_TOOLS_HTML = "<!doctype html>\n<html lang=\"id\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>DripStore Web 2 — Katalog & Pencocokan</title>\n<style>\n*{box-sizing:border-box}body{margin:0;background:#0b0b0f;color:#e4e4e7;font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px;max-width:900px;margin:0 auto}\nh1{font-size:16px;margin:0 0 4px}a{color:#7dd3fc}.sub{color:#71717a;font-size:12px;margin-bottom:12px}\n.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}\nbutton{cursor:pointer;border:1px solid #3f3f46;background:#18181b;color:#e4e4e7;border-radius:10px;padding:9px 14px;font-weight:700;font-size:12px}\nbutton.pri{background:#0e7490;border-color:#0891b2}button.ok{background:#065f46;border-color:#059669}button:disabled{opacity:.5}\n.box{padding:10px;border-radius:10px;border:1px solid #3f3f46;background:#18181b;margin:8px 0;display:none}\n.err{background:#450a0a;border-color:#991b1b;color:#fecaca}.warn{background:#451a03;border-color:#92400e;color:#fde68a}.good{background:#052e2b;border-color:#0f766e;color:#99f6e4}\nh2{font-size:13px;margin:18px 0 8px;color:#d4d4d8}\n.card{background:#14141a;border:1px solid #27272a;border-radius:10px;padding:8px 10px;margin:6px 0}\n.card b{color:#f4f4f5}.muted{color:#71717a}.used{color:#34d399}.mono{font-family:ui-monospace,Menlo,monospace;color:#d4d4d8}\nselect,input{width:100%;background:#0b0b0f;color:#e4e4e7;border:1px solid #3f3f46;border-radius:8px;padding:8px;font-size:12px}\n.flex{display:flex;gap:6px;margin-top:6px}.flex select{flex:1;min-width:0}.flex button{white-space:nowrap}\n.list{max-height:520px;overflow:auto}.cat{display:flex;justify-content:space-between;gap:8px}.cat .r{text-align:right;flex-shrink:0;max-width:45%}\npre{white-space:pre-wrap;word-break:break-all;font-size:10px;color:#d4d4d8;margin:8px 0 0}\n</style></head><body>\n<h1>DripStore Web 2 — Katalog & Pencocokan</h1>\n<div class=\"sub\">Lihat semua produk/varian di DripStore Web 2 lalu cocokkan ke produk tokomu. &nbsp;<a href=\"/admin#settings\">← kembali ke Admin</a></div>\n<div class=\"row\"><button class=\"pri\" id=\"bLoad\" onclick=\"load()\">Muat / Refresh Katalog</button><button class=\"ok\" id=\"bAuto\" onclick=\"auto()\">Auto-cocokkan yang kosong</button></div>\n<div id=\"msg\" class=\"box\"></div>\n<div id=\"out\"></div>\n<script>\nvar $=function(i){return document.getElementById(i)};\nvar esc=function(v){return String(v==null?'':v).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})};\nvar D=null;\nfunction msg(h,c){var m=$('msg');m.className='box '+(c||'');m.innerHTML=h;m.style.display='block'}\nasync function post(u,d){var r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d||{})});return r.json()}\nasync function load(){\n  $('bLoad').disabled=true;msg('Memuat katalog DripStore Web 2…');\n  try{var r=await fetch('/admin/dripstore2/catalog');var d=await r.json();if(!d.success)throw new Error(d.message||'Gagal memuat katalog');D=d;$('msg').style.display='none';render()}\n  catch(e){$('out').innerHTML='';msg(esc(e.message),'err')}\n  $('bLoad').disabled=false;\n}\nfunction lab(v){return esc(v.productName)+' / '+esc(v.variantName)+' [ID '+esc(v.variantId)+']'+(v.price!=null?' • '+esc(v.price):'')+(v.stock!=null?' • stok '+esc(v.stock):'')+(v.balamod&&v.mode==='v1'?' • BALA MOD v1 (jangan dipetakan)':'')}\nfunction render(){\n  var d=D,out=$('out');\n  if(!d.variants.length){out.innerHTML='';msg('<b>Katalog DripStore Web 2 kosong / bentuk datanya belum dikenali.</b><br>Kirim potongan respons ini ke developer:<pre>HTTP '+esc(d.debug&&d.debug.status||'?')+'\\n'+esc(d.debug&&d.debug.sample||'(respons kosong)')+'</pre>','warn');return}\n  var q=($('q')?$('q').value:'').toLowerCase().trim();\n  var un=d.local.filter(function(l){return!l.variantId});window._un=un;\n  var h='';\n  if(d.brokenMappings.length)h+='<div class=\"box err\" style=\"display:block\"><b>ID salah / tidak ada di DripStore 2:</b><br>'+d.brokenMappings.map(esc).join('<br>')+'</div>';\n  h+='<h2>Produk toko yang belum ter-mapping ('+un.length+')</h2>';\n  if(!un.length)h+='<div class=\"muted\">Semua durasi produk sudah punya Variant ID DripStore 2.</div>';\n  un.forEach(function(l,i){\n    var same=d.variants.filter(function(v){return v.days===l.days&&(v.unit||'d')===l.unit});\n    var opts=same.length?same:d.variants,sg={};l.suggest.forEach(function(s){sg[s]=1});\n    opts=opts.slice().sort(function(a,b){return(sg[b.variantId]?1:0)-(sg[a.variantId]?1:0)});\n    h+='<div class=\"card\"><b>'+esc(l.productName)+' — '+l.days+l.unit+'</b> '+(l.suggest.length?'<span class=\"used\">(ada saran cocok)</span>':'<span style=\"color:#fbbf24\">(tidak ada nama yang pas, pilih manual)</span>')+\n      '<div class=\"flex\"><select id=\"s'+i+'\"><option value=\"\">— pilih varian DripStore 2 —</option>'+opts.map(function(v,ix){return'<option value=\"'+esc(v.variantId)+'\"'+(ix===0&&sg[v.variantId]?' selected':'')+'>'+lab(v)+'</option>'}).join('')+'</select><button class=\"ok\" onclick=\"pasang('+i+',this)\">Pasang</button></div></div>';\n  });\n  var list=d.variants.filter(function(v){return!q||(v.productName+' '+v.variantName+' '+v.variantId).toLowerCase().indexOf(q)>-1});\n  h+='<h2>Katalog DripStore Web 2 ('+d.variants.length+' varian)</h2><input id=\"q\" placeholder=\"Cari nama produk / varian / ID…\" value=\"'+esc(q)+'\" oninput=\"render()\"><div class=\"list\" style=\"margin-top:8px\">'+\n    (list.slice(0,400).map(function(v){return'<div class=\"card cat\"><div><b>'+esc(v.productName)+'</b> <span class=\"muted\">/ '+esc(v.variantName)+'</span><div class=\"muted\">ID <span class=\"mono\">'+esc(v.variantId)+'</span>'+(v.price!=null?' • '+esc(v.price):'')+(v.stock!=null?' • stok '+esc(v.stock):'')+(v.balamod&&v.mode==='v1'?' • <span style=\"color:#f87171\">Bala Mod v1</span>':'')+'</div></div><div class=\"r '+(v.usedBy.length?'used':'muted')+'\">'+(v.usedBy.length?esc(v.usedBy.join(', ')):'belum dipakai')+'</div></div>'}).join('')||'<div class=\"muted\">Tidak ada yang cocok.</div>')+'</div>';\n  out.innerHTML=h;\n  var qi=$('q');if(qi&&q){qi.focus();qi.setSelectionRange(q.length,q.length)}\n}\nasync function pasang(i,b){\n  var l=window._un[i],v=$('s'+i).value;if(!v){alert('Pilih varian dulu');return}\n  b.disabled=true;\n  try{var d=await post('/admin/dripstore2/map',{productId:l.productId,days:l.days,unit:l.unit,variantId:v});if(!d.success)throw new Error(d.message);await load()}\n  catch(e){alert('Gagal: '+e.message);b.disabled=false}\n}\nasync function auto(){\n  $('bAuto').disabled=true;msg('Mencocokkan…');\n  try{\n    var d=await post('/admin/dripstore2/auto-map',{});if(!d.success)throw new Error(d.message);\n    var sec=function(t,a,c){return a&&a.length?'<div style=\"margin-top:8px\"><b style=\"color:'+c+'\">'+t+' ('+a.length+'):</b><br><span class=\"muted\">'+a.map(esc).join('<br>')+'</span></div>':''};\n    msg('<b>'+d.mapped+' dipasang</b> • '+d.already+' sudah terisi (tidak diubah)'+sec('Dipasang',d.done,'#6ee7b7')+sec('Ambigu — pilih manual',d.ambiguous,'#fcd34d')+sec('Tidak ketemu — pilih manual',d.unmatched,'#fca5a5'),'good');\n    await load2();\n  }catch(e){msg(esc(e.message),'err')}\n  $('bAuto').disabled=false;\n}\nasync function load2(){try{var r=await fetch('/admin/dripstore2/catalog');var d=await r.json();if(d.success){D=d;render()}}catch(e){}}\nload();\n</script></body></html>\n";
 app.get('/admin/dripstore2/tools', requireAdmin, (req, res) => { res.set('Cache-Control', 'no-store'); res.type('html').send(DS2_TOOLS_HTML); });
 
+// ── DIAGNOSA: temukan INTI masalah key tidak keluar / stok habis ──
+const DIAG_HTML = "<!doctype html>\n<html lang=\"id\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Diagnosa Toko — AGHA NL</title>\n<style>\n*{box-sizing:border-box}body{margin:0 auto;background:#0b0b0f;color:#e4e4e7;font:13px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:14px;max-width:980px}\nh1{font-size:17px;margin:0 0 4px}h2{font-size:14px;margin:20px 0 8px}a{color:#7dd3fc}.sub{color:#71717a;font-size:12px;margin-bottom:10px}\n.card{background:#14141a;border:1px solid #27272a;border-radius:10px;padding:10px 12px;margin:8px 0}\n.v{border-left:4px solid #3f3f46}.v.crit{border-color:#dc2626;background:#1c0f10}.v.warn{border-color:#d97706;background:#1c150b}.v.ok{border-color:#059669;background:#0b1a16}\n.v b{font-size:13.5px}.v .d{color:#a1a1aa;margin-top:3px}.v .a{margin-top:5px;color:#fcd34d}\nbutton{cursor:pointer;border:1px solid #3f3f46;background:#18181b;color:#e4e4e7;border-radius:8px;padding:7px 12px;font-weight:700;font-size:12px}\nbutton.pri{background:#0e7490;border-color:#0891b2}button.ok{background:#065f46;border-color:#059669}button:disabled{opacity:.5}\ntable{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;padding:6px 8px;border-top:1px solid #222228;vertical-align:top}th{color:#71717a;font-weight:600;border-top:0}\n.muted{color:#71717a}.g{color:#34d399}.r{color:#f87171}.y{color:#fbbf24}.mono{font-family:ui-monospace,Menlo,monospace}\n.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.tbl{overflow-x:auto}\n</style></head><body>\n<h1>Diagnosa Toko — kenapa key tidak keluar / stok habis?</h1>\n<div class=\"sub\">Halaman ini memeriksa provider (DripStore, DripStore 2, Panelstore), mapping produk, dan pesanan yang sudah dibayar tapi belum dapat key. &nbsp;<a href=\"/admin#products\">← Admin</a> • <a href=\"/admin/dripstore/audit\">Audit harga/mapping</a> • <a href=\"/admin/dripstore2/tools\">Katalog DripStore 2</a></div>\n<div class=\"row\"><button class=\"pri\" id=\"bRun\" onclick=\"load()\">Periksa sekarang</button><button class=\"ok\" id=\"bHeal\" onclick=\"heal()\">Jalankan auto-perbaiki + kirim ulang key</button><button onclick=\"clearDown()\">Reset tanda \"habis\" DripStore 2</button></div>\n<div id=\"msg\"></div><div id=\"out\"></div>\n<script>\nvar $=function(i){return document.getElementById(i)},D=null;\nvar esc=function(v){return String(v==null?'':v).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})};\nasync function post(u,d){var r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d||{})});return r.json()}\nfunction note(h){$('msg').innerHTML=h?'<div class=\"card\">'+h+'</div>':''}\nasync function load(){$('bRun').disabled=true;note('Memeriksa provider & pesanan… (bisa 5–15 detik)');\n  try{var r=await fetch('/admin/diagnose/data');var d=await r.json();if(!d.success)throw new Error(d.message||'gagal');D=d;note('');draw()}catch(e){note('<span class=\"r\">'+esc(e.message)+'</span>')}$('bRun').disabled=false}\nfunction money(n){return n==null?'-':Number(n).toLocaleString('id-ID',{maximumFractionDigits:4})}\nfunction prov(name,p){if(!p.configured)return'<tr><td>'+name+'</td><td class=\"muted\" colspan=\"3\">tidak dipasang (token kosong)</td></tr>';\n  return'<tr><td>'+name+'</td><td>'+(p.ok?'<span class=\"g\">OK</span>':'<span class=\"r\">BERMASALAH</span>')+'</td><td>saldo: <b>'+money(p.balance)+'</b>'+(p.minCost!=null?' • modal termurah: '+money(p.minCost):'')+'</td><td class=\"muted\">'+esc(p.error||p.note||'')+(p.variants!=null?' • '+p.variants+' varian':'')+(p.ms?' • '+p.ms+' ms':'')+'</td></tr>'}\nfunction draw(){var d=D,h='<h2>Kesimpulan</h2>';\n  h+=d.verdict.map(function(v){return'<div class=\"card v '+v.level+'\"><b>'+esc(v.title)+'</b><div class=\"d\">'+esc(v.detail)+'</div>'+(v.action?'<div class=\"a\">➜ '+esc(v.action)+'</div>':'')+'</div>'}).join('');\n  h+='<h2>Status provider</h2><div class=\"card tbl\"><table><tr><th>Provider</th><th>Status</th><th>Saldo</th><th>Catatan</th></tr>'+prov('DripStore utama',d.ds1)+prov('DripStore Web 2',d.ds2)+prov('Panelstore',d.ps)+'</table></div>';\n  h+='<h2>Pesanan sudah BAYAR tapi key belum terkirim ('+d.stuck.length+')</h2>';\n  if(!d.stuck.length)h+='<div class=\"card muted\">Tidak ada (14 hari terakhir).</div>';\n  else{h+='<div class=\"row\"><button class=\"ok\" onclick=\"retry(null,this)\">Kirim ulang SEMUA ('+d.stuck.length+')</button></div><div class=\"card tbl\"><table><tr><th>Order</th><th>Produk</th><th>Pembeli</th><th>Penyebab</th><th></th></tr>'+\n    d.stuck.map(function(s){return'<tr><td class=\"mono\">'+esc(s.code)+'<div class=\"muted\">'+esc(s.paidAt||'')+'</div></td><td>'+esc(s.product)+'<div class=\"muted\">'+esc(s.dur)+' • Rp '+money(s.price)+'</div></td><td>'+esc(s.customer)+'<div class=\"muted\">'+esc(s.wa)+'</div></td><td class=\"y\">'+esc(s.reason)+'</td><td><button onclick=\"retry(\\''+esc(s.id)+'\\',this)\">Kirim ulang</button> <button onclick=\"handled(\\''+esc(s.id)+'\\',this)\">Sudah kukirim manual</button></td></tr>'}).join('')+'</table></div>'}\n  h+='<h2>Durasi tanpa provider ('+d.noProvider.length+' dari '+d.optionTotal+' durasi)</h2><div class=\"card muted\">'+(d.noProvider.length?d.noProvider.map(esc).join('<br>'):'Semua durasi punya jalur pengiriman.')+'</div>';\n  h+='<h2>Panduan singkat (kalau terjadi lagi)</h2><div class=\"card muted\">1) Lihat <b>Kesimpulan</b> di atas — itu penyebab utamanya.<br>2) Saldo provider habis → isi saldo, lalu tekan <b>Jalankan auto-perbaiki + kirim ulang key</b>.<br>3) Durasi tanpa provider → tekan tombol yang sama; sisanya cocokkan manual di Audit / Katalog DripStore 2.<br>4) Token/IP ditolak (Cloudflare) → minta admin DripStore meng-allowlist IP server.<br>5) Pesanan yang tetap gagal → kirim key manual ke pembeli via WhatsApp, lalu tandai selesai.</div>';\n  $('out').innerHTML=h}\nasync function retry(id,b){if(!id&&!confirm('Kirim ulang key untuk SEMUA pesanan di daftar? Pesanan yang sudah kamu kirim manual harus ditandai dulu (tombol \"Sudah kukirim manual\"), kalau tidak key akan dibeli dobel.'))return;if(b)b.disabled=true;note('Mengirim ulang key…');var d=await post('/admin/diagnose/retry',id?{id:id}:{all:true});\n  if(!d.success){note('<span class=\"r\">'+esc(d.message)+'</span>');if(b)b.disabled=false;return}\n  note('Hasil: <b class=\"g\">'+d.delivered+' terkirim</b>, '+d.failed+' masih gagal'+(d.errors&&d.errors.length?'<div class=\"muted\">'+d.errors.map(esc).join('<br>')+'</div>':''));await load()}\nasync function heal(){$('bHeal').disabled=true;note('Menjalankan auto-perbaiki…');var d=await post('/admin/dripstore/heal-now',{});note('Selesai. '+(d.result&&d.result.errors&&d.result.errors.length?'<span class=\"r\">'+d.result.errors.map(esc).join('; ')+'</span>':''));$('bHeal').disabled=false;await load()}\nasync function handled(id,b){b.disabled=true;var d=await post('/admin/diagnose/mark-handled',{id:id});if(!d.success){alert(d.message);b.disabled=false;return}await load()}\nasync function clearDown(){await post('/admin/diagnose/clear-down',{});note('Tanda \"habis\" DripStore 2 direset.');await load()}\nload();\n</script></body></html>\n";
+app.get('/admin/diagnose', requireAdmin, (req, res) => { res.set('Cache-Control', 'no-store'); res.type('html').send(DIAG_HTML); });
+
+app.get('/admin/diagnose/data', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    _configureExtraProviders(settings);
+    const out = { success: true, at: new Date().toISOString(), ds1: { configured: false }, ds2: { configured: false }, ps: { configured: false }, verdict: [], stuck: [], noProvider: [], optionTotal: 0 };
+    let flat = null;
+    const products = await readFresh('products.json');
+    // DripStore utama
+    if (settings.dripstore?.apiToken) {
+      out.ds1.configured = true;
+      const t0 = Date.now();
+      try { const b = await getDripstoreBalanceValue(settings, {}); out.ds1.balance = b; out.ds1.ok = b !== null; out.ds1.ms = Date.now() - t0; if (b === null) out.ds1.error = 'saldo tidak terbaca'; }
+      catch (e) { out.ds1.ok = false; out.ds1.error = e.message; }
+      try { flat = await _dsLoadSupplierFlat(); out.ds1.variants = flat.sup.length; } catch (e) { out.ds1.ok = false; out.ds1.error = out.ds1.error || e.message; }
+      if (flat) {
+        const costs = [];
+        for (const p of products) for (const o of (p.pricingOptions || [])) { const v = flat.byId.get(String(o.dripstoreVariantId || '').trim()); if (v && v.cost > 0) costs.push(v.cost); }
+        if (costs.length) out.ds1.minCost = Math.min(...costs);
+      }
+    }
+    // DripStore Web 2
+    if (settings.dripstore2?.apiToken) {
+      out.ds2.configured = true;
+      try {
+        const c = await dripstore2.check();
+        out.ds2.ok = !!c.ok; out.ds2.balance = c.balance !== undefined ? Number(c.balance) : undefined; out.ds2.note = c.note;
+        if (!c.ok) out.ds2.error = c.note;
+        const cat = await dripstore2.catalog().catch(() => []);
+        out.ds2.variants = cat.length;
+        const pr = cat.map(v => v.price).filter(x => x > 0);
+        if (pr.length) out.ds2.minCost = Math.min(...pr);
+      } catch (e) { out.ds2.ok = false; out.ds2.error = e.message; }
+    }
+    out.ps.configured = !!(settings.panelstore?.apiKey);
+    if (out.ps.configured) out.ps.ok = true;
+
+    // Mapping per durasi
+    const ds1Linked = (o) => !!(flat && flat.byId.has(String(o.dripstoreVariantId || '').trim()));
+    for (const p of products) for (const o of (p.pricingOptions || [])) {
+      out.optionTotal++;
+      const local = getLocalOptionStock(p, o) > 0;
+      if (!ds1Linked(o) && !local && !dripstore2.usable(o) && !panelstore.usable(o)) out.noProvider.push(`${p.name} — ${o.days}${o.unit === 'h' ? ' jam' : ' hari'}`);
+    }
+    // Pesanan sudah bayar tapi belum dapat key
+    const stuck = await listUndeliveredOrders(14);
+    out.stuck = stuck.slice(0, 100).map(t => ({ id: t.id, code: t.code, product: t.productName, dur: `${t.selectedDays}${t.selectedUnit === 'h' ? ' jam' : ' hari'}`, price: Number(t.price) || 0, customer: t.customerName || '-', wa: t.wa || '-', paidAt: t.paidAt, reason: t.fulfillError || 'Penyebab tidak tercatat (order lama) — coba kirim ulang' }));
+
+    // Kesimpulan dalam bahasa biasa
+    const V = (level, title, detail, action) => out.verdict.push({ level, title, detail, action });
+    if (!out.ds1.configured && !out.ds2.configured && !out.ps.configured) V('crit', 'Tidak ada provider key yang terpasang', 'Token DripStore / DripStore Web 2 / Panelstore kosong, jadi key tidak bisa dibeli otomatis.', 'Isi token di Admin → Settings.');
+    if (out.ds1.configured && !out.ds1.ok) V('crit', 'DripStore utama TIDAK bisa dipakai', out.ds1.error || 'tidak merespons', 'Cek token/IP (Cloudflare) atau tunggu bila sedang lambat/limit; setelah normal tekan "Jalankan auto-perbaiki + kirim ulang key".');
+    if (out.ds1.configured && out.ds1.ok && out.ds1.balance !== null && out.ds1.minCost != null && out.ds1.balance < out.ds1.minCost) V('crit', 'SALDO DripStore utama HABIS / tidak cukup', `Saldo ${out.ds1.balance} lebih kecil dari modal paket termurah (${out.ds1.minCost}). Semua pembelian key lewat DripStore utama gagal dan stok tampil "Habis".`, 'Top up saldo DripStore utama, lalu tekan "Jalankan auto-perbaiki + kirim ulang key".');
+    else if (out.ds1.configured && out.ds1.ok && out.ds1.balance !== null && out.ds1.balance < 0.5) V('warn', 'Saldo DripStore utama sangat tipis', `Saldo ${out.ds1.balance}.`, 'Siapkan top up supaya tidak kehabisan saat ramai.');
+    if (out.ds2.configured && !out.ds2.ok) V('crit', 'DripStore Web 2 TIDAK bisa dipakai', out.ds2.error || 'tidak merespons', 'Cek token & allowlist IP Cloudflare, atau tekan Tes di Settings → DripStore Web 2.');
+    if (out.ds2.configured && out.ds2.ok && out.ds2.balance !== undefined && out.ds2.minCost != null && out.ds2.balance < out.ds2.minCost) V('crit', 'SALDO DripStore Web 2 HABIS / tidak cukup', `Saldo ${out.ds2.balance} < modal paket termurah (${out.ds2.minCost}). Durasi yang hanya ada di DripStore 2 (mis. DRIP WIRE 6/12 jam) akan gagal & tampil "Habis".`, 'Top up saldo DripStore Web 2, lalu "Reset tanda habis" dan "Jalankan auto-perbaiki".');
+    if (out.noProvider.length) V('warn', `${out.noProvider.length} durasi tidak punya jalur pengiriman`, 'Pembeli yang membayar durasi ini TIDAK akan mendapat key otomatis (langsung "stok habis").', 'Tekan "Jalankan auto-perbaiki"; sisanya cocokkan manual lewat Audit Harga/Mapping atau Katalog DripStore 2.');
+    if (out.stuck.length) {
+      const cnt = {}; for (const s of out.stuck) cnt[s.reason] = (cnt[s.reason] || 0) + 1;
+      const top = Object.entries(cnt).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([r, n]) => `${n}× ${r}`).join(' | ');
+      V('crit', `${out.stuck.length} pembeli sudah bayar tapi key BELUM terkirim`, `Penyebab terbanyak: ${top}`, 'Perbaiki penyebabnya (saldo/mapping/token), lalu tekan "Kirim ulang SEMUA" di bawah. Sistem juga mencoba sendiri tiap siklus auto-perbaiki.');
+    }
+    // Kesehatan webhook WijayaPay (24 jam terakhir)
+    try {
+      const evs = await readFresh('payment_events.json');
+      const since = Date.now() - 24 * 3600 * 1000;
+      const wh = (Array.isArray(evs) ? evs : []).filter(e => e && e.type === 'webhook.wijayapay.received' && Date.parse(e.t || 0) >= since);
+      const bad = wh.filter(e => !e.sigOk), viaApi = wh.filter(e => e.verifiedVia === 'status_api'), good = wh.filter(e => e.sigOk);
+      out.webhook = { total: wh.length, signatureInvalid: bad.length, verifiedViaApi: viaApi.length, ok: good.length - viaApi.length };
+      if (bad.length) V('crit', `${bad.length} webhook pembayaran WijayaPay DITOLAK (signature tidak cocok) dalam 24 jam`, 'Biasanya karena Code Merchant / API Key di Admin → QRIS tidak sama persis dengan dashboard WijayaPay (atau sudah diganti di sana). Pembeli yang bayar tidak otomatis terkonfirmasi lewat jalur ini.', 'Samakan Code Merchant & API Key di Admin → QRIS dengan dashboard WijayaPay, lalu "Tes Koneksi". Sistem kini juga mengonfirmasi lewat API status sebagai cadangan.');
+      else if (viaApi.length) V('warn', `${viaApi.length} pembayaran dikonfirmasi lewat API status (signature webhook tidak cocok)`, 'Pembayaran tetap diproses, tapi sebaiknya cocokkan kredensial WijayaPay.', 'Cek Code Merchant & API Key di Admin → QRIS.');
+    } catch (_) { /* opsional */ }
+    if (!out.verdict.length) V('ok', 'Tidak ada masalah terdeteksi', 'Provider aktif, saldo cukup, semua durasi punya jalur pengiriman, tidak ada pesanan tertunda.', '');
+    res.json(out);
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
+app.post('/admin/diagnose/retry', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    _configureExtraProviders(settings);
+    if (req.body?.id) {
+      const r = await retryUndeliveredOrder(String(req.body.id), settings);
+      return res.json({ success: true, delivered: r.status === 'delivered' ? 1 : 0, failed: r.status === 'still_failed' ? 1 : 0, errors: r.error ? [r.error] : [] });
+    }
+    const b = await retryUndeliveredBatch(settings, 25);
+    res.json({ success: true, ...b });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+app.post('/admin/diagnose/mark-handled', requireAdmin, async (req, res) => {
+  try {
+    const id = String(req.body?.id || '');
+    const r = await withProductsWriteLock(async () => {
+      const txs = await readFresh('transactions.json');
+      const t = txs.find(x => x.id === id);
+      if (!t) return false;
+      t.manualResolved = true; t.manualResolvedAt = new Date().toISOString(); t.keySource = t.keySource || 'manual_admin';
+      await writeDB('transactions.json', txs); return true;
+    });
+    res.json({ success: !!r, message: r ? undefined : 'Transaksi tidak ditemukan' });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+app.post('/admin/diagnose/clear-down', requireAdmin, (req, res) => { dripstore2.clearAllDown(); res.json({ success: true }); });
+
 // ── Alat katalog DripStore Web 2: lihat semua produk/varian di sana & cocokkan ke produk toko ──
 // ── Pencocokan nama FUZZY untuk DripStore Web 2 (toleran: ANDRO≈ANDROID+, "/"≈"+", typo 1 huruf, urutan kata) ──
 function _ds2Tokens(name) {
@@ -6676,6 +6885,10 @@ async function autoHealMappings(reason = 'timer', opts = {}) {
       if (JSON.stringify(work) !== JSON.stringify(products)) { await writeDB('products.json', work); out.changed = true; }
     });
     if (out.changed) _invalidateDripstoreSnapshot({ full: true });
+    try { // setelah mapping dibereskan: kirim ulang key pesanan yang sudah dibayar tapi tertunda
+      const rb = await retryUndeliveredBatch(settings, reason === 'checkout' ? 3 : 8);
+      if (rb.delivered || rb.failed) out.retry = rb;
+    } catch (e) { out.errors.push('retry: ' + e.message); }
     if (out.changed) pushLog('info', `[auto-heal/${reason}] ${JSON.stringify({ ds1: out.ds1 && { removed: out.ds1.removed, linked: out.ds1.linked, priced: out.ds1.priced }, ds2: out.ds2 })}`, { cat: 'dripstore' });
   } catch (e) { out.errors.push(e.message); }
   finally { _healRunning = false; }
@@ -7166,6 +7379,14 @@ async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs
     try { paymentAudit.record('order.reconcile_expired', { count: sum.expired }); } catch (_) {}
   }
   return sum;
+}
+// Cron Vercel hanya jalan 1x/hari (03:00), jadi pembayaran yang webhook-nya gagal tidak akan pernah terkonfirmasi sendiri.
+// Dipicu lazy oleh lalu lintas biasa (halaman bayar / polling / beranda / admin), cooldown 60 dtk, hanya order pending berumur >= 1 menit.
+let _recLast = 0, _recRunning = false;
+function lazyReconcile() {
+  if (_recRunning || Date.now() - _recLast < 60 * 1000) return;
+  _recRunning = true; _recLast = Date.now();
+  reconcilePendingOrders({ maxItems: 12, minAgeMin: 1, deadlineMs: 25000 }).catch(() => {}).finally(() => { _recRunning = false; });
 }
 app.get('/cron/reconcile', async (req, res) => {
   const secret = process.env.CRON_SECRET || '';

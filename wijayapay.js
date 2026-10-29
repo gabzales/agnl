@@ -117,14 +117,17 @@ async function checkStatus(settings, orderId) {
   if (!cfg.codeMerchant || !cfg.apiKey) throw new Error('Code Merchant / API Key WijayaPay belum dikonfigurasi');
   const r = await request('GET', '/api/get-status', { query: { code_merchant: cfg.codeMerchant, api_key: cfg.apiKey, ref_id: String(orderId) }, timeout: 8000 });
   if (!r.json) throw new Error(`WijayaPay get-status: response tidak valid (HTTP ${r.http})`);
-  const status = String(r.json.status_pembayaran || 'pending').toLowerCase().trim();
+  // Nama field status bisa berbeda antar versi API (status_pembayaran / status / data.*). Boolean `status:true`
+  // adalah flag sukses request, bukan status pembayaran -> diabaikan.
+  const pick = (...c) => c.find(x => typeof x === 'string' && x.trim());
+  const status = String(pick(r.json.status_pembayaran, r.json.status, r.json.data && r.json.data.status_pembayaran, r.json.data && r.json.data.status, r.json.payment_status) || 'pending').toLowerCase().trim();
   return { status };
 }
 
 function verifyWebhookSignature(settings, refId, signatureHeader) {
   const cfg = getConfig(settings);
   if (!cfg.codeMerchant || !cfg.apiKey || !signatureHeader || !refId) return false;
-  const a = Buffer.from(computeSignature(String(refId), cfg)), b = Buffer.from(String(signatureHeader));
+  const a = Buffer.from(computeSignature(String(refId), cfg)), b = Buffer.from(String(signatureHeader).trim().toLowerCase());
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
