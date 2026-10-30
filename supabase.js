@@ -152,6 +152,29 @@ const writeDB = async (filename, data, opts = {}) => {
   }
 };
 
+// Muat SEMUA koleksi dari keyvalue_store dengan pagination.
+// BUG SEBELUMNYA: select('key, value') tanpa range -> PostgREST memotong di 1000 baris ("1000 collections loaded").
+// Tabel ini juga berisi satu baris klaim per pesanan (fulfillment-claim:<order>), jadi ribuan baris -> koleksi penting
+// (mis. settings.json) bisa tak ikut termuat, lalu dianggap kosong dan ditimpa default saat startup (token provider hilang).
+// Baris klaim tidak perlu masuk cache sehingga dikecualikan.
+const loadAllCollections = async (client) => {
+  const PAGE = 1000;
+  const rows = [];
+  for (let from = 0; from < 50000; from += PAGE) {
+    const { data, error } = await client
+      .from('keyvalue_store')
+      .select('key, value')
+      .not('key', 'like', 'fulfillment-claim:%')
+      .order('key', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw new Error(error.message);
+    if (!data || data.length === 0) break;
+    rows.push(...data);
+    if (data.length < PAGE) break;
+  }
+  return rows;
+};
+
 const initializeDB = async () => {
   console.log('📦 Initializing database (Supabase)...');
 
@@ -170,10 +193,7 @@ const initializeDB = async () => {
 
   // 2. Load dari Supabase (source of truth)
   try {
-    const { data, error } = await client
-      .from('keyvalue_store')
-      .select('key, value');
-    if (error) throw new Error(error.message);
+    const data = await loadAllCollections(client);
     if (data && data.length > 0) {
       data.forEach(row => {
         dbCache[row.key] = row.value;
@@ -193,7 +213,7 @@ const initializeDB = async () => {
       try {
         await ensureTableExists();
         // Coba load ulang
-        const { data: d2 } = await client.from('keyvalue_store').select('key, value');
+        const d2 = await loadAllCollections(client);
         if (d2 && d2.length > 0) {
           d2.forEach(row => { dbCache[row.key] = row.value; writeLocalBackup(row.key, row.value); });
           console.log(`✅ Loaded ${d2.length} collections after table creation`);

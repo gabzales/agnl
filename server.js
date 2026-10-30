@@ -1084,8 +1084,31 @@ const initDB = async () => {
   }
 
   // Settings: merge defaults + existing. Jangan overwrite data yang sudah ada.
-  const currentSettings = readDB('settings.json');
+  let currentSettings = readDB('settings.json');
+  // PENGAMAN: jangan pernah menimpa pengaturan hanya karena CACHE kosong (cache bisa tidak lengkap / Supabase sedang gagal).
+  // Verifikasi langsung ke baris settings.json; default baru ditulis bila baris itu benar-benar TIDAK ADA.
   if (!currentSettings || Object.keys(currentSettings).length === 0) {
+    const sbClient = db.getClient();
+    if (sbClient) {
+      try {
+        const { data: row, error: rowErr } = await sbClient.from('keyvalue_store').select('value').eq('key', 'settings.json').maybeSingle();
+        if (rowErr) {
+          console.error('❌ [init] Gagal memverifikasi settings.json, TIDAK menimpa dengan default:', rowErr.message);
+          currentSettings = { __skip: true };
+        } else if (row && row.value && Object.keys(row.value).length > 0) {
+          console.warn('⚠️ [init] settings.json ada di database tapi tidak termuat di cache — dipulihkan, TIDAK ditimpa default.');
+          currentSettings = row.value;
+          await writeDB('settings.json', currentSettings);
+        }
+      } catch (e) {
+        console.error('❌ [init] Verifikasi settings.json error, TIDAK menimpa:', e.message);
+        currentSettings = { __skip: true };
+      }
+    }
+  }
+  if (currentSettings && currentSettings.__skip) {
+    // lewati seeding: biarkan data tersimpan apa adanya
+  } else if (!currentSettings || Object.keys(currentSettings).length === 0) {
     // Supabase kosong — push default penuh
     await writeDB('settings.json', defaultSettings);
     console.log('✅ Settings seeded with defaults');
@@ -6845,6 +6868,24 @@ app.post('/admin/dripstore/auto-fix-undo', requireAdmin, async (req, res) => {
 // menemukan durasi yang belum ter-mapping. Isinya: hapus durasi dobel, hubungkan ke varian DripStore terbaik,
 // pasang ID DripStore Web 2, bersihkan ID yang sudah tidak ada di provider, dan cegah harga di bawah modal.
 let _healRunning = false, _healLast = 0, _healResult = null;
+// Tabel keyvalue_store menyimpan 1 baris "fulfillment-claim:<order>" per pesanan dan tidak pernah dibersihkan (ribuan baris).
+// Klaim pesanan yang sudah selesai >14 hari tidak berguna lagi (finalizeOrder sudah menolak order 'done'), jadi dibersihkan 1x/hari.
+let _claimCleanupAt = 0;
+async function cleanupOldClaims() {
+  if (Date.now() - _claimCleanupAt < 24 * 3600 * 1000) return 0;
+  _claimCleanupAt = Date.now();
+  const client = db.getClient(); if (!client) return 0;
+  const cutoff = Date.now() - 14 * 86400000;
+  const txs = await readFresh('transactions.json');
+  const keys = txs.filter(t => t && t.status === 'done' && t.id && (Date.parse(t.paidAt || t.createdAt || 0) || 0) > 0 && (Date.parse(t.paidAt || t.createdAt || 0) || 0) < cutoff)
+    .map(t => `fulfillment-claim:${t.id}`);
+  let n = 0;
+  for (let i = 0; i < keys.length && i < 3000; i += 100) {
+    const { error } = await client.from('keyvalue_store').delete().in('key', keys.slice(i, i + 100));
+    if (!error) n += Math.min(100, keys.length - i);
+  }
+  return n;
+}
 async function autoHealMappings(reason = 'timer', opts = {}) {
   if (_healRunning) return _healResult;
   _healRunning = true; _healLast = Date.now();
@@ -6885,6 +6926,7 @@ async function autoHealMappings(reason = 'timer', opts = {}) {
       if (JSON.stringify(work) !== JSON.stringify(products)) { await writeDB('products.json', work); out.changed = true; }
     });
     if (out.changed) _invalidateDripstoreSnapshot({ full: true });
+    try { const c = await cleanupOldClaims(); if (c) out.claimsCleaned = c; } catch (_) {}
     try { // setelah mapping dibereskan: kirim ulang key pesanan yang sudah dibayar tapi tertunda
       const rb = await retryUndeliveredBatch(settings, reason === 'checkout' ? 3 : 8);
       if (rb.delivered || rb.failed) out.retry = rb;
