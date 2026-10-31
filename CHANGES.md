@@ -1,3 +1,13 @@
+# HEMAT SUPABASE & VERCEL GRATIS (31 Okt 2026)
+
+Sumber egress terbesar adalah blob `transactions.json` (dibaca PENUH tiap order, polling, webhook, cold start). Yang diubah:
+- **Rekonsiliasi lazy** (tambahan sebelumnya) dibuat jauh lebih ringan: hanya dipicu dari halaman bayar / polling, cooldown 3 menit (dulu 60 dtk dari semua halaman), baca blob lewat cache bersama, dan `payment_events.json` (besar) hanya dibaca bila ada order GensPay.
+- **Auto-heal** tiap 30 menit (dulu 20) dan daftar pesanan tertunda dibaca dari cache bersama.
+- **Pembersihan otomatis 1x/hari**: order pending >7 hari (tak pernah dibayar; QRIS statis >28 hari) dan expired/failed >30 hari dibuang dari blob transaksi (env `PRUNE_PENDING_DAYS`, `PRUNE_DEAD_DAYS`). Order selesai tidak disentuh.
+- **Cold start lebih ringan**: `payment_events.json` & `app_logs.json` (besar, hanya dibaca via readFresh) tidak lagi dimuat saat boot; baris klaim per-pesanan juga tidak dimuat (dan dibersihkan otomatis).
+- **/admin/db-usage**: laporan ukuran tiap koleksi, jumlah transaksi per status, dan estimasi egress per order / per cold start.
+- Langkah struktural berikutnya (belum dikerjakan, perlu migrasi data): pecah `transactions.json` jadi satu baris per transaksi.
+
 # FIX 25 Okt 2026 — Nomor CS & stok DripStore 2
 
 - **AKAR MASALAH "setelan hilang tiap hari / stok DripStore Habis lagi" (30 Okt):** `supabase.js` memuat koleksi dengan `select('key, value')` tanpa pagination → terpotong 1000 baris (log: "1000 collections loaded"), padahal tabel berisi ribuan baris klaim per-pesanan. Saat startup (cold start) `settings.json` bisa tidak ikut termuat → dianggap kosong → DITIMPA pengaturan default (token DripStore/DripStore 2/gateway terhapus) → provider "tidak terpasang" → semua produk berbasis provider tampil Habis, hanya produk bersetok key lokal yang Tersedia. Perbaikan: (1) loader dengan pagination + baris klaim dikecualikan; (2) startup tidak pernah menimpa settings hanya karena cache kosong (verifikasi langsung ke baris database; gagal verifikasi = tidak menimpa); (3) klaim pesanan selesai >14 hari dibersihkan otomatis 1x/hari.

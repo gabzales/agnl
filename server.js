@@ -810,8 +810,8 @@ app.locals.csWaOf = getCsWhatsapp;
 
 // Inject settings + isAdmin ke semua view otomatis
 app.use(async (req, res, next) => {
-  if ((req.path === '/' || req.path.startsWith('/pay') || req.path.startsWith('/check-payment') || req.path.startsWith('/admin')) && typeof _recLast !== 'undefined') setImmediate(lazyReconcile);
-  if (req.method === 'GET' && (req.path === '/' || req.path.startsWith('/admin')) && typeof _healLast !== 'undefined' && !_healRunning && Date.now() - _healLast > 20 * 60 * 1000) {
+  if ((req.path.startsWith('/pay') || req.path.startsWith('/check-payment')) && typeof _recLast !== 'undefined') setImmediate(lazyReconcile);
+  if (req.method === 'GET' && (req.path === '/' || req.path.startsWith('/admin')) && typeof _healLast !== 'undefined' && !_healRunning && Date.now() - _healLast > 30 * 60 * 1000) {
     setImmediate(() => autoHealMappings('lazy').catch(() => {}));
   }
   // Kalau cache settings kosong, fetch dari Supabase dulu
@@ -4687,9 +4687,9 @@ async function retryUndeliveredOrder(refId, settings) {
     return { status: 'delivered', key };
   } finally { _retryingOrders.delete(refId); }
 }
-async function listUndeliveredOrders(days = 14) {
+async function listUndeliveredOrders(days = 14, cached = false) {
   const since = Date.now() - days * 86400000;
-  const txs = await readFresh('transactions.json');
+  const txs = cached ? await readTxFresh(60000) : await readFresh('transactions.json');
   return txs.filter(t => t && t.status === 'done' && t.outOfStock && !t.key && !t.manualResolved && (!t.type || t.type === 'product') && (new Date(t.paidAt || t.createdAt || 0).getTime() || 0) >= since)
     .sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0));
 }
@@ -4697,7 +4697,7 @@ async function retryUndeliveredBatch(settings, limit = 8) {
   const out = { delivered: 0, failed: 0, errors: [] };
   // Otomatis HANYA untuk order yang tercatat penyebabnya (order baru) & sudah >2 menit, supaya order lama yang
   // sudah kamu kirim manual tidak ikut dibeli ulang. Order lama: pakai tombol "Kirim ulang" di /admin/diagnose.
-  const list = (await listUndeliveredOrders(3)).filter(t => t.fulfillError && Date.now() - (new Date(t.paidAt || 0).getTime() || 0) > 2 * 60 * 1000).slice(0, limit);
+  const list = (await listUndeliveredOrders(3, true)).filter(t => t.fulfillError && Date.now() - (new Date(t.paidAt || 0).getTime() || 0) > 2 * 60 * 1000).slice(0, limit);
   for (const t of list) {
     try {
       const r = await retryUndeliveredOrder(t.id, settings);
@@ -5931,6 +5931,33 @@ app.post('/admin/dripstore2/test', requireAdmin, async (req, res) => {
 const DS2_TOOLS_HTML = "<!doctype html>\n<html lang=\"id\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>DripStore Web 2 — Katalog & Pencocokan</title>\n<style>\n*{box-sizing:border-box}body{margin:0;background:#0b0b0f;color:#e4e4e7;font:13px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:16px;max-width:900px;margin:0 auto}\nh1{font-size:16px;margin:0 0 4px}a{color:#7dd3fc}.sub{color:#71717a;font-size:12px;margin-bottom:12px}\n.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}\nbutton{cursor:pointer;border:1px solid #3f3f46;background:#18181b;color:#e4e4e7;border-radius:10px;padding:9px 14px;font-weight:700;font-size:12px}\nbutton.pri{background:#0e7490;border-color:#0891b2}button.ok{background:#065f46;border-color:#059669}button:disabled{opacity:.5}\n.box{padding:10px;border-radius:10px;border:1px solid #3f3f46;background:#18181b;margin:8px 0;display:none}\n.err{background:#450a0a;border-color:#991b1b;color:#fecaca}.warn{background:#451a03;border-color:#92400e;color:#fde68a}.good{background:#052e2b;border-color:#0f766e;color:#99f6e4}\nh2{font-size:13px;margin:18px 0 8px;color:#d4d4d8}\n.card{background:#14141a;border:1px solid #27272a;border-radius:10px;padding:8px 10px;margin:6px 0}\n.card b{color:#f4f4f5}.muted{color:#71717a}.used{color:#34d399}.mono{font-family:ui-monospace,Menlo,monospace;color:#d4d4d8}\nselect,input{width:100%;background:#0b0b0f;color:#e4e4e7;border:1px solid #3f3f46;border-radius:8px;padding:8px;font-size:12px}\n.flex{display:flex;gap:6px;margin-top:6px}.flex select{flex:1;min-width:0}.flex button{white-space:nowrap}\n.list{max-height:520px;overflow:auto}.cat{display:flex;justify-content:space-between;gap:8px}.cat .r{text-align:right;flex-shrink:0;max-width:45%}\npre{white-space:pre-wrap;word-break:break-all;font-size:10px;color:#d4d4d8;margin:8px 0 0}\n</style></head><body>\n<h1>DripStore Web 2 — Katalog & Pencocokan</h1>\n<div class=\"sub\">Lihat semua produk/varian di DripStore Web 2 lalu cocokkan ke produk tokomu. &nbsp;<a href=\"/admin#settings\">← kembali ke Admin</a></div>\n<div class=\"row\"><button class=\"pri\" id=\"bLoad\" onclick=\"load()\">Muat / Refresh Katalog</button><button class=\"ok\" id=\"bAuto\" onclick=\"auto()\">Auto-cocokkan yang kosong</button></div>\n<div id=\"msg\" class=\"box\"></div>\n<div id=\"out\"></div>\n<script>\nvar $=function(i){return document.getElementById(i)};\nvar esc=function(v){return String(v==null?'':v).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})};\nvar D=null;\nfunction msg(h,c){var m=$('msg');m.className='box '+(c||'');m.innerHTML=h;m.style.display='block'}\nasync function post(u,d){var r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d||{})});return r.json()}\nasync function load(){\n  $('bLoad').disabled=true;msg('Memuat katalog DripStore Web 2…');\n  try{var r=await fetch('/admin/dripstore2/catalog');var d=await r.json();if(!d.success)throw new Error(d.message||'Gagal memuat katalog');D=d;$('msg').style.display='none';render()}\n  catch(e){$('out').innerHTML='';msg(esc(e.message),'err')}\n  $('bLoad').disabled=false;\n}\nfunction lab(v){return esc(v.productName)+' / '+esc(v.variantName)+' [ID '+esc(v.variantId)+']'+(v.price!=null?' • '+esc(v.price):'')+(v.stock!=null?' • stok '+esc(v.stock):'')+(v.balamod&&v.mode==='v1'?' • BALA MOD v1 (jangan dipetakan)':'')}\nfunction render(){\n  var d=D,out=$('out');\n  if(!d.variants.length){out.innerHTML='';msg('<b>Katalog DripStore Web 2 kosong / bentuk datanya belum dikenali.</b><br>Kirim potongan respons ini ke developer:<pre>HTTP '+esc(d.debug&&d.debug.status||'?')+'\\n'+esc(d.debug&&d.debug.sample||'(respons kosong)')+'</pre>','warn');return}\n  var q=($('q')?$('q').value:'').toLowerCase().trim();\n  var un=d.local.filter(function(l){return!l.variantId});window._un=un;\n  var h='';\n  if(d.brokenMappings.length)h+='<div class=\"box err\" style=\"display:block\"><b>ID salah / tidak ada di DripStore 2:</b><br>'+d.brokenMappings.map(esc).join('<br>')+'</div>';\n  h+='<h2>Produk toko yang belum ter-mapping ('+un.length+')</h2>';\n  if(!un.length)h+='<div class=\"muted\">Semua durasi produk sudah punya Variant ID DripStore 2.</div>';\n  un.forEach(function(l,i){\n    var same=d.variants.filter(function(v){return v.days===l.days&&(v.unit||'d')===l.unit});\n    var opts=same.length?same:d.variants,sg={};l.suggest.forEach(function(s){sg[s]=1});\n    opts=opts.slice().sort(function(a,b){return(sg[b.variantId]?1:0)-(sg[a.variantId]?1:0)});\n    h+='<div class=\"card\"><b>'+esc(l.productName)+' — '+l.days+l.unit+'</b> '+(l.suggest.length?'<span class=\"used\">(ada saran cocok)</span>':'<span style=\"color:#fbbf24\">(tidak ada nama yang pas, pilih manual)</span>')+\n      '<div class=\"flex\"><select id=\"s'+i+'\"><option value=\"\">— pilih varian DripStore 2 —</option>'+opts.map(function(v,ix){return'<option value=\"'+esc(v.variantId)+'\"'+(ix===0&&sg[v.variantId]?' selected':'')+'>'+lab(v)+'</option>'}).join('')+'</select><button class=\"ok\" onclick=\"pasang('+i+',this)\">Pasang</button></div></div>';\n  });\n  var list=d.variants.filter(function(v){return!q||(v.productName+' '+v.variantName+' '+v.variantId).toLowerCase().indexOf(q)>-1});\n  h+='<h2>Katalog DripStore Web 2 ('+d.variants.length+' varian)</h2><input id=\"q\" placeholder=\"Cari nama produk / varian / ID…\" value=\"'+esc(q)+'\" oninput=\"render()\"><div class=\"list\" style=\"margin-top:8px\">'+\n    (list.slice(0,400).map(function(v){return'<div class=\"card cat\"><div><b>'+esc(v.productName)+'</b> <span class=\"muted\">/ '+esc(v.variantName)+'</span><div class=\"muted\">ID <span class=\"mono\">'+esc(v.variantId)+'</span>'+(v.price!=null?' • '+esc(v.price):'')+(v.stock!=null?' • stok '+esc(v.stock):'')+(v.balamod&&v.mode==='v1'?' • <span style=\"color:#f87171\">Bala Mod v1</span>':'')+'</div></div><div class=\"r '+(v.usedBy.length?'used':'muted')+'\">'+(v.usedBy.length?esc(v.usedBy.join(', ')):'belum dipakai')+'</div></div>'}).join('')||'<div class=\"muted\">Tidak ada yang cocok.</div>')+'</div>';\n  out.innerHTML=h;\n  var qi=$('q');if(qi&&q){qi.focus();qi.setSelectionRange(q.length,q.length)}\n}\nasync function pasang(i,b){\n  var l=window._un[i],v=$('s'+i).value;if(!v){alert('Pilih varian dulu');return}\n  b.disabled=true;\n  try{var d=await post('/admin/dripstore2/map',{productId:l.productId,days:l.days,unit:l.unit,variantId:v});if(!d.success)throw new Error(d.message);await load()}\n  catch(e){alert('Gagal: '+e.message);b.disabled=false}\n}\nasync function auto(){\n  $('bAuto').disabled=true;msg('Mencocokkan…');\n  try{\n    var d=await post('/admin/dripstore2/auto-map',{});if(!d.success)throw new Error(d.message);\n    var sec=function(t,a,c){return a&&a.length?'<div style=\"margin-top:8px\"><b style=\"color:'+c+'\">'+t+' ('+a.length+'):</b><br><span class=\"muted\">'+a.map(esc).join('<br>')+'</span></div>':''};\n    msg('<b>'+d.mapped+' dipasang</b> • '+d.already+' sudah terisi (tidak diubah)'+sec('Dipasang',d.done,'#6ee7b7')+sec('Ambigu — pilih manual',d.ambiguous,'#fcd34d')+sec('Tidak ketemu — pilih manual',d.unmatched,'#fca5a5'),'good');\n    await load2();\n  }catch(e){msg(esc(e.message),'err')}\n  $('bAuto').disabled=false;\n}\nasync function load2(){try{var r=await fetch('/admin/dripstore2/catalog');var d=await r.json();if(d.success){D=d;render()}}catch(e){}}\nload();\n</script></body></html>\n";
 app.get('/admin/dripstore2/tools', requireAdmin, (req, res) => { res.set('Cache-Control', 'no-store'); res.type('html').send(DS2_TOOLS_HTML); });
 
+// ── LAPORAN PEMAKAIAN DATABASE (Supabase gratis: egress 5 GB/bln, DB 500 MB) ──
+app.get('/admin/db-usage', requireAdmin, async (req, res) => {
+  try {
+    const kb = (o) => Math.round(Buffer.byteLength(JSON.stringify(o === undefined || o === null ? '' : o)) / 1024);
+    const boot = ['users.json', 'products.json', 'transactions.json', 'testimonials.json', 'notifications.json', 'settings.json', 'keyspool.json', 'vouchers.json', 'dripstore_snapshot.json', 'dripstore_restock_requests.json']
+      .map(f => ({ f, kb: kb(readDB(f)), n: Array.isArray(readDB(f)) ? readDB(f).length : null }));
+    const lazy = [];
+    for (const f of ['payment_events.json', 'app_logs.json']) { try { const v = await readFresh(f); lazy.push({ f, kb: kb(v), n: Array.isArray(v) ? v.length : null }); } catch (_) {} }
+    const tx = await readFresh('transactions.json');
+    const now = Date.now(), d = 86400000, age = t => (now - (Date.parse(t.createdAt || t.paidAt || 0) || now)) / d;
+    const st = { done: 0, pending: 0, pendingOld: 0, expired: 0, failed: 0 };
+    for (const t of tx) { if (!t) continue; if (t.status === 'pending') { st.pending++; if (age(t) > 7) st.pendingOld++; } else if (st[t.status] !== undefined) st[t.status]++; }
+    const bootKb = boot.reduce((a, b) => a + b.kb, 0), txKb = (boot.find(b => b.f === 'transactions.json') || {}).kb || 0;
+    const rows = boot.concat(lazy).sort((a, b) => b.kb - a.kb);
+    const tips = [];
+    if (st.pendingOld >= 20) tips.push(`${st.pendingOld} order pending berumur >7 hari akan dibersihkan otomatis (1x/hari) — mengecilkan blob transaksi.`);
+    if (txKb > 1500) tips.push(`Blob transaksi ${txKb} KB dibaca PENUH tiap order/poll/cold start. Tiap order ≈ 8–10 pembacaan ≈ ${Math.round(txKb * 9 / 1024 * 10) / 10} MB egress.`);
+    tips.push(`Tiap cold start Vercel memuat ≈ ${bootKb} KB (${Math.round(bootKb / 1024 * 10) / 10} MB) dari Supabase.`);
+    const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pemakaian Database</title><style>body{background:#0b0b0f;color:#e4e4e7;font:13px/1.5 system-ui;max-width:760px;margin:0 auto;padding:14px}table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;border-top:1px solid #222;text-align:left}a{color:#7dd3fc}.card{background:#14141a;border:1px solid #27272a;border-radius:10px;padding:10px 12px;margin:10px 0}.m{color:#71717a}</style>
+<h2>Pemakaian Database</h2><div class="m"><a href="/admin#settings">← Admin</a> • <a href="/admin/diagnose">Diagnosa</a></div>
+<div class="card"><b>Transaksi:</b> ${tx.length} (selesai ${st.done}, pending ${st.pending} [${st.pendingOld} berumur >7 hari], expired ${st.expired}, gagal ${st.failed})</div>
+<div class="card"><table><tr><th>Koleksi</th><th>Ukuran</th><th>Isi</th></tr>${rows.map(r => `<tr><td>${r.f}</td><td>${r.kb} KB</td><td class="m">${r.n === null ? '-' : r.n + ' item'}</td></tr>`).join('')}</table></div>
+<div class="card">${tips.map(t => '• ' + t).join('<br>')}</div>`;
+    res.set('Cache-Control', 'no-store').type('html').send(html);
+  } catch (e) { res.status(500).send('Gagal: ' + e.message); }
+});
+
 // ── DIAGNOSA: temukan INTI masalah key tidak keluar / stok habis ──
 const DIAG_HTML = "<!doctype html>\n<html lang=\"id\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Diagnosa Toko — AGHA NL</title>\n<style>\n*{box-sizing:border-box}body{margin:0 auto;background:#0b0b0f;color:#e4e4e7;font:13px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;padding:14px;max-width:980px}\nh1{font-size:17px;margin:0 0 4px}h2{font-size:14px;margin:20px 0 8px}a{color:#7dd3fc}.sub{color:#71717a;font-size:12px;margin-bottom:10px}\n.card{background:#14141a;border:1px solid #27272a;border-radius:10px;padding:10px 12px;margin:8px 0}\n.v{border-left:4px solid #3f3f46}.v.crit{border-color:#dc2626;background:#1c0f10}.v.warn{border-color:#d97706;background:#1c150b}.v.ok{border-color:#059669;background:#0b1a16}\n.v b{font-size:13.5px}.v .d{color:#a1a1aa;margin-top:3px}.v .a{margin-top:5px;color:#fcd34d}\nbutton{cursor:pointer;border:1px solid #3f3f46;background:#18181b;color:#e4e4e7;border-radius:8px;padding:7px 12px;font-weight:700;font-size:12px}\nbutton.pri{background:#0e7490;border-color:#0891b2}button.ok{background:#065f46;border-color:#059669}button:disabled{opacity:.5}\ntable{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;padding:6px 8px;border-top:1px solid #222228;vertical-align:top}th{color:#71717a;font-weight:600;border-top:0}\n.muted{color:#71717a}.g{color:#34d399}.r{color:#f87171}.y{color:#fbbf24}.mono{font-family:ui-monospace,Menlo,monospace}\n.row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.tbl{overflow-x:auto}\n</style></head><body>\n<h1>Diagnosa Toko — kenapa key tidak keluar / stok habis?</h1>\n<div class=\"sub\">Halaman ini memeriksa provider (DripStore, DripStore 2, Panelstore), mapping produk, dan pesanan yang sudah dibayar tapi belum dapat key. &nbsp;<a href=\"/admin#products\">← Admin</a> • <a href=\"/admin/dripstore/audit\">Audit harga/mapping</a> • <a href=\"/admin/dripstore2/tools\">Katalog DripStore 2</a></div>\n<div class=\"row\"><button class=\"pri\" id=\"bRun\" onclick=\"load()\">Periksa sekarang</button><button class=\"ok\" id=\"bHeal\" onclick=\"heal()\">Jalankan auto-perbaiki + kirim ulang key</button><button onclick=\"clearDown()\">Reset tanda \"habis\" DripStore 2</button></div>\n<div id=\"msg\"></div><div id=\"out\"></div>\n<script>\nvar $=function(i){return document.getElementById(i)},D=null;\nvar esc=function(v){return String(v==null?'':v).replace(/[&<>\"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]})};\nasync function post(u,d){var r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d||{})});return r.json()}\nfunction note(h){$('msg').innerHTML=h?'<div class=\"card\">'+h+'</div>':''}\nasync function load(){$('bRun').disabled=true;note('Memeriksa provider & pesanan… (bisa 5–15 detik)');\n  try{var r=await fetch('/admin/diagnose/data');var d=await r.json();if(!d.success)throw new Error(d.message||'gagal');D=d;note('');draw()}catch(e){note('<span class=\"r\">'+esc(e.message)+'</span>')}$('bRun').disabled=false}\nfunction money(n){return n==null?'-':Number(n).toLocaleString('id-ID',{maximumFractionDigits:4})}\nfunction prov(name,p){if(!p.configured)return'<tr><td>'+name+'</td><td class=\"muted\" colspan=\"3\">tidak dipasang (token kosong)</td></tr>';\n  return'<tr><td>'+name+'</td><td>'+(p.ok?'<span class=\"g\">OK</span>':'<span class=\"r\">BERMASALAH</span>')+'</td><td>saldo: <b>'+money(p.balance)+'</b>'+(p.minCost!=null?' • modal termurah: '+money(p.minCost):'')+'</td><td class=\"muted\">'+esc(p.error||p.note||'')+(p.variants!=null?' • '+p.variants+' varian':'')+(p.ms?' • '+p.ms+' ms':'')+'</td></tr>'}\nfunction draw(){var d=D,h='<h2>Kesimpulan</h2>';\n  h+=d.verdict.map(function(v){return'<div class=\"card v '+v.level+'\"><b>'+esc(v.title)+'</b><div class=\"d\">'+esc(v.detail)+'</div>'+(v.action?'<div class=\"a\">➜ '+esc(v.action)+'</div>':'')+'</div>'}).join('');\n  h+='<h2>Status provider</h2><div class=\"card tbl\"><table><tr><th>Provider</th><th>Status</th><th>Saldo</th><th>Catatan</th></tr>'+prov('DripStore utama',d.ds1)+prov('DripStore Web 2',d.ds2)+prov('Panelstore',d.ps)+'</table></div>';\n  h+='<h2>Pesanan sudah BAYAR tapi key belum terkirim ('+d.stuck.length+')</h2>';\n  if(!d.stuck.length)h+='<div class=\"card muted\">Tidak ada (14 hari terakhir).</div>';\n  else{h+='<div class=\"row\"><button class=\"ok\" onclick=\"retry(null,this)\">Kirim ulang SEMUA ('+d.stuck.length+')</button></div><div class=\"card tbl\"><table><tr><th>Order</th><th>Produk</th><th>Pembeli</th><th>Penyebab</th><th></th></tr>'+\n    d.stuck.map(function(s){return'<tr><td class=\"mono\">'+esc(s.code)+'<div class=\"muted\">'+esc(s.paidAt||'')+'</div></td><td>'+esc(s.product)+'<div class=\"muted\">'+esc(s.dur)+' • Rp '+money(s.price)+'</div></td><td>'+esc(s.customer)+'<div class=\"muted\">'+esc(s.wa)+'</div></td><td class=\"y\">'+esc(s.reason)+'</td><td><button onclick=\"retry(\\''+esc(s.id)+'\\',this)\">Kirim ulang</button> <button onclick=\"handled(\\''+esc(s.id)+'\\',this)\">Sudah kukirim manual</button></td></tr>'}).join('')+'</table></div>'}\n  h+='<h2>Durasi tanpa provider ('+d.noProvider.length+' dari '+d.optionTotal+' durasi)</h2><div class=\"card muted\">'+(d.noProvider.length?d.noProvider.map(esc).join('<br>'):'Semua durasi punya jalur pengiriman.')+'</div>';\n  h+='<h2>Panduan singkat (kalau terjadi lagi)</h2><div class=\"card muted\">1) Lihat <b>Kesimpulan</b> di atas — itu penyebab utamanya.<br>2) Saldo provider habis → isi saldo, lalu tekan <b>Jalankan auto-perbaiki + kirim ulang key</b>.<br>3) Durasi tanpa provider → tekan tombol yang sama; sisanya cocokkan manual di Audit / Katalog DripStore 2.<br>4) Token/IP ditolak (Cloudflare) → minta admin DripStore meng-allowlist IP server.<br>5) Pesanan yang tetap gagal → kirim key manual ke pembeli via WhatsApp, lalu tandai selesai.</div>';\n  $('out').innerHTML=h}\nasync function retry(id,b){if(!id&&!confirm('Kirim ulang key untuk SEMUA pesanan di daftar? Pesanan yang sudah kamu kirim manual harus ditandai dulu (tombol \"Sudah kukirim manual\"), kalau tidak key akan dibeli dobel.'))return;if(b)b.disabled=true;note('Mengirim ulang key…');var d=await post('/admin/diagnose/retry',id?{id:id}:{all:true});\n  if(!d.success){note('<span class=\"r\">'+esc(d.message)+'</span>');if(b)b.disabled=false;return}\n  note('Hasil: <b class=\"g\">'+d.delivered+' terkirim</b>, '+d.failed+' masih gagal'+(d.errors&&d.errors.length?'<div class=\"muted\">'+d.errors.map(esc).join('<br>')+'</div>':''));await load()}\nasync function heal(){$('bHeal').disabled=true;note('Menjalankan auto-perbaiki…');var d=await post('/admin/dripstore/heal-now',{});note('Selesai. '+(d.result&&d.result.errors&&d.result.errors.length?'<span class=\"r\">'+d.result.errors.map(esc).join('; ')+'</span>':''));$('bHeal').disabled=false;await load()}\nasync function handled(id,b){b.disabled=true;var d=await post('/admin/diagnose/mark-handled',{id:id});if(!d.success){alert(d.message);b.disabled=false;return}await load()}\nasync function clearDown(){await post('/admin/diagnose/clear-down',{});note('Tanda \"habis\" DripStore 2 direset.');await load()}\nload();\n</script></body></html>\n";
 app.get('/admin/diagnose', requireAdmin, (req, res) => { res.set('Cache-Control', 'no-store'); res.type('html').send(DIAG_HTML); });
@@ -6870,13 +6897,35 @@ app.post('/admin/dripstore/auto-fix-undo', requireAdmin, async (req, res) => {
 let _healRunning = false, _healLast = 0, _healResult = null;
 // Tabel keyvalue_store menyimpan 1 baris "fulfillment-claim:<order>" per pesanan dan tidak pernah dibersihkan (ribuan baris).
 // Klaim pesanan yang sudah selesai >14 hari tidak berguna lagi (finalizeOrder sudah menolak order 'done'), jadi dibersihkan 1x/hari.
+let _pruneAt = 0;
+// Order pending >7 hari (tak pernah dibayar) & expired/failed >30 hari dibuang 1x/hari. Blob transaksi dibaca PENUH di tiap
+// order, polling, webhook dan cold start -> semakin kecil blob, semakin hemat egress Supabase gratis (5 GB/bulan).
+async function pruneStaleTransactions() {
+  if (Date.now() - _pruneAt < 24 * 3600 * 1000) return null;
+  _pruneAt = Date.now();
+  const pendMs = Math.max(2, Number(process.env.PRUNE_PENDING_DAYS) || 7) * 86400000;
+  const deadMs = Math.max(7, Number(process.env.PRUNE_DEAD_DAYS) || 30) * 86400000;
+  const all = await readFresh('transactions.json');
+  if (!Array.isArray(all)) return null;
+  const now = Date.now();
+  const age = (t) => now - (Date.parse(t.createdAt || t.paidAt || 0) || now);
+  const drop = all.filter(t => t && t.id && (
+    (t.status === 'pending' && age(t) > (t.isStatic ? pendMs * 4 : pendMs)) ||
+    ((t.status === 'expired' || t.status === 'failed') && age(t) > deadMs)));
+  if (drop.length < 20) return { pruned: 0, total: all.length };
+  const ids = new Set(drop.map(t => t.id));
+  await writeDB('transactions.json', all.filter(t => !(t && ids.has(t.id))), { deletedIds: Array.from(ids) });
+  _txMicro = { at: 0, data: null, p: null };
+  try { paymentAudit.record('db.prune_transactions', { pruned: ids.size, remaining: all.length - ids.size }); } catch (_) {}
+  return { pruned: ids.size, total: all.length };
+}
 let _claimCleanupAt = 0;
 async function cleanupOldClaims() {
   if (Date.now() - _claimCleanupAt < 24 * 3600 * 1000) return 0;
   _claimCleanupAt = Date.now();
   const client = db.getClient(); if (!client) return 0;
   const cutoff = Date.now() - 14 * 86400000;
-  const txs = await readFresh('transactions.json');
+  const txs = await readTxFresh(60000);
   const keys = txs.filter(t => t && t.status === 'done' && t.id && (Date.parse(t.paidAt || t.createdAt || 0) || 0) > 0 && (Date.parse(t.paidAt || t.createdAt || 0) || 0) < cutoff)
     .map(t => `fulfillment-claim:${t.id}`);
   let n = 0;
@@ -6927,6 +6976,7 @@ async function autoHealMappings(reason = 'timer', opts = {}) {
     });
     if (out.changed) _invalidateDripstoreSnapshot({ full: true });
     try { const c = await cleanupOldClaims(); if (c) out.claimsCleaned = c; } catch (_) {}
+    try { const pr = await pruneStaleTransactions(); if (pr && pr.pruned) out.txPruned = pr.pruned; } catch (_) {}
     try { // setelah mapping dibereskan: kirim ulang key pesanan yang sudah dibayar tapi tertunda
       const rb = await retryUndeliveredBatch(settings, reason === 'checkout' ? 3 : 8);
       if (rb.delivered || rb.failed) out.retry = rb;
@@ -6940,7 +6990,7 @@ app.get('/admin/dripstore/heal-status', requireAdmin, (req, res) => res.json({ s
 app.post('/admin/dripstore/heal-now', requireAdmin, async (req, res) => { const r = await autoHealMappings('manual'); res.json({ success: true, result: r }); });
 if (!isVercel) {
   setTimeout(() => autoHealMappings('start').catch(() => {}), 30 * 1000).unref?.();
-  setInterval(() => autoHealMappings('timer').catch(() => {}), 20 * 60 * 1000).unref?.();
+  setInterval(() => autoHealMappings('timer').catch(() => {}), 30 * 60 * 1000).unref?.();
 }
 
 // PREVIEW: tidak mengubah apa pun, cuma menghitung apa yang AKAN terjadi.
@@ -7359,13 +7409,20 @@ app.post('/admin/user/adjust-balance/:id', requireAdmin, async (req, res) => {
 
 // VALIDASI PENDING OTOMATIS (6 Okt 2026)
 // Order dinamis yang pending berjam-jam/berhari-hari diperiksa ulang:
-async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs = 45000 } = {}) {
+async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs = 45000, cached = false } = {}) {
   const t0 = Date.now();
-  const settings = await readFresh('settings.json');
-  const all = await readFresh('transactions.json');
-  let events = []; try { events = await readFresh('payment_events.json'); } catch (_) {}
-  const hook = new Set();
-  for (const e of (Array.isArray(events) ? events : [])) if (e && e.orderId && /^webhook\./.test(e.type || '')) hook.add(e.orderId);
+  const settings = cached ? await readSmart('settings.json') : await readFresh('settings.json');
+  const all = cached ? await readTxFresh(60000) : await readFresh('transactions.json');
+  // payment_events.json (besar) hanya dipakai cabang GensPay -> dibaca malas, hanya bila ada kandidat GensPay
+  let _hook = null;
+  const hookHas = async (orderId) => {
+    if (_hook === null) {
+      _hook = new Set();
+      let events = []; try { events = await readFresh('payment_events.json'); } catch (_) {}
+      for (const e of (Array.isArray(events) ? events : [])) if (e && e.orderId && /^webhook\./.test(e.type || '')) _hook.add(e.orderId);
+    }
+    return _hook.has(orderId);
+  };
   const now = Date.now();
   const cands = (Array.isArray(all) ? all : []).filter(t => t && t.status === 'pending' && !t.isStatic && (now - Date.parse(t.createdAt || 0)) >= minAgeMin * 60000)
     .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
@@ -7383,7 +7440,7 @@ async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs
       continue;
     }
     if (gateway === 'genspay') {
-      if (hook.has(t.orderId)) { sum.needsReview++; continue; }
+      if (await hookHas(t.orderId)) { sum.needsReview++; continue; }
       if (ageH > 24) toExpire.push([t, 'Ditutup otomatis: >24 jam, tidak ada notifikasi pembayaran dari GensPay']); else sum.stillPending++;
       continue;
     }
@@ -7426,9 +7483,10 @@ async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs
 // Dipicu lazy oleh lalu lintas biasa (halaman bayar / polling / beranda / admin), cooldown 60 dtk, hanya order pending berumur >= 1 menit.
 let _recLast = 0, _recRunning = false;
 function lazyReconcile() {
-  if (_recRunning || Date.now() - _recLast < 60 * 1000) return;
+  // HEMAT SUPABASE: tiap rekonsiliasi membaca blob transaksi (MB). Cooldown 3 menit + baca dari cache bersama.
+  if (_recRunning || Date.now() - _recLast < 180 * 1000) return;
   _recRunning = true; _recLast = Date.now();
-  reconcilePendingOrders({ maxItems: 12, minAgeMin: 1, deadlineMs: 25000 }).catch(() => {}).finally(() => { _recRunning = false; });
+  reconcilePendingOrders({ maxItems: 10, minAgeMin: 1, deadlineMs: 20000, cached: true }).catch(() => {}).finally(() => { _recRunning = false; });
 }
 app.get('/cron/reconcile', async (req, res) => {
   const secret = process.env.CRON_SECRET || '';

@@ -165,6 +165,7 @@ const loadAllCollections = async (client) => {
       .from('keyvalue_store')
       .select('key, value')
       .not('key', 'like', 'fulfillment-claim:%')
+      .not('key', 'in', '(payment_events.json,app_logs.json)') // besar & hanya dibaca via readFresh -> hemat egress tiap cold start
       .order('key', { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw new Error(error.message);
