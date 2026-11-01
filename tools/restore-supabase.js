@@ -31,6 +31,14 @@ const client = createClient(NEW_URL, KEY, { auth: { persistSession: false } });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const MIME = { '.webp': 'image/webp', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.apk': 'application/vnd.android.package-archive', '.pdf': 'application/pdf', '.json': 'application/json', '.txt': 'text/plain' };
 
+// Tipe asli dari isi file (hasil pemulihan dari CDN berformat webp walau namanya .png/.jpg)
+function sniffType(b) {
+  if (b.length > 12 && b.slice(0, 4).toString() === 'RIFF' && b.slice(8, 12).toString() === 'WEBP') return 'image/webp';
+  if (b[0] === 0x89 && b[1] === 0x50) return 'image/png';
+  if (b[0] === 0xFF && b[1] === 0xD8) return 'image/jpeg';
+  if (b.slice(0, 3).toString() === 'GIF') return 'image/gif';
+  return null;
+}
 async function retry(fn, label) { let last; for (let i = 0; i < 4; i++) { try { return await fn(); } catch (e) { last = e; await sleep(600 * (i + 1)); } } throw new Error(`${label}: ${last && last.message || last}`); }
 function walk(dir, base = '') { const out = []; if (!fs.existsSync(dir)) return out; for (const n of fs.readdirSync(dir)) { const p = path.join(dir, n); const rel = base ? `${base}/${n}` : n; fs.statSync(p).isDirectory() ? out.push(...walk(p, rel)) : out.push(rel); } return out; }
 
@@ -47,7 +55,7 @@ async function restoreStorage() {
     let ok = 0; const failed = []; const q = files.slice();
     const worker = async () => { while (q.length) { const f = q.shift(); try {
       const buf = fs.readFileSync(path.join(root, bucket, f));
-      await retry(async () => { const r = await client.storage.from(bucket).upload(f, buf, { upsert: true, contentType: MIME[path.extname(f).toLowerCase()] || 'application/octet-stream', cacheControl: '31536000' }); if (r.error) throw new Error(r.error.message); }, `unggah ${f}`);
+      await retry(async () => { const r = await client.storage.from(bucket).upload(f, buf, { upsert: true, contentType: sniffType(buf) || MIME[path.extname(f).toLowerCase()] || 'application/octet-stream', cacheControl: '31536000' }); if (r.error) throw new Error(r.error.message); }, `unggah ${f}`);
       ok++; } catch (e) { failed.push(`${f}: ${e.message}`); } process.stdout.write(`  ${bucket}: ${ok}/${files.length}\r`); } };
     await Promise.all([worker(), worker(), worker(), worker()]);
     console.log(`  ✓ ${ok}/${files.length} terunggah${failed.length ? ` — ${failed.length} GAGAL` : ''}`);
