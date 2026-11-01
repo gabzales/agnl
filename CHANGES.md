@@ -1,3 +1,7 @@
+# BACKUP LANGSUNG DARI WEB (1 Nov 2026)
+- **/admin/backup**: satu tombol → file ZIP berisi semua data (keyvalue_store) + semua gambar di Storage, dirakit di browser (tanpa skrip, tanpa batas respons 4,5 MB Vercel: data dikirim per potongan ≤1,5 MB, gambar diunduh browser langsung dari Storage dengan cadangan lewat server). Format ZIP kompatibel dengan `tools/restore-supabase.js`.
+- Skrip CLI `tools/backup-supabase.js` & `tools/restore-supabase.js` untuk backup/pindah ke project Supabase baru (URL gambar otomatis diganti).
+
 # HEMAT SUPABASE & VERCEL GRATIS (31 Okt 2026)
 
 Sumber egress terbesar adalah blob `transactions.json` (dibaca PENUH tiap order, polling, webhook, cold start). Yang diubah:
