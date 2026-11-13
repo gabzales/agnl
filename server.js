@@ -987,14 +987,9 @@ const readSmart = db.readSmart; // TTL-based: auto-refresh jika cache >60 detik
 // Baca transactions.json yang SEGAR (maks 4 detik basi) -- readDB/readSmart bisa basi sampai 60 dtk
 // atau selamanya di instance lain, sehingga pembeli melihat "pending" padahal admin sudah konfirmasi.
 let _txMicro = { at: 0, data: null, p: null };
-async function readTxFresh(maxAgeMs = 4000) {
-  if (_txMicro.data && Date.now() - _txMicro.at < maxAgeMs) return _txMicro.data;
-  if (_txMicro.p) return _txMicro.p;
-  _txMicro.p = readFresh('transactions.json')
-    .then(d => { _txMicro = { at: Date.now(), data: d, p: null }; return d; })
-    .catch(e => { _txMicro.p = null; throw e; });
-  return _txMicro.p;
-}
+// (12 Nov 2026) transaksi kini 1 baris per transaksi (txstore.js). readTxFresh = daftar LENGKAP (jalur langka: laporan/backup),
+// di-cache; jalur pembeli/webhook memakai db.tx.get/find/pending/... yang hanya menyentuh baris yang dibutuhkan.
+async function readTxFresh(maxAgeMs = 4000) { return db.tx.all({ maxAgeMs: Math.max(maxAgeMs, 15000) }); }
 
 
 // ── PERFORMANCE: user lookup Map, dipakai untuk hindari .find() berulang
@@ -1073,7 +1068,7 @@ const initDB = async () => {
     banners: []
   };
 
-  const arrayFiles = ['users.json', 'products.json', 'transactions.json', 'testimonials.json', 'notifications.json', 'keyspool.json', 'vouchers.json', 'dripstore_restock_requests.json'];
+  const arrayFiles = ['users.json', 'products.json', 'testimonials.json', 'notifications.json', 'keyspool.json', 'vouchers.json', 'dripstore_restock_requests.json'];
 
   // Seed arrays only if they don't exist at all
   for (const filename of arrayFiles) {
@@ -3506,7 +3501,7 @@ app.post('/reseller/join', requireAuth, async (req, res) => {
       isStatic = true;
     } else {
       try {
-        const r = await createQRISPayment(orderId, price, settings); _mark('gateway');
+        const r = await createQRISPayment(orderId, price, settings);
         qrString = r.qr_string;
         var providerTxnId = r.txn_id || null;
       } catch (e) {
@@ -3515,8 +3510,10 @@ app.post('/reseller/join', requireAuth, async (req, res) => {
       }
     }
 
-    const transactions = readDB('transactions.json');
-    transactions.push({
+    // FIX (12 Nov 2026): clientIp/clientUa dulu tidak didefinisikan di route ini (ReferenceError -> upgrade reseller selalu gagal)
+    const clientIp = String(req.ip || req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    const clientUa = String(req.headers['user-agent'] || '').slice(0, 160);
+    await db.tx.create({
       id: refId, orderId, code: orderCode,
       userId: user.id, type: 'reseller',
       productName: 'Upgrade Reseller VIP',
@@ -3528,8 +3525,7 @@ app.post('/reseller/join', requireAuth, async (req, res) => {
       ip: clientIp, ua: clientUa,
       createdAt: new Date().toISOString(), time: formatDate()
     });
-    await writeDB('transactions.json', transactions);
-    await paymentAudit.record('order.created', { orderId, refId, gateway: activeGateway(settings), amount: price, totalPayment, userId: req.session.userId, ip: clientIp, ua: clientUa, product: product.name, static: isStatic });
+    await paymentAudit.record('order.created', { orderId, refId, gateway: activeGateway(settings), amount: price, totalPayment: price, userId: req.session.userId, ip: clientIp, ua: clientUa, product: 'Upgrade Reseller VIP', static: isStatic });
 
     res.json({ success: true, refId, orderId, qrString, orderCode, isStatic, paymentGateway: activeGateway(settings),
       qrisStaticImage: isStatic ? settings.qrisStaticImage : null });
@@ -3588,8 +3584,7 @@ app.post('/wallet/topup', requireAuth, async (req, res) => {
       }
     }
 
-    const transactions = readDB('transactions.json');
-    transactions.push({
+    await db.tx.create({
       id: refId, orderId, code: orderCode,
       userId: user.id, type: 'deposit',
       productName: 'Top Up Saldo Reseller',
@@ -3601,7 +3596,6 @@ app.post('/wallet/topup', requireAuth, async (req, res) => {
       status: 'pending', key: null,
       createdAt: new Date().toISOString(), time: formatDate()
     });
-    await writeDB('transactions.json', transactions);
 
     res.json({ success: true, refId, orderId, qrString, orderCode, isStatic, totalPayment, expiredAt, paymentGateway: activeGateway(settings),
       qrisStaticImage: isStatic ? settings.qrisStaticImage : null });
@@ -3629,7 +3623,7 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     if (!user) return res.json({ success: false, message: 'User tidak ditemukan' });
     if (!user.is_reseller) return res.json({ success: false, message: 'Fitur beli pakai saldo khusus Reseller VIP' });
 
-    const products = await productsP; _mark('db_read');
+    const products = await readFresh('products.json'); // FIX (12 Nov 2026): productsP/_mark dulu tidak didefinisikan di route ini (ReferenceError -> beli pakai saldo selalu gagal)
     const rawProduct = products.find(p => p.id === productId);
     const product = rawProduct ? normalizeProductBuyOptions(rawProduct) : null;
     if (!product || product.status !== 'active') return res.json({ success: false, message: 'Produk tidak ditemukan' });
@@ -3748,8 +3742,7 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
 
     const refId = uuidv4();
     const orderCode = generateOrderCode();
-    const transactions = await readFresh('transactions.json');
-    transactions.push({
+    await db.tx.create({
       id: refId, orderId: `WLT-${Date.now()}`, code: orderCode,
       userId: user.id, productId: product.id, productName: product.name,
       duration, selectedDays, selectedUnit,
@@ -3763,7 +3756,6 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
       providerTransactionId: providerTransactionId || undefined,
       paidAt: new Date().toISOString(), createdAt: new Date().toISOString(), time: formatDate()
     });
-    await writeDB('transactions.json', transactions);
 
     if (appliedVoucher) {
       const vouchers = await readFresh('vouchers.json');
@@ -3973,26 +3965,21 @@ app.get('/profile/me', requireAuth, (req, res) => {
 });
 
 // ── User Dashboard ──
-app.get('/dashboard', requireAuth, (req, res) => {
-  const transactions = readDB('transactions.json');
+app.get('/dashboard', requireAuth, async (req, res) => {
   const user = getSessionUser(req);
   const settings = readDB('settings.json');
 
-  // Filter transaksi milik user ini
-  const myTransactions = transactions.filter(t => t.userId === req.session.userId);
-  const totalOrders = myTransactions.length;
-  const successOrders = myTransactions.filter(t => t.status === 'done').length;
-  const pendingOrders = myTransactions.filter(t => t.status === 'pending').length;
-  const totalSpent = myTransactions.filter(t => t.status === 'done').reduce((s, t) => s + (t.price || 0), 0);
-  const doneTransactions = myTransactions.filter(t => t.status === 'done').sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  const recentTransactions = myTransactions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 20);
+  // (12 Nov 2026) hanya transaksi milik user ini yang diambil dari database: angka ringkasan + 20 terbaru + 15 mutasi saldo
+  let mine;
+  try { mine = await db.tx.byUser(req.session.userId); }
+  catch (e) { console.error('[dashboard] gagal memuat transaksi:', e.message); mine = { stats: { totalOrders: 0, successOrders: 0, pendingOrders: 0, totalSpent: 0 }, recent: [], wallet: [] }; }
 
   res.render('pages/dashboard', {
     user, settings,
-    stats: { totalOrders, successOrders, pendingOrders, totalSpent },
-    doneTransactions,
-    transactions: recentTransactions,
-    walletTransactions: myTransactions.filter(t => t.type === 'deposit' || t.type === 'adjustment').sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)).slice(0, 15)
+    stats: mine.stats,
+    doneTransactions: mine.recent.filter(t => t.status === 'done'),
+    transactions: mine.recent,
+    walletTransactions: mine.wallet
   });
 });
 
@@ -4094,7 +4081,6 @@ app.post('/create-order', async (req, res) => {
     const _t0 = Date.now(), _marks = [];
     const _mark = (n) => _marks.push(`${n};dur=${Date.now() - _t0}`);
     const productsP = readFresh('products.json'); productsP.catch(() => {});
-    const preTxP = readFresh('transactions.json'); preTxP.catch(() => {});
     const usersP = !req.session?.userId ? readFresh('users.json') : null; if (usersP) usersP.catch(() => {});
 
     // Guest checkout: kalau belum ada session user sama sekali, buat akun
@@ -4253,9 +4239,9 @@ app.post('/create-order', async (req, res) => {
     // CEGAH QRIS SIA-SIA (akar masalah banyak "pending" & suspend GensPay)
     // Sebelumnya cek "pesanan pending duplikat" baru dilakukan SETELAH createQRISPayment() dipanggil, jadi
     {
-      const preTx = await preTxP; _mark('pre_checks');
-      const nowMs = Date.now(), WINDOW = PENDING_TTL_MS;
-      const live = (Array.isArray(preTx) ? preTx : []).filter(t => t.status === 'pending' && (nowMs - Date.parse(t.createdAt)) < WINDOW);
+      // (12 Nov 2026) hanya pending milik user/IP ini dalam jendela 5 menit yang diambil (dulu: seluruh blob transaksi 4,5 MB)
+      const WINDOW = PENDING_TTL_MS;
+      const live = await db.tx.pendingForUser(req.session.userId, WINDOW, clientIp); _mark('pre_checks');
       const dup = live.find(t => t.userId === req.session.userId && t.productId === productId);
       const dyn = live.filter(t => !t.isStatic);
       const pendingByUser = dyn.filter(t => t.userId === req.session.userId).length;
@@ -4293,20 +4279,13 @@ app.post('/create-order', async (req, res) => {
       }
     }
 
-    const transactions = await readFresh('transactions.json');
-
-    // Cegah transaksi duplikat: tolak jika ada pending untuk produk yang sama dalam 30 menit
-    const existingPending = transactions.find(t =>
-      t.userId === req.session.userId &&
-      t.productId === productId &&
-      t.status === 'pending' &&
-      (Date.now() - new Date(t.createdAt).getTime()) < PENDING_TTL_MS
-    );
+    // Cegah transaksi duplikat: tolak jika ada pending untuk produk yang sama dalam 5 menit (cek ulang setelah QRIS dibuat)
+    const existingPending = (await db.tx.pendingForUser(req.session.userId, PENDING_TTL_MS, null)).find(t => t.productId === productId);
     if (existingPending) {
       return res.json({ success: false, message: 'Kamu masih memiliki pesanan pending untuk produk ini. Selesaikan pembayaran atau tunggu 5 menit.' });
     }
 
-    transactions.push({
+    const _newTx = ({
       id: refId, orderId, code: orderCode,
       userId: req.session.userId, productId: product.id, productName: product.name,
       duration, selectedDays, selectedUnit,
@@ -4321,7 +4300,7 @@ app.post('/create-order', async (req, res) => {
       createdAt: new Date().toISOString(), time: formatDate()
     });
     // Tulis transaksi + catat voucher PARALEL (dulu berurutan: 2-3 round-trip tambahan).
-    const _writes = [writeDB('transactions.json', transactions)];
+    const _writes = [db.tx.create(_newTx)];
     if (appliedVoucher) {
       _writes.push((async () => {
         const vouchers = await readFresh('vouchers.json');
@@ -4475,8 +4454,7 @@ async function claimProductFulfillment(refId) {
 }
 
 async function finalizeOrder(refId, settings) {
-  const freshTransactions = await readFresh('transactions.json');
-  const transaction = freshTransactions.find(t => t.id === refId);
+  const transaction = await db.tx.get(refId);
   if (!transaction) return { status: 'not_found' };
   if (transaction.status === 'done') {
     return { status: 'already_done', type: transaction.type, key: transaction.key, code: transaction.code, outOfStock: transaction.outOfStock };
@@ -4503,10 +4481,7 @@ async function finalizeOrder(refId, settings) {
     }
     transaction.status = 'done';
     transaction.paidAt = new Date().toISOString();
-    const txList = await readFresh('transactions.json');
-    const txIdx = txList.findIndex(t => t.id === refId);
-    if (txIdx !== -1) txList[txIdx] = transaction; else txList.push(transaction);
-    await writeDB('transactions.json', txList);
+    await db.tx.save(transaction);
     return { status: 'done', type: 'reseller' };
   }
 
@@ -4520,10 +4495,7 @@ async function finalizeOrder(refId, settings) {
     }
     transaction.status = 'done';
     transaction.paidAt = new Date().toISOString();
-    const txList = await readFresh('transactions.json');
-    const txIdx = txList.findIndex(t => t.id === refId);
-    if (txIdx !== -1) txList[txIdx] = transaction; else txList.push(transaction);
-    await writeDB('transactions.json', txList);
+    await db.tx.save(transaction);
     return { status: 'done', type: 'deposit', balance: u?.balance || 0 };
   }
 
@@ -4609,14 +4581,11 @@ async function finalizeOrder(refId, settings) {
   transaction.outOfStock = outOfStock;
   if (outOfStock) transaction.fulfillError = fulfillErrorMsg || 'Tidak ada provider yang bisa memenuhi: varian DripStore/DripStore 2/Panelstore belum ter-mapping untuk produk + durasi ini, atau stok lokal kosong';
   transaction.paidAt = new Date().toISOString();
-  const txListFinal = await readFresh('transactions.json');
-  const txIdxFinal = txListFinal.findIndex(t => t.id === refId);
-  if (txIdxFinal !== -1) txListFinal[txIdxFinal] = transaction; else txListFinal.push(transaction);
+  // (12 Nov 2026) simpan HANYA baris transaksi ini (db.tx.save membuang qrString bila sudah tidak pending & menggabung dengan isi database)
   // PERF (5 Okt 2026): qrString (payload QRIS) = ~29% ukuran transactions.json dan hanya
   // dipakai saat pembeli sedang membayar. Setelah tidak pending, buang -- tiap konfirmasi
   // jadi mengunduh/mengunggah file yang jauh lebih kecil (sebelumnya ~900KB x3 per konfirmasi).
-  for (const t of txListFinal) { if (t && t.status !== 'pending' && t.qrString !== undefined) delete t.qrString; }
-  await writeDB('transactions.json', txListFinal);
+  await db.tx.save(transaction);
 
   if (outOfStock) {
     const waMsg = `⚠️ STOK HABIS - Pesanan butuh diproses manual!\n\n` +
@@ -4647,8 +4616,7 @@ async function finalizeOrder(refId, settings) {
 // Sekarang dicoba ulang otomatis (setelah auto-perbaiki / saldo diisi) atau lewat tombol di /admin/diagnose.
 const _retryingOrders = new Set();
 async function retryUndeliveredOrder(refId, settings) {
-  const txs0 = await readFresh('transactions.json');
-  const t0 = txs0.find(t => t.id === refId);
+  const t0 = await db.tx.get(refId);
   if (!t0 || t0.status !== 'done' || t0.key || !t0.outOfStock || (t0.type && t0.type !== 'product')) return { status: 'not_retryable' };
   if (_retryingOrders.has(refId)) return { status: 'busy' };
   _retryingOrders.add(refId);
@@ -4668,20 +4636,19 @@ async function retryUndeliveredOrder(refId, settings) {
       else if (lp && lp.error) errMsg = String(lp.error.message || 'error provider').slice(0, 220);
       else errMsg = 'Tidak ada provider yang bisa memenuhi: varian belum ter-mapping untuk produk + durasi ini';
     }
-    const txs = await readFresh('transactions.json');
-    const idx = txs.findIndex(t => t.id === refId);
-    if (idx === -1) return { status: 'not_found' };
-    if (txs[idx].key) return { status: 'already_delivered' }; // sudah terisi oleh proses lain
+    const curTx = await db.tx.get(refId); // baca ulang SATU baris (bisa saja sudah diisi proses lain)
+    if (!curTx) return { status: 'not_found' };
+    if (curTx.key) return { status: 'already_delivered' }; // sudah terisi oleh proses lain
     if (!key) {
-      txs[idx].fulfillError = errMsg || txs[idx].fulfillError;
-      txs[idx].lastRetryAt = new Date().toISOString();
-      await writeDB('transactions.json', txs);
+      curTx.fulfillError = errMsg || curTx.fulfillError;
+      curTx.lastRetryAt = new Date().toISOString();
+      await db.tx.save(curTx);
       return { status: 'still_failed', error: errMsg };
     }
     if (!localCommitted) await incrementProductSold(t0.productId);
-    Object.assign(txs[idx], { key, keySource, outOfStock: false, providerVariantId: providerVariantId || undefined, providerTransactionId: providerTransactionId || undefined, retriedAt: new Date().toISOString() });
-    delete txs[idx].fulfillError;
-    await writeDB('transactions.json', txs);
+    Object.assign(curTx, { key, keySource, outOfStock: false, providerVariantId: providerVariantId || undefined, providerTransactionId: providerTransactionId || undefined, retriedAt: new Date().toISOString() });
+    delete curTx.fulfillError;
+    await db.tx.save(curTx);
     paymentAudit.record('order.retry_delivered', { orderId: refId, source: keySource });
     if (t0.wa) sendWhatsAppNotif(String(t0.wa), `Halo ${t0.customerName || 'kak'}, key pesananmu ${t0.code} (${t0.productName}) sudah terkirim. Buka halaman Cek Pesanan di web dengan kode pesanan ${t0.code} untuk melihat key. Maaf atas keterlambatannya 🙏`, settings).catch(() => {});
     return { status: 'delivered', key };
@@ -4689,7 +4656,7 @@ async function retryUndeliveredOrder(refId, settings) {
 }
 async function listUndeliveredOrders(days = 14, cached = false) {
   const since = Date.now() - days * 86400000;
-  const txs = cached ? await readTxFresh(60000) : await readFresh('transactions.json');
+  const txs = await db.tx.undelivered(days * 86400000); // query terfilter di database (bukan seluruh blob)
   return txs.filter(t => t && t.status === 'done' && t.outOfStock && !t.key && !t.manualResolved && (!t.type || t.type === 'product') && (new Date(t.paidAt || t.createdAt || 0).getTime() || 0) >= since)
     .sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0));
 }
@@ -4715,8 +4682,7 @@ app.get('/pay/:refId', async (req, res) => {
   res.set('Cache-Control', 'private, no-store');
   try {
     if (!req.session?.userId && !req.session?.isAdmin) return res.redirect('/login?redirect=' + encodeURIComponent(req.originalUrl));
-    const all = await readFresh('transactions.json');
-    const tx = (Array.isArray(all) ? all : []).find(t => t.id === req.params.refId);
+    const tx = await db.tx.get(req.params.refId);
     if (!tx || (!req.session.isAdmin && tx.userId !== req.session.userId)) return res.redirect('/');
     const settings = res.locals.settings || readDB('settings.json');
     // Countdown = yang LEBIH CEPAT antara kedaluwarsa gateway dan batas pending kita (5 menit).
@@ -4760,8 +4726,7 @@ app.get('/check-payment/:refId', requireAuth, async (req, res) => {
   }
   processingOrders.add(refId);
   try {
-    const transactions = readDB('transactions.json');
-    const transaction = transactions.find(t => t.id === refId);
+    const transaction = await db.tx.get(refId); // 1 baris (±700 B), bukan blob 4,5 MB tiap polling
     if (!transaction) return res.json({ success: false, message: 'Transaksi tidak ditemukan' });
     // FIX KEAMANAN — IDOR (audit 22 Agu 2026): endpoint ini sebelumnya HANYA
     // cek requireAuth (harus login), TAPI TIDAK PERNAH memverifikasi bahwa
@@ -4813,10 +4778,7 @@ app.get('/check-payment/:refId', requireAuth, async (req, res) => {
       }
       if (['expired','canceled','cancelled'].includes(status)) {
         transaction.status = 'expired';
-        const txListExpired = await readFresh('transactions.json');
-        const txIdxExpired = txListExpired.findIndex(t => t.id === refId);
-        if (txIdxExpired !== -1) txListExpired[txIdxExpired] = transaction; else txListExpired.push(transaction);
-        await writeDB('transactions.json', txListExpired);
+        await db.tx.save(transaction);
         return res.json({ success: true, status: 'expired' });
       }
     } catch(e) {
@@ -4886,8 +4848,7 @@ app.post('/webhook/genspay', async (req, res) => {
     if (event !== 'transaction.updated' || !data?.order_id) { logWebhook('genspay', { result: 'event_not_matched', event, orderId: data?.order_id || null }); return res.status(200).send('OK'); }
 
     const orderId = data.order_id;
-    const transactions = await readFresh('transactions.json');
-    const transaction = transactions.find(t => t.orderId === orderId);
+    const transaction = await db.tx.find('orderId', orderId);
     if (!transaction) {
       // PENTING: GensPay memanggil webhook segera setelah pembayaran sukses
       // dalam kondisi Supabase lelet/race jarang, ada kemungkinan webhook ini
@@ -4902,10 +4863,7 @@ app.post('/webhook/genspay', async (req, res) => {
       transaction.status = status.toLowerCase();
       transaction.gatewayStatus = status;
       transaction.gatewayUpdatedAt = new Date().toISOString();
-      const freshList = await readFresh('transactions.json');
-      const txIndex = freshList.findIndex(t => t.id === transaction.id);
-      if (txIndex !== -1) freshList[txIndex] = transaction; else freshList.push(transaction);
-      await writeDB('transactions.json', freshList);
+      await db.tx.save(transaction);
       logWebhook('genspay', { result: 'transaction_closed', orderId, statusFromWebhook: status });
       return res.status(200).send('OK');
     }
@@ -4965,8 +4923,7 @@ app.post('/webhook/wijayapay', async (req, res) => {
     // Webhook palsu tidak bisa memaksa hasil ini karena jawabannya berasal dari gateway, bukan dari isi request.
     if (!sigOk && refId && String(payload.status || '').toLowerCase().trim() === 'paid' && _webhookApiCheckOk(refId)) {
       try {
-        const txs0 = await readFresh('transactions.json');
-        const t0 = txs0.find(x => x.orderId === refId);
+        const t0 = await db.tx.find('orderId', refId);
         if (t0 && t0.status === 'pending' && (!t0.paymentGateway || t0.paymentGateway === 'wijayapay')) {
           const st = await wijayapay.checkStatus(settings, refId);
           if (['paid', 'completed', 'success', 'settlement', 'berhasil'].includes(String(st.status))) { sigOk = true; verifiedVia = 'status_api'; }
@@ -4979,8 +4936,7 @@ app.post('/webhook/wijayapay', async (req, res) => {
     if (verifiedVia === 'status_api') logWebhook('wijayapay', { result: 'verified_via_status_api', orderId: refId, note: 'signature webhook tidak cocok, tapi WijayaPay mengonfirmasi LUNAS lewat API status' });
     if (String(payload.status || '').toLowerCase().trim() !== 'paid') { logWebhook('wijayapay', { result: 'not_paid', orderId: refId, statusFromWebhook: payload.status || '(kosong)' }); return res.status(200).json({ status: true }); }
 
-    const transactions = await readFresh('transactions.json');
-    const transaction = transactions.find(t => t.orderId === refId);
+    const transaction = await db.tx.find('orderId', refId);
     if (!transaction) {
       logWebhook('wijayapay', { result: 'transaction_not_found', orderId: refId });
       return res.status(503).json({ status: false, message: 'Transaction not found yet, please retry' });
@@ -5068,7 +5024,7 @@ function _auditorAuthed(req) {
 const _maskWa = wa => { const d = String(wa || '').replace(/\D/g, ''); return d.length >= 7 ? d.slice(0, 4) + '***' + d.slice(-3) : (d ? '***' : '-'); };
 const _jktFmt = iso => iso ? new Date(iso).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false }) + ' WIB' : '-';
 async function _auditorRows(q) {
-  const all = await readFresh('transactions.json');
+  const all = await db.tx.all({ maxAgeMs: 120000 }); // laporan seluruh riwayat (jalur langka); cache 2 menit supaya refresh berulang tidak mengunduh ulang
   const status = String(q.status || 'all');
   const term = String(q.q || '').toUpperCase().split(/[\s,;]+/).map(x => x.trim()).filter(Boolean).slice(0, 100);
   const from = q.from ? Date.parse(q.from) : null;
@@ -5178,13 +5134,7 @@ app.get('/track', async (req, res) => {
   }
   try {
     const terms = [...new Set(raw.split(/[\s,;]+/).map(x => x.trim().toUpperCase()).filter(Boolean))].slice(0, 100);
-    const all = await readTxFresh();
-    const byCode = new Map(), byOrder = new Map();
-    for (const t of (Array.isArray(all) ? all : [])) {
-      if (t.code) byCode.set(String(t.code).toUpperCase(), t);
-      if (t.orderId) byOrder.set(String(t.orderId).toUpperCase(), t);
-      if (t.id) byOrder.set(String(t.id).toUpperCase(), t);
-    }
+    const { byCode, byOrder } = await db.tx.lookupTerms(terms); // hanya baris yang dicari (bukan seluruh transaksi)
     const fmt = iso => iso ? new Date(iso).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', hour12: false }) + ' WIB' : '-';
     const results = [], missing = [];
     for (const term of terms) {
@@ -5212,8 +5162,7 @@ app.get('/invoice', async (req, res) => {
   }
   const code = extractOrderCode(req.query.code);
   if (code) {
-    const transactions = await readTxFresh();
-    const transaction = transactions.find(t => t.code === code);
+    const transaction = await db.tx.find('code', code);
     let productChannelUrl = '';
     if (transaction && transaction.productId) {
       const products = await readFresh('products.json');
@@ -5230,8 +5179,7 @@ app.post('/invoice', async (req, res) => {
     return res.render('pages/invoice', { transaction: null, error: 'Terlalu banyak pencarian. Coba lagi dalam 5 menit.' });
   }
   const code = extractOrderCode(req.body && req.body.code);
-  const transactions = await readTxFresh();
-  const transaction = code ? transactions.find(t => t.code === code) : null;
+  const transaction = code ? await db.tx.find('code', code) : null;
 
   if (!transaction) {
     return res.render('pages/invoice', { transaction: null, error: looksLikeOrderId(req.body && req.body.code) ? INVOICE_ORDERID_MSG : 'Pesanan tidak ditemukan', productChannelUrl: '' });
@@ -5287,7 +5235,8 @@ app.post('/admin/import', requireAdmin, async (req, res) => {
       return res.json({ success: false, message: 'File tidak berisi data yang dikenali (harus hasil export dari fitur ini).' });
     }
     for (const file of incomingKeys) {
-      await writeDB(file, body[file]);
+      if (file === 'transactions.json') await db.tx.importAll(body[file]); // 1 baris per transaksi (upsert massal)
+      else await writeDB(file, body[file]);
     }
     res.json({ success: true, message: `${incomingKeys.length} koleksi berhasil di-restore (${incomingKeys.join(', ')})` });
   } catch (error) {
@@ -5313,29 +5262,21 @@ app.get('/admin/db-status', requireAdmin, async (req, res) => {
 app.get('/admin/transactions/page', requireAdmin, async (req, res) => {
   res.set('Cache-Control', 'no-store, max-age=0');
   try {
-    const all = await readTxFresh(2000);
+    // (12 Nov 2026) filter + urut + paginasi dijalankan di database; hanya ≤100 baris yang dikirim (dulu: seluruh blob transaksi)
     const status = String(req.query.status || 'all');
-    const q = String(req.query.q || '').toLowerCase().trim();
+    const q = String(req.query.q || '').trim();
     const from = req.query.from ? Date.parse(req.query.from) : null;
     const to = req.query.to ? Date.parse(req.query.to) + 86400000 : null;
-    const rows = (Array.isArray(all) ? all : []).filter(t => {
-      if (!t) return false;
-      if (status !== 'all' && t.status !== status) return false;
-      const c = Date.parse(t.createdAt || '');
-      if (from && !(c >= from)) return false;
-      if (to && !(c < to)) return false;
-      if (q && ![t.orderId, t.code, t.customerName, t.wa, t.productName, t.id].join(' ').toLowerCase().includes(q)) return false;
-      return true;
-    }).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
-    const items = rows.slice(offset, offset + limit).map(t => ({
+    const r = await db.tx.query({ status, q, from: Number.isFinite(from) ? from : null, to: Number.isFinite(to) ? to : null, offset, limit });
+    const items = r.items.map(t => ({
       id: t.id, code: t.code, type: t.type || null, productName: t.productName, status: t.status,
       outOfStock: !!t.outOfStock, customerName: t.customerName, wa: t.wa, price: Number(t.price) || 0,
       time: t.time, createdAt: t.createdAt, paidAt: t.paidAt || null, key: t.key || null,
       selectedDays: t.selectedDays || null, selectedUnit: t.selectedUnit || null, orderId: t.orderId || null
     }));
-    res.json({ success: true, total: rows.length, offset, items, hasMore: offset + items.length < rows.length });
+    res.json({ success: true, total: r.total, offset, items, hasMore: offset + items.length < r.total });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
@@ -5344,11 +5285,13 @@ app.get('/admin', requireAdmin, async (req, res) => {
   // Sebelumnya pakai readDB (cache lokal tiap instance), jadi setelah
   // tambah/edit produk di satu instance, refresh halaman bisa nyasar ke
   // instance lain yang cache-nya masih lama → produk kelihatan hilang/berubah.
-  const [products, transactions, users, settings] = await Promise.all([
+  // (12 Nov 2026) transaksi: 20 terbaru + statistik dihitung di database (dulu: seluruh blob 4,5 MB tiap buka admin)
+  const [products, transactions, users, settings, txStats] = await Promise.all([
     readFresh('products.json'),
-    readFresh('transactions.json'),
+    db.tx.recent(20),
     readFresh('users.json'),
-    readFresh('settings.json')
+    readFresh('settings.json'),
+    db.tx.stats(8).catch(e => { console.error('[admin] statistik transaksi gagal:', e.message); return null; })
   ]);
   if (normalizeBanners(settings)) await writeDB('settings.json', settings);
 
@@ -5369,18 +5312,12 @@ app.get('/admin', requireAdmin, async (req, res) => {
     };
   }
 
-  let pendingTransactions = 0, doneTransactions = 0, totalRevenue = 0;
-  for (const t of transactions) {
-    if (t.status === 'pending') pendingTransactions++;
-    if (t.status === 'done') {
-      doneTransactions++;
-      totalRevenue += t.price;
-      const dKey = t.createdAt && t.createdAt.slice(0, 10);
-      if (dKey && chartByDate[dKey]) {
-        chartByDate[dKey].count++;
-        chartByDate[dKey].revenue += t.price;
-      }
-    }
+  const pendingTransactions = (txStats && txStats.pending) || 0;
+  const doneTransactions = (txStats && txStats.done) || 0;
+  const totalRevenue = (txStats && Number(txStats.revenue)) || 0;
+  for (const dKey of Object.keys(chartByDate)) {
+    const d = txStats && txStats.daily && txStats.daily[dKey];
+    if (d) { chartByDate[dKey].count = Number(d.count) || 0; chartByDate[dKey].revenue = Number(d.revenue) || 0; }
   }
 
   let activeProducts = 0;
@@ -5391,7 +5328,7 @@ app.get('/admin', requireAdmin, async (req, res) => {
   const stats = {
     totalProducts: products.length,
     activeProducts,
-    totalTransactions: transactions.length,
+    totalTransactions: txStats ? txStats.total : transactions.length,
     pendingTransactions,
     doneTransactions,
     totalUsers: users.length,
@@ -5431,7 +5368,7 @@ app.get('/admin', requireAdmin, async (req, res) => {
   res.render('pages/admin', {
     layout: false,
     products: adminProducts,
-    transactions: transactions.slice(-20).reverse(),
+    transactions,
     users,
     settings,
     stats,
@@ -5673,9 +5610,7 @@ app.post('/admin/user/delete/:id', requireAdmin, async (req, res) => {
 
 app.post('/admin/transaction/delete/:id', requireAdmin, async (req, res) => {
   try {
-    let transactions = await readFresh('transactions.json');
-    transactions = transactions.filter(t => t.id !== req.params.id);
-    await writeDB('transactions.json', transactions, { deletedIds: [req.params.id] });
+    await db.tx.del([req.params.id]);
     res.json({ success: true, message: 'Transaksi berhasil dihapus' });
   } catch (error) {
     res.json({ success: false, message: error.message });
@@ -5685,13 +5620,12 @@ app.post('/admin/transaction/delete/:id', requireAdmin, async (req, res) => {
 app.post('/admin/transaction/status/:id', requireAdmin, async (req, res) => {
   try {
     const { status } = req.body;
-    const transactions = await readFresh('transactions.json');
-    const trx = transactions.find(t => t.id === req.params.id);
+    const trx = await db.tx.get(req.params.id);
     if (!trx) return res.json({ success: false, message: 'Transaksi tidak ditemukan' });
     trx.status = status;
     trx.updatedBy = 'admin';
     trx.updatedAt = new Date().toISOString();
-    await writeDB('transactions.json', transactions, { trusted: true });
+    await db.tx.save(trx, { trusted: true });
     res.json({ success: true, message: 'Status berhasil diubah' });
   } catch (error) {
     res.json({ success: false, message: error.message });
@@ -5940,6 +5874,7 @@ const _bkCache = new Map();
 async function _bkRead(key) {
   const c = _bkCache.get(key);
   if (c && Date.now() - c.at < 120000) return c.value;
+  if (key === 'transactions.json') { const v = await db.tx.all({ maxAgeMs: 120000 }); _bkCache.set(key, { at: Date.now(), value: v }); while (_bkCache.size > 4) _bkCache.delete(_bkCache.keys().next().value); return v; }
   const client = db.getClient();
   if (!client) throw new Error('Supabase tidak terkonfigurasi');
   const { data, error } = await client.from('keyvalue_store').select('value').eq('key', key).maybeSingle();
@@ -5955,12 +5890,13 @@ app.get('/admin/backup/keys', requireAdmin, async (req, res) => {
     if (!client) throw new Error('Supabase tidak terkonfigurasi');
     const keys = [];
     for (let from = 0; from < 20000; from += 1000) {
-      const { data, error } = await client.from('keyvalue_store').select('key').not('key', 'like', 'fulfillment-claim:%').order('key', { ascending: true }).range(from, from + 999);
+      const { data, error } = await client.from('keyvalue_store').select('key').not('key', 'like', 'fulfillment-claim:%').not('key', 'like', 'tx:%').not('key', 'like', 'backup:%').order('key', { ascending: true }).range(from, from + 999);
       if (error) throw new Error(error.message);
       if (!data || !data.length) break;
       keys.push(...data.map(r => r.key));
       if (data.length < 1000) break;
     }
+    if (!keys.includes('transactions.json')) keys.push('transactions.json'); // transaksi (1 baris per transaksi) dikemas sebagai satu berkas backup
     res.set('Cache-Control', 'no-store').json({ success: true, keys, projectUrl: process.env.SUPABASE_URL || '' });
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
@@ -6027,19 +5963,20 @@ app.get('/admin/backup/image', requireAdmin, async (req, res) => {
 app.get('/admin/db-usage', requireAdmin, async (req, res) => {
   try {
     const kb = (o) => Math.round(Buffer.byteLength(JSON.stringify(o === undefined || o === null ? '' : o)) / 1024);
-    const boot = ['users.json', 'products.json', 'transactions.json', 'testimonials.json', 'notifications.json', 'settings.json', 'keyspool.json', 'vouchers.json', 'dripstore_snapshot.json', 'dripstore_restock_requests.json']
+    const boot = ['users.json', 'products.json', 'testimonials.json', 'notifications.json', 'settings.json', 'keyspool.json', 'vouchers.json', 'dripstore_snapshot.json', 'dripstore_restock_requests.json']
       .map(f => ({ f, kb: kb(readDB(f)), n: Array.isArray(readDB(f)) ? readDB(f).length : null }));
     const lazy = [];
     for (const f of ['payment_events.json', 'app_logs.json']) { try { const v = await readFresh(f); lazy.push({ f, kb: kb(v), n: Array.isArray(v) ? v.length : null }); } catch (_) {} }
-    const tx = await readFresh('transactions.json');
-    const now = Date.now(), d = 86400000, age = t => (now - (Date.parse(t.createdAt || t.paidAt || 0) || now)) / d;
-    const st = { done: 0, pending: 0, pendingOld: 0, expired: 0, failed: 0 };
-    for (const t of tx) { if (!t) continue; if (t.status === 'pending') { st.pending++; if (age(t) > 7) st.pendingOld++; } else if (st[t.status] !== undefined) st[t.status]++; }
-    const bootKb = boot.reduce((a, b) => a + b.kb, 0), txKb = (boot.find(b => b.f === 'transactions.json') || {}).kb || 0;
+    // transaksi kini 1 baris per transaksi: hitungan lewat query/RPC ringan, bukan membaca seluruh transaksi
+    const txS = await db.tx.stats(8);
+    const [qExp, qFail, oldPend] = await Promise.all([db.tx.query({ status: 'expired', limit: 1 }), db.tx.query({ status: 'failed', limit: 1 }), db.tx.pending({ olderThanMs: 7 * 86400000 })]);
+    const tx = { length: txS.total || 0 };
+    const st = { done: txS.done || 0, pending: txS.pending || 0, pendingOld: oldPend.length, expired: qExp.total, failed: qFail.total };
+    const bootKb = boot.reduce((a, b) => a + b.kb, 0), txKb = 0;
     const rows = boot.concat(lazy).sort((a, b) => b.kb - a.kb);
     const tips = [];
     if (st.pendingOld >= 20) tips.push(`${st.pendingOld} order pending berumur >7 hari akan dibersihkan otomatis (1x/hari) — mengecilkan blob transaksi.`);
-    if (txKb > 1500) tips.push(`Blob transaksi ${txKb} KB dibaca PENUH tiap order/poll/cold start. Tiap order ≈ 8–10 pembacaan ≈ ${Math.round(txKb * 9 / 1024 * 10) / 10} MB egress.`);
+    tips.push('Transaksi disimpan 1 baris per transaksi (±0,7 KB per pembacaan). Pastikan supabase-hemat.sql sudah dijalankan (index + fungsi statistik).');
     tips.push(`Tiap cold start Vercel memuat ≈ ${bootKb} KB (${Math.round(bootKb / 1024 * 10) / 10} MB) dari Supabase.`);
     const html = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pemakaian Database</title><style>body{background:#0b0b0f;color:#e4e4e7;font:13px/1.5 system-ui;max-width:760px;margin:0 auto;padding:14px}table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;border-top:1px solid #222;text-align:left}a{color:#7dd3fc}.card{background:#14141a;border:1px solid #27272a;border-radius:10px;padding:10px 12px;margin:10px 0}.m{color:#71717a}</style>
 <h2>Pemakaian Database</h2><div class="m"><a href="/admin#settings">← Admin</a> • <a href="/admin/diagnose">Diagnosa</a> • <a href="/admin/backup">Backup data &amp; gambar</a></div>
@@ -6146,11 +6083,10 @@ app.post('/admin/diagnose/mark-handled', requireAdmin, async (req, res) => {
   try {
     const id = String(req.body?.id || '');
     const r = await withProductsWriteLock(async () => {
-      const txs = await readFresh('transactions.json');
-      const t = txs.find(x => x.id === id);
+      const t = await db.tx.get(id);
       if (!t) return false;
       t.manualResolved = true; t.manualResolvedAt = new Date().toISOString(); t.keySource = t.keySource || 'manual_admin';
-      await writeDB('transactions.json', txs); return true;
+      await db.tx.save(t); return true;
     });
     res.json({ success: !!r, message: r ? undefined : 'Transaksi tidak ditemukan' });
   } catch (e) { res.json({ success: false, message: e.message }); }
@@ -6416,7 +6352,7 @@ app.get('/admin/audit/pending-payments', requireAdmin, async (req, res) => {
   try {
     const minAgeMinutes = Math.max(1, parseInt(req.query.minAgeMinutes, 10) || 10);
     const cutoff = Date.now() - minAgeMinutes * 60 * 1000;
-    const transactions = await readFresh('transactions.json');
+    const transactions = await db.tx.pending({ olderThanMs: minAgeMinutes * 60 * 1000 });
     const stuck = (Array.isArray(transactions) ? transactions : []).filter(t => {
       if (!t || t.status !== 'pending') return false;
       const gateway = t.paymentGateway || 'wijayapay';
@@ -6997,33 +6933,29 @@ async function pruneStaleTransactions() {
   _pruneAt = Date.now();
   const pendMs = Math.max(2, Number(process.env.PRUNE_PENDING_DAYS) || 7) * 86400000;
   const deadMs = Math.max(7, Number(process.env.PRUNE_DEAD_DAYS) || 30) * 86400000;
-  const all = await readFresh('transactions.json');
-  if (!Array.isArray(all)) return null;
-  const now = Date.now();
-  const age = (t) => now - (Date.parse(t.createdAt || t.paidAt || 0) || now);
-  const drop = all.filter(t => t && t.id && (
-    (t.status === 'pending' && age(t) > (t.isStatic ? pendMs * 4 : pendMs)) ||
-    ((t.status === 'expired' || t.status === 'failed') && age(t) > deadMs)));
-  if (drop.length < 20) return { pruned: 0, total: all.length };
-  const ids = new Set(drop.map(t => t.id));
-  await writeDB('transactions.json', all.filter(t => !(t && ids.has(t.id))), { deletedIds: Array.from(ids) });
-  _txMicro = { at: 0, data: null, p: null };
-  try { paymentAudit.record('db.prune_transactions', { pruned: ids.size, remaining: all.length - ids.size }); } catch (_) {}
-  return { pruned: ids.size, total: all.length };
+  // (12 Nov 2026) id yang layak dibuang dicari lewat query terfilter (bukan memuat seluruh transaksi)
+  const ids = await db.tx.staleIds(pendMs, deadMs);
+  if (ids.length < 20) return { pruned: 0, total: null };
+  await db.tx.del(ids);
+  try { paymentAudit.record('db.prune_transactions', { pruned: ids.length }); } catch (_) {}
+  return { pruned: ids.length, total: null };
 }
 let _claimCleanupAt = 0;
 async function cleanupOldClaims() {
   if (Date.now() - _claimCleanupAt < 24 * 3600 * 1000) return 0;
   _claimCleanupAt = Date.now();
   const client = db.getClient(); if (!client) return 0;
-  const cutoff = Date.now() - 14 * 86400000;
-  const txs = await readTxFresh(60000);
-  const keys = txs.filter(t => t && t.status === 'done' && t.id && (Date.parse(t.paidAt || t.createdAt || 0) || 0) > 0 && (Date.parse(t.paidAt || t.createdAt || 0) || 0) < cutoff)
-    .map(t => `fulfillment-claim:${t.id}`);
+  const cutoffIso = new Date(Date.now() - 14 * 86400000).toISOString();
+  // klaim berumur >14 hari; hanya yang transaksinya sudah 'done' (atau sudah tidak ada) yang dihapus -> klaim order macet tetap ada
+  const { data: claims, error } = await client.from('keyvalue_store').select('key').like('key', 'fulfillment-claim:%').lt('updated_at', cutoffIso).limit(3000);
+  if (error || !claims || !claims.length) return 0;
+  const ids = claims.map(c => c.key.slice('fulfillment-claim:'.length));
+  const st = await db.tx.statusOf(ids);
+  const keys = ids.filter(id => !st.has(id) || st.get(id) === 'done').map(id => `fulfillment-claim:${id}`);
   let n = 0;
-  for (let i = 0; i < keys.length && i < 3000; i += 100) {
-    const { error } = await client.from('keyvalue_store').delete().in('key', keys.slice(i, i + 100));
-    if (!error) n += Math.min(100, keys.length - i);
+  for (let i = 0; i < keys.length; i += 100) {
+    const { error: e2 } = await client.from('keyvalue_store').delete().in('key', keys.slice(i, i + 100));
+    if (!e2) n += Math.min(100, keys.length - i);
   }
   return n;
 }
@@ -7477,15 +7409,13 @@ app.post('/admin/user/adjust-balance/:id', requireAdmin, async (req, res) => {
     user.balance = newBalance;
     await writeDB('users.json', users);
 
-    const transactions = await readFresh('transactions.json');
-    transactions.push({
+    await db.tx.create({
       id: uuidv4(), orderId: `ADJ-${Date.now()}`, code: generateOrderCode(),
       userId: user.id, type: 'adjustment', productName: amount > 0 ? 'Penambahan Saldo (Admin)' : 'Pengurangan Saldo (Admin)',
       amount, price: Math.abs(amount), customerName: user.username, wa: user.wa,
       status: 'done', paidAt: new Date().toISOString(),
       createdAt: new Date().toISOString(), time: formatDate(), confirmedBy: 'admin'
     });
-    await writeDB('transactions.json', transactions);
 
     res.json({ success: true, balance: user.balance });
   } catch (e) {
@@ -7504,7 +7434,7 @@ app.post('/admin/user/adjust-balance/:id', requireAdmin, async (req, res) => {
 async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs = 45000, cached = false } = {}) {
   const t0 = Date.now();
   const settings = cached ? await readSmart('settings.json') : await readFresh('settings.json');
-  const all = cached ? await readTxFresh(60000) : await readFresh('transactions.json');
+  const all = await db.tx.pending({ olderThanMs: minAgeMin * 60000, limit: Math.max(80, maxItems * 3) }); // pending terbaru yang cukup tua (dibatasi; bukan seluruh transaksi)
   // payment_events.json (besar) hanya dipakai cabang GensPay -> dibaca malas, hanya bila ada kandidat GensPay
   let _hook = null;
   const hookHas = async (orderId) => {
@@ -7558,13 +7488,11 @@ async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs
   }
   if (toExpire.length) {
     await withProductsWriteLock(async () => {
-      const list = await readFresh('transactions.json');
-      const ids = new Map(toExpire.map(([t, note]) => [t.id, note]));
       let n = 0;
-      for (const t of list) {
-        if (t && ids.has(t.id) && t.status === 'pending') { t.status = 'expired'; t.closedBy = 'system'; t.closedAt = new Date().toISOString(); t.closeNote = ids.get(t.id); delete t.qrString; n++; }
+      for (const [t0, note] of toExpire) {
+        const t = await db.tx.get(t0.id); // baca ulang baris ini (bisa saja baru dibayar)
+        if (t && t.status === 'pending') { t.status = 'expired'; t.closedBy = 'system'; t.closedAt = new Date().toISOString(); t.closeNote = note; delete t.qrString; await db.tx.save(t); n++; }
       }
-      if (n) await writeDB('transactions.json', list);
       sum.expired = n;
     });
     try { paymentAudit.record('order.reconcile_expired', { count: sum.expired }); } catch (_) {}
@@ -7608,7 +7536,7 @@ app.post('/admin/transactions/close-stale-pending', requireAdmin, async (req, re
       paidSignal.add(e.orderId);
     }
     const out = await withProductsWriteLock(async () => {
-      const list = await readFresh('transactions.json');
+      const list = await db.tx.pending({ limit: 1000 });
       const toClose = [], kept = [];
       for (const t of list) {
         if (t.status !== 'pending') continue;
@@ -7628,7 +7556,7 @@ app.post('/admin/transactions/close-stale-pending', requireAdmin, async (req, re
           t.closeNote = 'Ditutup admin: tidak ada bukti pembayaran dari gateway (tidak ada webhook), tidak ada key terkirim';
           delete t.qrString;
         }
-        await writeDB('transactions.json', list);
+        for (let i = 0; i < toClose.length; i += 6) await Promise.all(toClose.slice(i, i + 6).map(t => db.tx.save(t)));
         paymentAudit.record('order.bulk_closed_unpaid', { count: toClose.length, olderThanHours: hours, by: 'admin' });
       }
       return { closed: toClose.length, kept: kept.length, keptReasons: kept.slice(0, 50), sample: toClose.slice(0, 10).map(t => ({ code: t.code, product: t.productName, price: t.price, createdAt: t.createdAt })) };
@@ -7641,8 +7569,7 @@ app.post('/admin/transaction/manual-done/:id', requireAdmin, async (req, res) =>
   try {
     const note = String(req.body?.note || '').trim().slice(0, 300);
     if (note.length < 3) return res.json({ success: false, message: 'Isi catatan singkat (mis. "key sudah dikirim via WA 3/10").' });
-    const list = await readFresh('transactions.json');
-    const tx = list.find(t => t.id === req.params.id);
+    const tx = await db.tx.get(req.params.id);
     if (!tx) return res.json({ success: false, message: 'Transaksi tidak ditemukan' });
     if (tx.status === 'done') return res.json({ success: false, message: 'Transaksi sudah selesai' });
     if (tx.status !== 'pending') return res.json({ success: false, message: 'Hanya transaksi Pending yang bisa ditandai' });
@@ -7652,7 +7579,7 @@ app.post('/admin/transaction/manual-done/:id', requireAdmin, async (req, res) =>
     tx.manualResolvedAt = new Date().toISOString();
     delete tx.qrString;
     tx.confirmedBy = 'admin';
-    await writeDB('transactions.json', list);
+    await db.tx.save(tx);
     paymentAudit.record('order.manual_resolved', { orderId: tx.orderId || tx.id, note, by: 'admin' });
     res.json({ success: true });
   } catch (e) { res.json({ success: false, message: e.message }); }
@@ -7785,10 +7712,10 @@ app.post('/api/voucher/check', requireAuth, async (req, res) => {
   });
 });
 
-app.get('/api/transactions', requireAdmin, (req, res) => {
+app.get('/api/transactions', requireAdmin, async (req, res) => {
   res.set('Cache-Control', 'private, no-store');
-  const transactions = readDB('transactions.json');
-  res.json(transactions);
+  try { res.json(await db.tx.all({ maxAgeMs: 30000 })); } // daftar lengkap (jalur langka)
+  catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
 app.get('/api/testimonials', async (req, res) => {
@@ -7846,12 +7773,7 @@ app.post('/api/testimonials', requireAuth, async (req, res) => {
     if (text.trim().length > 500) return res.json({ success: false, message: 'Ulasan maksimal 500 karakter' });
 
     // Hanya user yang sudah membeli (transaksi sukses/done) produk ini yang boleh kirim testimoni
-    const transactions = readDB('transactions.json');
-    const hasPurchased = transactions.some(t =>
-      t.userId === req.session.userId &&
-      t.productId === productId &&
-      t.status === 'done'
-    );
+    const hasPurchased = await db.tx.hasPurchased(req.session.userId, productId);
     if (!hasPurchased) {
       return res.json({ success: false, message: 'Hanya pembeli produk ini yang bisa memberikan rating/testimoni' });
     }

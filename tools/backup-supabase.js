@@ -52,12 +52,18 @@ async function backupDb(manifest) {
   }
   fs.writeFileSync(path.join(OUT, 'db', 'keyvalue_store.json'), JSON.stringify(rows));
   let bytes = 0;
+  // (12 Nov 2026) transaksi kini 1 baris per transaksi (key 'tx:<id>'): jangan buat ribuan berkas kecil,
+  // gabungkan jadi satu 'transactions.json' (format sama seperti backup lama; restore otomatis memecahnya lagi).
+  const txRows = [];
   for (const r of rows) {
     const safe = String(r.key).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (/^tx:/.test(r.key)) { txRows.push(r.value); bytes += Buffer.byteLength(JSON.stringify(r.value)); continue; }
     const txt = JSON.stringify(r.value, null, 1);
     bytes += Buffer.byteLength(txt);
-    if (!/^fulfillment-claim_/.test(safe)) fs.writeFileSync(path.join(OUT, 'db', safe.endsWith('.json') ? safe : safe + '.json'), txt);
+    if (!/^fulfillment-claim_/.test(safe) && !/^backup_/.test(safe) && safe !== 'transactions.json') fs.writeFileSync(path.join(OUT, 'db', safe.endsWith('.json') ? safe : safe + '.json'), txt);
   }
+  txRows.sort((a, b) => String(a && a.createdAt).localeCompare(String(b && b.createdAt)));
+  fs.writeFileSync(path.join(OUT, 'db', 'transactions.json'), JSON.stringify(txRows, null, 1));
   manifest.tables = { keyvalue_store: { rows: rows.length, bytes } };
   console.log(`  ✓ ${rows.length} baris (${mb(bytes)})`);
 }

@@ -1,3 +1,19 @@
+# TRANSAKSI 1 BARIS PER TRANSAKSI — SUPABASE HEMAT BESAR (12 Nov 2026)
+
+Akar masalah kuota Supabase habis 3x: seluruh transaksi disimpan sebagai SATU baris JSON (`transactions.json`, 4,5 MB / 6.900+ transaksi, +75 KB/hari).
+Tiap order / polling / webhook membaca blob penuh (dan menulisnya penuh lagi) -> egress Supabase habis dan CPU Vercel boros (parse/stringify 4,5 MB per request).
+Sekarang tiap transaksi = 1 baris `tx:<id>` di `keyvalue_store` (modul baru `txstore.js`).
+
+- **Jalur pembeli/webhook hanya membaca 1 baris (±0,7 KB)**: /pay, /check-payment, webhook GensPay & WijayaPay, finalizeOrder, invoice, track, dashboard, cek pesanan ganda.
+- **Admin**: halaman /admin memakai statistik dari database (fungsi `tx_stats`) + 20 transaksi terbaru; daftar/pencarian transaksi difilter & dipaginasi di database.
+- **Pembersihan & rekonsiliasi** memakai query terfilter (pending/expired lama) — bukan memuat seluruh transaksi.
+- **Migrasi otomatis**: blob lama dipindah ke baris per transaksi saat pertama dipakai (id ganda dibuang; salinan cadangan: key `backup:transactions-premigrasi-*`).
+- **Aturan status tetap sama** (done > expired/failed > pending, tidak boleh mundur kecuali aksi admin), plus pengaman tulis bersamaan (optimistic lock lewat `updated_at`).
+- **Backup/restore tetap kompatibel**: /admin/backup, /admin/export, /admin/import dan tools/backup-supabase.js tetap menghasilkan/menerima `transactions.json`.
+- **Wajib dijalankan sekali**: `supabase-hemat.sql` di SQL Editor Supabase (trigger updated_at, index, fungsi statistik).
+- **Bug lama diperbaiki**: `/reseller/join` (clientIp/clientUa/_mark tidak terdefinisi) dan `/wallet/buy` (productsP/_mark tidak terdefinisi) selalu error ReferenceError.
+- Catatan data: blob lama berisi 1.065 entri transaksi GANDA (id sama); setelah migrasi total transaksi & omzet di admin turun karena duplikat tidak dihitung lagi.
+
 # BACKUP LANGSUNG DARI WEB (1 Nov 2026)
 - **/admin/backup**: satu tombol → file ZIP berisi semua data (keyvalue_store) + semua gambar di Storage, dirakit di browser (tanpa skrip, tanpa batas respons 4,5 MB Vercel: data dikirim per potongan ≤1,5 MB, gambar diunduh browser langsung dari Storage dengan cadangan lewat server). Format ZIP kompatibel dengan `tools/restore-supabase.js`.
 - Skrip CLI `tools/backup-supabase.js` & `tools/restore-supabase.js` untuk backup/pindah ke project Supabase baru (URL gambar otomatis diganti).

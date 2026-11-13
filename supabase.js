@@ -67,6 +67,9 @@ const readLocalBackup = (filename) => {
   } catch { return null; }
 };
 
+// Transaksi: satu baris per transaksi (lihat txstore.js). Dibuat di sini karena butuh getClient & backup lokal.
+const txs = require('./txstore').createTxStore({ getClient, readLocalBackup, writeLocalBackup });
+
 // ── PUBLIC API ──────────────────────────────────────────────
 
 // TTL tracking: catat kapan terakhir cache di-sync dari Supabase
@@ -79,6 +82,7 @@ const cacheTimestamp = {}; // filename -> timestamp ms
 const CACHE_TTL = 60000;   // 60 detik
 
 const readDB = (filename) => {
+  if (filename === 'transactions.json') return txs.cachedAllOrEmpty(); // legacy: seluruh transaksi tidak lagi di memori
   return dbCache[filename] !== undefined
     ? dbCache[filename]
     : (OBJECT_FILES.has(filename) ? {} : []);
@@ -87,6 +91,7 @@ const readDB = (filename) => {
 // readSmart: pakai cache jika masih segar (<TTL), else fetch Supabase
 // Untuk GET endpoints yang butuh konsistensi antar instance Vercel
 const readSmart = async (filename) => {
+  if (filename === 'transactions.json') return txs.all(); // legacy (jalur jarang)
   const now = Date.now();
   const age = now - (cacheTimestamp[filename] || 0);
   if (age < CACHE_TTL) return readDB(filename);
@@ -129,14 +134,8 @@ function mergeTransactions(remote, incoming, opts = {}) {
 }
 
 const writeDB = async (filename, data, opts = {}) => {
-  const mergeClient = getClient();
-  if (filename === 'transactions.json' && mergeClient) {
-    try {
-      const { data: row, error } = await mergeClient.from('keyvalue_store').select('value').eq('key', filename).maybeSingle();
-      if (!error && row && Array.isArray(row.value)) data = mergeTransactions(row.value, data, opts);
-      else if (error) console.error('[supabase] merge read transactions.json:', error.message);
-    } catch (e) { console.error('[supabase] merge read exception:', e.message); }
-  }
+  // transactions.json tidak lagi satu blob: tulis hanya baris yang berubah (txstore.js)
+  if (filename === 'transactions.json') { await txs.writeList(data, opts); return; }
   dbCache[filename] = data;
   cacheTimestamp[filename] = Date.now(); // mark fresh setelah write
   writeLocalBackup(filename, data);
@@ -165,7 +164,9 @@ const loadAllCollections = async (client) => {
       .from('keyvalue_store')
       .select('key, value')
       .not('key', 'like', 'fulfillment-claim:%')
-      .not('key', 'in', '(payment_events.json,app_logs.json)') // besar & hanya dibaca via readFresh -> hemat egress tiap cold start
+      .not('key', 'in', '(payment_events.json,app_logs.json,transactions.json)') // besar / dibaca via readFresh / transaksi kini per baris (tx:*)
+      .not('key', 'like', 'tx:%')
+      .not('key', 'like', 'backup:%')
       .order('key', { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw new Error(error.message);
@@ -191,6 +192,9 @@ const initializeDB = async () => {
     console.warn('⚠️  SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY belum di-set. Pakai local fallback.');
     return;
   }
+
+  // Cek/migrasi blob transactions.json lama -> baris per transaksi (murah bila sudah bermigrasi)
+  txs.ready().catch(() => {});
 
   // 2. Load dari Supabase (source of truth)
   try {
@@ -418,6 +422,7 @@ const freshReadInflight = new Map();
 const READ_FRESH_TIMEOUT_MS = 4500;
 
 const readFresh = async (filename) => {
+  if (filename === 'transactions.json') return txs.all({ maxAgeMs: 20000 }); // legacy (jalur jarang: export/backup/laporan)
   const client = getClient();
   if (!client) return readDB(filename);
   if (freshReadInflight.has(filename)) return freshReadInflight.get(filename);
@@ -453,6 +458,7 @@ const readFresh = async (filename) => {
 
 // Re-fetch satu file dari Supabase ke cache — backward compat
 const refreshFromDB = async (filename) => {
+  if (filename === 'transactions.json') { txs.invalidate(); return; }
   const client = getClient();
   if (!client) return;
   try {
@@ -470,4 +476,4 @@ const refreshFromDB = async (filename) => {
 };
 
 module.exports = {
-  mergeTransactions, readDB, writeDB, initializeDB, getDbStatus, uploadImage, refreshFromDB, readFresh, readSmart, getClient };
+  tx: txs, mergeTransactions, readDB, writeDB, initializeDB, getDbStatus, uploadImage, refreshFromDB, readFresh, readSmart, getClient };
