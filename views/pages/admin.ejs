@@ -1464,6 +1464,29 @@ html.dark .badge-featured { color:#fca5a5 !important; }
         </form>
     </div>
 
+    <!-- Limzy (provider tambahan auto restock, khusus AGNL) -->
+    <div class="neon-card p-5 mb-3">
+        <div class="text-xs font-bold text-emerald-400 mb-1 flex items-center gap-2">
+            <iconify-icon icon="mdi:key-chain-variant"></iconify-icon> Limzy — Provider Auto Restock
+        </div>
+        <p class="text-[11px] text-zinc-500 mb-3">Generate key otomatis (<code>generate_key.php</code>) setelah pembayaran lunas. Pilih durasi Limzy (1/3/7/30 hari) per paket di Edit Produk. Urutan fallback: DripStore → DripStore Web 2 → Panelstore → Limzy.</p>
+        <form id="limzyForm" class="space-y-3">
+            <div>
+                <div class="setting-row-label">API Key <span class="text-zinc-600 font-normal"><%= (settings.limzy?.apiKey) ? '(tersimpan — kosongkan jika tidak diubah)' : '' %></span></div>
+                <input type="password" name="apiKey" autocomplete="off" class="hm-input font-mono text-xs" placeholder="<%= settings.limzy?.apiKey ? '••••••••' : 'API Key reseller Limzy' %>">
+            </div>
+            <div>
+                <div class="setting-row-label">Base URL</div>
+                <input type="text" name="baseUrl" value="<%= settings.limzy?.baseUrl || 'https://limzyyxit.my.id/api' %>" class="hm-input font-mono text-xs">
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+                <button type="submit" class="btn-primary text-xs justify-center"><iconify-icon icon="mdi:content-save"></iconify-icon> Simpan</button>
+                <button type="button" onclick="testLimzy(this)" class="py-2 rounded-xl text-xs font-bold text-emerald-300 border border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/20 transition-all flex items-center justify-center gap-1"><iconify-icon icon="mdi:check-network-outline"></iconify-icon> Tes Kunci</button>
+            </div>
+            <div id="limzyResult" class="hidden text-[11px] p-2.5 rounded-lg"></div>
+        </form>
+    </div>
+
     <!-- DripStore Supplier API (bukan payment gateway -- ini buat restock stok key) -->
     <div class="neon-card p-5 mb-3">
         <div class="text-xs font-bold text-blue-400 mb-1 flex items-center gap-2">
@@ -2885,6 +2908,25 @@ async function testPanelstore(btn) {
     btn.disabled = true;
     try {
         const d = await api('/admin/panelstore/test', {});
+        box.className = 'text-[11px] p-2.5 rounded-lg ' + (d.ok ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/25' : 'bg-red-500/10 text-red-300 border border-red-500/25');
+        box.textContent = (d.ok ? 'OK — ' : 'Gagal — ') + (d.note || d.message || '');
+    } catch (err) { box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300'; box.textContent = err.message; }
+    btn.disabled = false;
+}
+
+document.getElementById('limzyForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    try {
+        const d = await api('/admin/settings/limzy', Object.fromEntries(new FormData(this)));
+        if (d.success) { toast('Limzy tersimpan' + (d.configured ? '' : ' (API Key belum diisi)'), d.configured ? 'success' : 'error'); this.querySelector('[name=apiKey]').value = ''; }
+        else toast(d.message, 'error');
+    } catch (err) { toast('Gagal menyimpan: ' + err.message, 'error'); }
+});
+async function testLimzy(btn) {
+    const box = document.getElementById('limzyResult');
+    btn.disabled = true;
+    try {
+        const d = await api('/admin/limzy/test', {});
         box.className = 'text-[11px] p-2.5 rounded-lg ' + (d.ok ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/25' : 'bg-red-500/10 text-red-300 border border-red-500/25');
         box.textContent = (d.ok ? 'OK — ' : 'Gagal — ') + (d.note || d.message || '');
     } catch (err) { box.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 text-red-300'; box.textContent = err.message; }

@@ -378,6 +378,7 @@ async function loadProduct() {
       strike_price: (o.strike_price !== undefined && o.strike_price !== null) ? o.strike_price : null,
       dripstoreVariantId: o.dripstoreVariantId || null,
       psProductId: o.psProductId || null,
+      lzDays: o.lzDays || null,
       ds2VariantId: o.ds2VariantId || null
     }));
   } else if (currentProduct.items && currentProduct.items.length > 0) {
@@ -543,6 +544,11 @@ function renderPricingRows() {
           class="hm-input text-xs flex-1" style="border-color:rgba(139,92,246,.3)"
           title="Opsional. PID produk di Panelstore (angka dari halaman Quickstart & PIDs). Dipakai otomatis jika DripStore & DripStore Web 2 tidak punya varian / gagal."
           oninput="pricingOptions[${i}].psProductId=this.value.trim()||null;">
+        <select class="hm-input text-xs flex-1" style="border-color:rgba(16,185,129,.3)"
+          title="Opsional. Durasi (hari) di Limzy untuk auto restock. Kosong = Limzy tidak dipakai untuk paket ini."
+          onchange="pricingOptions[${i}].lzDays=this.value||null;">
+          ${['','1','3','7','30'].map(v => `<option value="${v}" ${String(opt.lzDays||'')===v?'selected':''}>${v ? 'Limzy ' + v + ' hari' : 'Limzy: tidak dipakai'}</option>`).join('')}
+        </select>
         <input type="text" value="${opt.ds2VariantId || ''}" placeholder="Variant ID DripStore Web 2"
           class="hm-input text-xs flex-1" style="border-color:rgba(59,130,246,.3)"
           title="Opsional. Variant ID di DripStore Web 2 (dripclientofficial.shop). Dipakai otomatis jika DripStore utama tidak punya varian / gagal."
@@ -653,7 +659,7 @@ function renderKeyInfo() {
       localStok = tagged;
       totalStok = tagged;
       const opt = (p.pricingOptions || [])[itemIdx];
-      providerBacked = !!opt?.dripstoreVariantId || !!opt?.psProductId || !!opt?.ds2VariantId;
+      providerBacked = !!opt?.dripstoreVariantId || !!opt?.psProductId || !!opt?.lzDays || !!opt?.ds2VariantId;
     }
 
     let right;

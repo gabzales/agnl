@@ -965,6 +965,7 @@ const readFresh = db.readFresh;
 const paymentAudit = require('./payment-audit');
 const wijayapay = require('./wijayapay');
 const panelstore = require('./panelstore');
+const limzy = require('./limzy'); // khusus AGNL: provider auto restock limzyyxit.my.id
 const dripstore2 = require('./dripstore2');
 paymentAudit.init({ readFresh: (f) => db.readFresh(f), writeDB: (f, d) => db.writeDB(f, d) });
 
@@ -1037,6 +1038,7 @@ const initDB = async () => {
     genspay: { apiKey: '', baseUrl: 'https://genspay.my.id/api/v1' },
     wijayapay: { codeMerchant: '', apiKey: '' },
     panelstore: { apiKey: '', url: 'https://www.panelstore.shop/api/v1/index.php' },
+    limzy: { apiKey: '', baseUrl: 'https://limzyyxit.my.id/api' },
     dripstore2: { apiToken: '', baseUrl: 'https://dripclientofficial.shop/api/v1' },
     dripstore: { apiToken: '', baseUrl: 'https://dripclientofficial.shop/api/v1', fulfillmentMode: 'live', balanceGuardEnabled: true, autoRestockEnabled: false, lowStockThreshold: 3, restockQty: 10 },
     apiGateway: 'wijayapay',
@@ -2504,7 +2506,7 @@ function getOptionStockView(product, opt, snapshot, mode, providerConfigured = f
   if (!ok.length) return v;
   const virtual = Math.max(...ok.map(p => p.mod.VIRTUAL_STOCK));
   const providerStock = Math.max(Number(v.providerStock) || 0, virtual);
-  return { ...v, providerStock, stock: (Number(v.localStock) || 0) + providerStock, providerKnown: true, providerBacked: true, panelstore: panelstore.usable(opt), dripstore2: dripstore2.usable(opt) };
+  return { ...v, providerStock, stock: (Number(v.localStock) || 0) + providerStock, providerKnown: true, providerBacked: true, panelstore: panelstore.usable(opt), limzy: limzy.usable(opt), dripstore2: dripstore2.usable(opt) };
 }
 
 function _getOptionStockViewBase(product, opt, snapshot, mode, providerConfigured = false) {
@@ -2747,9 +2749,11 @@ const _dripstoreLiveLocks = new Set();
 const _EXTRA_PROVIDERS = [
   { name: 'DripStore2', label: 'DripStore Web 2', mod: dripstore2, lock: 'ds2', variant: (m) => m.variantId },
   { name: 'Panelstore', mod: panelstore, lock: 'ps', variant: (m) => m.pid },
+  { name: 'Limzy', mod: limzy, lock: 'lz', variant: (m) => m.days },
 ];
 function _configureExtraProviders(settings) {
   panelstore.setConfig(settings?.panelstore);
+  limzy.setConfig(settings?.limzy);
   dripstore2.setConfig(settings?.dripstore2);
 }
 async function fulfillProductFromDripstore(transaction, settings) {
@@ -4579,7 +4583,7 @@ async function finalizeOrder(refId, settings) {
   transaction.providerVariantId = providerVariantId || undefined;
   transaction.providerTransactionId = providerTransactionId || undefined;
   transaction.outOfStock = outOfStock;
-  if (outOfStock) transaction.fulfillError = fulfillErrorMsg || 'Tidak ada provider yang bisa memenuhi: varian DripStore/DripStore 2/Panelstore belum ter-mapping untuk produk + durasi ini, atau stok lokal kosong';
+  if (outOfStock) transaction.fulfillError = fulfillErrorMsg || 'Tidak ada provider yang bisa memenuhi: varian DripStore/DripStore 2/Panelstore/Limzy belum ter-mapping untuk produk + durasi ini, atau stok lokal kosong';
   transaction.paidAt = new Date().toISOString();
   // (12 Nov 2026) simpan HANYA baris transaksi ini (db.tx.save membuang qrString bila sudah tidak pending & menggabung dengan isi database)
   // PERF (5 Okt 2026): qrString (payload QRIS) = ~29% ukuran transactions.json dan hanya
@@ -5538,6 +5542,7 @@ app.post('/admin/product/edit/:id', requireAdmin, (req, res, next) => {
             o.dripstoreVariantId = String(old.dripstoreVariantId || '') || null;
             // FIX: mapping provider tambahan ikut dipertahankan (sebelumnya terhapus tiap produk disimpan -> stok DripStore 2 jadi "Habis")
             o.psProductId = String(old.psProductId || '') || null;
+            o.lzDays = String(old.lzDays || '') || null;
             o.ds2VariantId = String(old.ds2VariantId || '') || null;
           }
           product.pricingOptions=opts;
@@ -5832,6 +5837,43 @@ app.post('/admin/settings/panelstore', requireAdmin, async (req, res) => {
   } catch (e) { res.json({ success: false, message: e.message }); }
 });
 
+// ── Limzy Settings (provider tambahan khusus AGNL) ──
+app.post('/admin/settings/limzy', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const b = req.body || {};
+    const prev = settings.limzy || {};
+    settings.limzy = {
+      apiKey: typeof b.apiKey === 'string' && b.apiKey.trim() ? b.apiKey.trim() : (prev.apiKey || ''),
+      baseUrl: typeof b.baseUrl === 'string' && /^https:\/\//.test(b.baseUrl.trim()) ? b.baseUrl.trim().replace(/\/+$/, '') : (prev.baseUrl || 'https://limzyyxit.my.id/api'),
+    };
+    await writeDB('settings.json', settings);
+    limzy.setConfig(settings.limzy);
+    limzy.clearAllDown();
+    _invalidateDripstoreSnapshot({ full: true });
+    res.json({ success: true, configured: !!settings.limzy.apiKey });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+app.post('/admin/limzy/test', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    limzy.setConfig(settings.limzy);
+    const r = await limzy.check();
+    pushLog(r.ok ? 'info' : 'warn', `[provider] tes kunci Limzy: ${r.note}`, { cat: 'dripstore' });
+    res.json({ success: true, ...r });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+app.post('/admin/limzy/reset-hwid', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    limzy.setConfig(settings.limzy);
+    const key = String(req.body?.key || '').trim().slice(0, 200);
+    if (!key) return res.json({ success: false, message: 'Key kosong' });
+    const r = await limzy.resetHwid(key);
+    res.json({ success: r.ok, message: r.message, key: r.key });
+  } catch (e) { res.json({ success: false, message: e.message }); }
+});
+
 // ── DripStore Web 2 Settings (provider tambahan, domain + token terpisah) ──
 app.post('/admin/settings/dripstore2', requireAdmin, async (req, res) => {
   try {
@@ -6024,6 +6066,7 @@ app.get('/admin/diagnose/data', requireAdmin, async (req, res) => {
         if (pr.length) out.ds2.minCost = Math.min(...pr);
       } catch (e) { out.ds2.ok = false; out.ds2.error = e.message; }
     }
+    limzy.setConfig(settings.limzy);
     out.ps.configured = !!(settings.panelstore?.apiKey);
     if (out.ps.configured) out.ps.ok = true;
 
@@ -6032,7 +6075,7 @@ app.get('/admin/diagnose/data', requireAdmin, async (req, res) => {
     for (const p of products) for (const o of (p.pricingOptions || [])) {
       out.optionTotal++;
       const local = getLocalOptionStock(p, o) > 0;
-      if (!ds1Linked(o) && !local && !dripstore2.usable(o) && !panelstore.usable(o)) out.noProvider.push(`${p.name} — ${o.days}${o.unit === 'h' ? ' jam' : ' hari'}`);
+      if (!ds1Linked(o) && !local && !dripstore2.usable(o) && !panelstore.usable(o) && !limzy.usable(o)) out.noProvider.push(`${p.name} — ${o.days}${o.unit === 'h' ? ' jam' : ' hari'}`);
     }
     // Pesanan sudah bayar tapi belum dapat key
     const stuck = await listUndeliveredOrders(14);
@@ -8001,6 +8044,7 @@ app.post('/admin/product/:id', requireAdmin, async (req, res) => {
           validOpts.push({ days, unit, price, reseller_price: resellerPrice, strike_price: strikePriceVal,
             dripstoreVariantId: (o.dripstoreVariantId || '').toString().trim() || null,
             psProductId: (o.psProductId || '').toString().trim().slice(0, 40) || null,
+            lzDays: ['1','3','7','30'].includes((o.lzDays || '').toString().trim()) ? (o.lzDays).toString().trim() : null,
             ds2VariantId: (o.ds2VariantId || '').toString().trim().slice(0, 40) || null });
         }
         if (validOpts.length > 0) {

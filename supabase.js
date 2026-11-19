@@ -55,7 +55,11 @@ const isVercel = process.env.VERCEL === '1' || !!process.env.NOW_REGION;
 const localDbPath = isVercel ? '/tmp/database' : path.join(__dirname, 'database');
 if (!fs.existsSync(localDbPath)) { try { fs.mkdirSync(localDbPath, { recursive: true }); } catch {} }
 
+// Di Vercel, /tmp hanya hidup selama instance & cache memori sudah cukup: backup file ke /tmp
+// (JSON.stringify koleksi besar tiap tulis/baca) hanya membuang CPU. transactions.json tetap
+// di-backup karena dipakai txstore sebagai fallback saat Supabase gagal.
 const writeLocalBackup = (filename, data) => {
+  if (isVercel && filename !== 'transactions.json') return;
   try { fs.writeFileSync(path.join(localDbPath, filename), JSON.stringify(data)); } catch {}
 };
 
@@ -142,10 +146,13 @@ const writeDB = async (filename, data, opts = {}) => {
   const client = getClient();
   if (!client) return;
   try {
-    const { error } = await client
+    const ts = new Date().toISOString();
+    const { data: up, error } = await client
       .from('keyvalue_store')
-      .upsert({ key: filename, value: data }, { onConflict: 'key' });
+      .upsert({ key: filename, value: data, updated_at: ts }, { onConflict: 'key' })
+      .select('updated_at');
     if (error) console.error(`[supabase] writeDB ${filename}:`, error.message);
+    else cacheVersion[filename] = (up && up[0] && up[0].updated_at) || ts;
   } catch (e) {
     console.error(`[supabase] writeDB ${filename} exception:`, e.message);
   }
@@ -162,7 +169,7 @@ const loadAllCollections = async (client) => {
   for (let from = 0; from < 50000; from += PAGE) {
     const { data, error } = await client
       .from('keyvalue_store')
-      .select('key, value')
+      .select('key, value, updated_at')
       .not('key', 'like', 'fulfillment-claim:%')
       .not('key', 'in', '(payment_events.json,app_logs.json,transactions.json)') // besar / dibaca via readFresh / transaksi kini per baris (tx:*)
       .not('key', 'like', 'tx:%')
@@ -202,6 +209,7 @@ const initializeDB = async () => {
     if (data && data.length > 0) {
       data.forEach(row => {
         dbCache[row.key] = row.value;
+        if (row.updated_at) cacheVersion[row.key] = row.updated_at;
         writeLocalBackup(row.key, row.value);
       });
       console.log(`✅ Database connected to Supabase (${data.length} collections loaded)`);
@@ -421,6 +429,10 @@ const getDbStatus = async () => {
 const freshReadInflight = new Map();
 const READ_FRESH_TIMEOUT_MS = 4500;
 
+// Versi (updated_at) terakhir yang diketahui per file. readFresh cukup cek versi (query kecil)
+// dan hanya mengunduh blob penuh (products.json dsb., bisa ratusan KB) bila versinya berubah.
+const cacheVersion = {};
+
 const readFresh = async (filename) => {
   if (filename === 'transactions.json') return txs.all({ maxAgeMs: 20000 }); // legacy (jalur jarang: export/backup/laporan)
   const client = getClient();
@@ -432,14 +444,24 @@ const readFresh = async (filename) => {
     try {
       const controller = new AbortController();
       timer = setTimeout(() => controller.abort(), READ_FRESH_TIMEOUT_MS);
+      if (dbCache[filename] !== undefined && cacheVersion[filename]) {
+        const { data: vr, error: ve } = await client
+          .from('keyvalue_store').select('updated_at').eq('key', filename).maybeSingle()
+          .abortSignal(controller.signal);
+        if (!ve && vr && vr.updated_at && String(vr.updated_at) === String(cacheVersion[filename])) {
+          cacheTimestamp[filename] = Date.now();
+          return dbCache[filename];
+        }
+      }
       const { data, error } = await client
         .from('keyvalue_store')
-        .select('value')
+        .select('value, updated_at')
         .eq('key', filename)
         .single()
         .abortSignal(controller.signal);
       if (!error && data?.value !== undefined) {
         dbCache[filename] = data.value;
+        if (data.updated_at) cacheVersion[filename] = data.updated_at;
         cacheTimestamp[filename] = Date.now();
         writeLocalBackup(filename, data.value);
         return data.value;
@@ -464,11 +486,12 @@ const refreshFromDB = async (filename) => {
   try {
     const { data, error } = await client
       .from('keyvalue_store')
-      .select('value')
+      .select('value, updated_at')
       .eq('key', filename)
       .single();
     if (!error && data?.value !== undefined) {
       dbCache[filename] = data.value;
+      if (data.updated_at) cacheVersion[filename] = data.updated_at;
       cacheTimestamp[filename] = Date.now();
       writeLocalBackup(filename, data.value);
     }
