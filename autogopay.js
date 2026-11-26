@@ -98,6 +98,7 @@ function request(method, path, { body, apiKey, timeout = 15000 } = {}) {
 // Terjemahan error HTTP -> kalimat yang bisa langsung ditindaklanjuti owner.
 function explainHttp(r) {
   const apiMsg = r && r.json && (r.json.message || r.json.error || (r.json.data && r.json.data.message));
+  if (/not\s*connected|belum\s*terhubung|no\s*(active\s*)?(payment|gopay|account)|gopay.*(disconnect|not linked)/i.test(String(apiMsg || ''))) return 'AutoGopay menjawab "' + apiMsg + '" (HTTP ' + r.http + '): akun GoPay/pembayaran di dashboard AutoGopay BELUM TERHUBUNG atau sesinya putus. Buka dashboard autogopay.site, sambungkan ulang GoPay (login/OTP) sampai statusnya Connected/Aktif, lalu coba bayar lagi. Ini bukan masalah di toko.';
   if (r.http === 401) return 'API key ditolak (HTTP 401): key salah / sudah diganti di dashboard AutoGopay. Salin ulang dari Dokumentasi > Autentikasi.';
   if (r.http === 403) return 'Ditolak (HTTP 403): fitur Whitelist IP di dashboard AutoGopay masih aktif (IP Vercel selalu berubah) atau yang tersalin kotak "Header". Matikan Whitelist IP, dan pastikan yang dipakai nilai API key (agp_...).';
   if (r.http === 429) return 'Terlalu banyak request ke AutoGopay (HTTP 429). Tunggu 1 menit lalu coba lagi.';
