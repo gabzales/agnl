@@ -215,13 +215,26 @@
 <% if (_tg) { %>
 <!-- POPUP GABUNG CHANNEL TELEGRAM (sekali per 24 jam) -->
 <div id="tgPopup" class="ag-overlay ag-blur" style="display:none;z-index:9000;" onclick="if(event.target===this)tgPopupClose()">
-  <div class="ag-modal ag-cs ag-tg" role="dialog" aria-modal="true" aria-labelledby="tgTitle">
-    <button type="button" class="ag-modal-close" onclick="tgPopupClose()" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
-    <div class="ico"><iconify-icon icon="mdi:telegram"></iconify-icon></div>
-    <h3 id="tgTitle">Gabung Channel Telegram</h3>
-    <p>Dapatkan info update, promo, dan restock terbaru langsung di channel Telegram <%= settings?.siteName || 'kami' %>.</p>
-    <a class="go" href="<%= _tg %>" target="_blank" rel="noopener" onclick="tgPopupClose()"><iconify-icon icon="mdi:telegram"></iconify-icon> Gabung Sekarang</a>
-    <button type="button" class="later" onclick="tgPopupClose()">Nanti saja</button>
+  <div class="tgp" role="dialog" aria-modal="true" aria-labelledby="tgTitle">
+    <button type="button" class="tgp-x" onclick="tgPopupClose()" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    <div class="tgp-top">
+      <div class="tgp-logo">
+        <img src="<%= imgW(settings?.logoUrl || '/uploads/logo-main.png', 200) %>" alt="" width="100" height="100">
+        <span class="tgp-badge"><iconify-icon icon="mdi:shield-check"></iconify-icon> OFFICIAL SERVER</span>
+      </div>
+      <div class="tgp-head">
+        <div class="tgp-brand"><span class="tgp-tgico"><iconify-icon icon="mdi:telegram"></iconify-icon></span><span><%= (settings?.siteName || 'AGHA NL').toUpperCase() %></span></div>
+        <h3 id="tgTitle"><span class="l1">JOIN OUR</span><span class="l2">OFFICIAL</span><span class="l3">TELEGRAM CHANNEL</span></h3>
+      </div>
+    </div>
+    <p class="tgp-desc">Dapatkan pembaruan terbaru, penawaran eksklusif, dukungan, dan banyak lagi! Bergabunglah dengan Channel resmi kami dan jadilah bagian dari komunitas kami.</p>
+    <div class="tgp-feats">
+      <div><span><iconify-icon icon="mdi:flash"></iconify-icon></span>Pembaruan Terbaru</div>
+      <div><span><iconify-icon icon="mdi:shield"></iconify-icon></span>Dukungan Resmi</div>
+      <div><span><iconify-icon icon="mdi:gift"></iconify-icon></span>Penawaran Eksklusif</div>
+      <div><span><iconify-icon icon="mdi:account-group"></iconify-icon></span>Komunitas Aktif</div>
+    </div>
+    <a class="tgp-join" href="<%= _tg %>" target="_blank" rel="noopener" onclick="tgPopupClose()"><iconify-icon icon="mdi:telegram"></iconify-icon> JOIN NOW <iconify-icon icon="mdi:arrow-right"></iconify-icon></a>
   </div>
 </div>
 <% } %>

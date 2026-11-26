@@ -523,3 +523,29 @@ html:not([data-reseller="1"]) .ag-reseller-only { display: none !important; }
 .ag-maint-banner span { display: block; font-size: 11.5px; color: var(--text-2); margin-top: 2px; }
 .ag-copyline { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .ag-codebox { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; background: var(--bg-hover); border: 1px dashed var(--accent-50); font-family: ui-monospace, Menlo, Consolas, monospace; font-weight: 800; font-size: 14px; letter-spacing: .5px; color: var(--accent-bright); }
+
+/* ---------- POPUP TELEGRAM (kartu besar: logo, judul, 4 keunggulan, JOIN NOW) ---------- */
+.tgp { position: relative; width: 100%; max-width: 430px; padding: 22px 18px 18px; color: var(--text-1); background:
+  radial-gradient(120% 80% at 0% 0%, var(--accent-30), transparent 60%), linear-gradient(160deg, var(--bg-card), var(--bg-hover));
+  border: 1px solid var(--accent-50); clip-path: polygon(0 0, calc(100% - 0px) 0, 100% 0, 100% calc(100% - 22px), calc(100% - 22px) 100%, 22px 100%, 0 calc(100% - 22px)); border-radius: 6px;
+  box-shadow: 0 0 60px var(--accent-30); animation: slideUp .3s ease both; max-height: 94dvh; overflow-y: auto; }
+.tgp-x { position: absolute; top: 12px; right: 12px; z-index: 2; width: 34px; height: 34px; border: 2px solid var(--accent); background: transparent; color: var(--text-1); display: inline-flex; align-items: center; justify-content: center; font-size: 18px; cursor: pointer; }
+.tgp-x:hover { background: var(--accent); color: #fff; }
+.tgp-top { display: flex; gap: 14px; align-items: center; padding-right: 36px; }
+.tgp-logo { position: relative; flex: 0 0 auto; width: 104px; padding-bottom: 14px; }
+.tgp-logo img { width: 100px; height: 100px; object-fit: contain; border-radius: 22px; background: var(--bg-hover); border: 1px solid var(--accent-50); box-shadow: 0 0 24px var(--accent-30); padding: 6px; }
+.tgp-badge { position: absolute; left: -6px; bottom: 0; transform: rotate(-4deg); display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px; border-radius: 8px; font-size: 9px; font-weight: 900; letter-spacing: .08em; background: var(--accent); color: #fff; white-space: nowrap; box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+.tgp-head { min-width: 0; }
+.tgp-brand { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 900; letter-spacing: .1em; margin-bottom: 6px; }
+.tgp-tgico { width: 26px; height: 26px; border-radius: 50%; background: #2aabee; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+.tgp-head h3 { margin: 0; line-height: 1.05; font-weight: 900; display: flex; flex-direction: column; }
+.tgp-head .l1 { font-size: 20px; }
+.tgp-head .l2 { font-size: 34px; letter-spacing: -.01em; background: var(--grad, linear-gradient(90deg, var(--accent), var(--accent-bright))); -webkit-background-clip: text; background-clip: text; color: transparent; padding: 0 .1em .06em 0; }
+.tgp-head .l3 { font-size: 13.5px; white-space: nowrap; color: var(--accent-bright); letter-spacing: .01em; }
+.tgp-desc { margin: 14px 0 12px; padding-bottom: 14px; border-bottom: 1px solid var(--border-md); font-size: 13px; line-height: 1.6; color: var(--text-2); }
+.tgp-feats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; text-align: center; }
+.tgp-feats div { font-size: 10.5px; line-height: 1.3; color: var(--text-2); font-weight: 600; }
+.tgp-feats span { display: flex; align-items: center; justify-content: center; width: 100%; max-width: 54px; aspect-ratio: 1; margin: 0 auto 6px; border-radius: 14px; border: 1px solid var(--accent-50); background: var(--accent-10); color: var(--accent-bright); font-size: 22px; }
+.tgp-join { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 15px; font-size: 15px; font-weight: 900; letter-spacing: .14em; color: #fff; background: var(--grad, linear-gradient(90deg, var(--accent), var(--accent-bright))); clip-path: polygon(14px 0, 100% 0, calc(100% - 14px) 100%, 0 100%); transition: filter .15s, transform .15s; }
+.tgp-join:hover { filter: brightness(1.1); transform: translateY(-1px); }
+@media (max-width: 380px) { .tgp-top { flex-direction: column; align-items: flex-start; padding-right: 0; } .tgp-head .l2 { font-size: 30px; } }
