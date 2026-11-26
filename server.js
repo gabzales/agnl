@@ -58,7 +58,7 @@ function _logFormat(args) {
 function _logCategory(msg) {
   const m = msg.toLowerCase();
   if (/dripstore|drip-store|provider/.test(m)) return 'dripstore';
-  if (/webhook|genspay|wijayapay|check-payment|payment|qris/.test(m)) return 'payment';
+  if (/webhook|genspay|wijayapay|autogopay|check-payment|payment|qris/.test(m)) return 'payment';
   if (/site-gate|turnstile|cf-check|cloudflare/.test(m)) return 'security';
   if (/supabase|\[db\]|writedb|readfresh/.test(m)) return 'database';
   return 'app';
@@ -964,6 +964,7 @@ const readFresh = db.readFresh;
 // Riwayat pembayaran permanen + halaman /admin/payment-history (bukti banding payment gateway)
 const paymentAudit = require('./payment-audit');
 const wijayapay = require('./wijayapay');
+const autogopay = require('./autogopay');
 const panelstore = require('./panelstore');
 const limzy = require('./limzy'); // khusus AGNL: provider auto restock limzyyxit.my.id
 const dripstore2 = require('./dripstore2');
@@ -1037,6 +1038,7 @@ const initDB = async () => {
     fonnteToken: '',
     genspay: { apiKey: '', baseUrl: 'https://genspay.my.id/api/v1' },
     wijayapay: { codeMerchant: '', apiKey: '' },
+    autogopay: { apiKey: '' },
     panelstore: { apiKey: '', url: 'https://www.panelstore.shop/api/v1/index.php' },
     limzy: { apiKey: '', baseUrl: 'https://limzyyxit.my.id/api' },
     dripstore2: { apiToken: '', baseUrl: 'https://dripclientofficial.shop/api/v1' },
@@ -1419,6 +1421,20 @@ const createQRISPaymentWijayapay = async (orderId, amount, settings) => {
     return r;
   } catch (e) {
     paymentAudit.record('wijayapay.create', { orderId, amount, ok: false, durationMs: Date.now() - t0, error: e.message });
+    throw e;
+  }
+};
+
+// ── AutoGopay (v1-gateway.autogopay.site) ──
+// AutoGopay memberi transaction_id sendiri (disimpan di transaksi sebagai providerTxnId); status dicek lewat POST /qris/status + webhook /webhook/autogopay.
+const createQRISPaymentAutogopay = async (orderId, amount, settings) => {
+  const t0 = Date.now();
+  try {
+    const r = await autogopay.createTransaction(settings, orderId, amount);
+    paymentAudit.record('autogopay.create', { orderId, amount, ok: true, durationMs: Date.now() - t0, totalPayment: r.total_payment, txnId: r.txn_id });
+    return r;
+  } catch (e) {
+    paymentAudit.record('autogopay.create', { orderId, amount, ok: false, durationMs: Date.now() - t0, error: e.message });
     throw e;
   }
 };
@@ -2903,16 +2919,18 @@ function _logGatewayFallback(orderId, err, settings) {
   console.error(`[payment] fallback ke QRIS statis (${gw}) order ${orderId}: ${msg}`);
 }
 // ── Dispatcher gateway QRIS dinamis ──
-// settings.apiGateway: 'wijayapay' (default) | 'genspay'. Nilai lain/lama (mis. 'pakasir' dari
+// settings.apiGateway: 'wijayapay' (default) | 'genspay' | 'autogopay'. Nilai lain/lama (mis. 'pakasir' dari
 // database lama) dianggap 'wijayapay'. PakKasir sudah dihapus dari aplikasi.
 function activeGateway(settings) {
-  return (settings && settings.apiGateway === 'genspay') ? 'genspay' : 'wijayapay';
+  const g = settings && settings.apiGateway;
+  return (g === 'genspay' || g === 'autogopay') ? g : 'wijayapay';
 }
 // Semua call site lama tetap manggil createQRISPayment(orderId, amount, settings)
 // apa adanya -- dispatcher ini yang nentuin ke gateway mana request-nya pergi.
 const createQRISPayment = (orderId, amount, settings) => {
   const gateway = activeGateway(settings);
   if (gateway === 'genspay') return createQRISPaymentGenspay(orderId, amount, settings);
+  if (gateway === 'autogopay') return createQRISPaymentAutogopay(orderId, amount, settings);
   return createQRISPaymentWijayapay(orderId, amount, settings);
 };
 
@@ -2955,6 +2973,7 @@ const checkPaymentStatus = (orderId, amount, settings, gatewayOverride, txnId) =
   const gateway = gatewayOverride || activeGateway(settings);
   if (gateway === 'genspay') return checkPaymentStatusGenspay(orderId, amount, settings);
   if (gateway === 'wijayapay') return wijayapay.checkStatus(settings, orderId);
+  if (gateway === 'autogopay') return autogopay.checkStatus(settings, txnId);
   // Transaksi lama dari gateway yang sudah dihapus (PakKasir): tidak bisa dicek otomatis.
   return Promise.reject(new Error('Gateway "' + gateway + '" sudah tidak didukung -- konfirmasi manual oleh admin'));
 };
@@ -4812,7 +4831,7 @@ app.get('/check-payment/:refId', requireAuth, async (req, res) => {
     // tetap benar dicek walau admin sudah ganti gateway di panel.
     const gateway = transaction.paymentGateway || activeGateway(settings);
     // Transaksi lama PakKasir (gateway sudah dihapus): tidak bisa dicek otomatis, tunggu konfirmasi admin.
-    if (gateway !== 'genspay' && gateway !== 'wijayapay') return res.json({ success: true, status: 'pending' });
+    if (gateway !== 'genspay' && gateway !== 'wijayapay' && gateway !== 'autogopay') return res.json({ success: true, status: 'pending' });
 
     // GensPay TIDAK punya endpoint cek status manual (lihat catatan panjang
     // di checkPaymentStatusGenspay) -- satu-satunya sumber kebenaran soal
@@ -5029,6 +5048,82 @@ app.post('/webhook/wijayapay', async (req, res) => {
     logWebhook('wijayapay', { result: 'error', error: error.message });
     // 200 + status:true supaya WijayaPay tidak retry terus karena bug internal; status tetap terkoreksi lewat polling/rekonsiliasi.
     res.status(200).json({ status: true });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// WEBHOOK AUTOGOPAY (autogopay.site/docs) — dikirim saat transaksi settlement.
+// URL Callback WAJIB diisi owner di dashboard AutoGopay: https://domainkamu.com/webhook/autogopay
+// Header X-Signature = HMAC-SHA256(rawBody, secret = API key). Nominal & transaction_id dicocokkan ke database kita.
+// Webhook yang sama bisa datang 2x (retry / berbarengan dengan polling): finalizeOrder + processingOrders menjamin key terkirim sekali.
+// ══════════════════════════════════════════════════════════════════
+app.post('/webhook/autogopay', async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const payload = req.body || {};
+    const tx = payload.transaction || payload.data || {};
+    const gwTxnId = String(tx.transaction_id || payload.transaction_id || '').trim();
+    const gwStatus = autogopay.normalizeStatus(tx.status || tx.transaction_status || payload.status);
+    const _sigHdr = String(req.headers['x-signature'] || '');
+    if (!autogopay.isConfigured(settings)) {
+      logWebhook('autogopay', { result: 'no_apikey', orderId: gwTxnId || null });
+      return res.status(401).json({ success: false, message: 'API key AutoGopay belum diisi di toko' });
+    }
+    if (!req.rawBody) { logWebhook('autogopay', { result: 'no_raw_body', orderId: gwTxnId || null }); return res.status(401).json({ success: false, message: 'Raw body tidak tersedia' }); }
+    let sigOk = autogopay.verifyWebhookSignature(settings, req.rawBody, _sigHdr);
+    let verifiedVia = sigOk ? 'signature' : null;
+    // Signature tidak cocok TIDAK langsung membuang pembayaran: webhook hanya "pemicu". Kalau transaksinya ada & pending,
+    // kita tanya langsung ke AutoGopay (pakai API key kita). Hanya jika AutoGopay sendiri menjawab settlement, diproses.
+    if (!sigOk && gwTxnId && gwStatus === 'settlement' && _webhookApiCheckOk(gwTxnId)) {
+      try {
+        const t0 = await db.tx.find('providerTxnId', gwTxnId);
+        if (t0 && t0.status === 'pending' && t0.paymentGateway === 'autogopay') {
+          const st = await autogopay.checkStatus(settings, gwTxnId);
+          if (st.status === 'settlement') { sigOk = true; verifiedVia = 'status_api'; }
+        }
+      } catch (_) { /* tetap ditolak di bawah */ }
+    }
+    paymentAudit.record('webhook.autogopay.received', { ip: req.ip, ua: req.headers['user-agent'], orderId: gwTxnId || null, sigOk, verifiedVia, sigHeaderLen: _sigHdr.length, cfgSet: true, status: gwStatus });
+    if (!sigOk) { logWebhook('autogopay', { result: 'invalid_signature', orderId: gwTxnId || null, ip: req.ip, sigHeaderLen: _sigHdr.length }); return res.status(401).json({ success: false, message: 'Invalid signature' }); }
+    if (verifiedVia === 'status_api') logWebhook('autogopay', { result: 'verified_via_status_api', orderId: gwTxnId, note: 'signature webhook tidak cocok, tapi AutoGopay mengonfirmasi settlement lewat API status' });
+    if (gwStatus !== 'settlement') { logWebhook('autogopay', { result: 'not_paid', orderId: gwTxnId, statusFromWebhook: gwStatus }); return res.status(200).json({ success: true }); }
+    if (!gwTxnId) { logWebhook('autogopay', { result: 'no_transaction_id' }); return res.status(200).json({ success: true }); }
+
+    const transaction = await db.tx.find('providerTxnId', gwTxnId);
+    if (!transaction) {
+      logWebhook('autogopay', { result: 'transaction_not_found', orderId: gwTxnId });
+      return res.status(503).json({ success: false, message: 'Transaction not found yet, please retry' });
+    }
+    const refId = transaction.orderId;
+    if (transaction.paymentGateway && transaction.paymentGateway !== 'autogopay') { logWebhook('autogopay', { result: 'gateway_mismatch', orderId: refId, gateway: transaction.paymentGateway }); return res.status(200).json({ success: true }); }
+    if (transaction.status === 'done') { logWebhook('autogopay', { result: 'already_done', orderId: refId }); return res.status(200).json({ success: true }); }
+
+    // Cross-check nominal terhadap database KITA (tidak percaya angka dari request begitu saja).
+    const paid = Number(tx.amount);
+    const expected = Number(transaction.totalPayment || transaction.price);
+    if (Number.isFinite(paid) && expected && Math.abs(paid - expected) > 1) {
+      logWebhook('autogopay', { result: 'amount_mismatch', orderId: refId, expected, got: paid });
+      return res.status(200).json({ success: true });
+    }
+
+    if (processingOrders.has(transaction.id)) { logWebhook('autogopay', { result: 'already_processing', orderId: refId }); return res.status(200).json({ success: true }); }
+    processingOrders.add(transaction.id);
+    try {
+      const result = await finalizeOrder(transaction.id, settings);
+      if (result.status === 'pending_retry') {
+        logWebhook('autogopay', { result: 'finalized_pending_retry', orderId: refId, note: 'provider lelet, fulfillment dicoba ulang saat polling/rekonsiliasi' });
+      } else {
+        logWebhook('autogopay', { result: 'finalized', orderId: refId, type: result.type, key: result.key ? '(terkirim)' : (result.outOfStock ? '(kosong/out-of-stock)' : '(n/a)') });
+      }
+      return res.status(200).json({ success: true });
+    } finally {
+      processingOrders.delete(transaction.id);
+    }
+  } catch (error) {
+    console.error('[webhook/autogopay] error:', error.message);
+    logWebhook('autogopay', { result: 'error', error: error.message });
+    // 200 supaya AutoGopay tidak retry terus karena bug internal; status tetap terkoreksi lewat polling/rekonsiliasi.
+    res.status(200).json({ success: true });
   }
 });
 
@@ -5875,6 +5970,35 @@ app.post('/admin/settings/wijayapay', requireAdmin, async (req, res) => {
   }
 });
 
+// ── AutoGopay Settings (autogopay.site/docs) ──
+// Validasi SEBELUM simpan: format API key + (opsional) cek langsung ke AutoGopay, supaya owner tidak menyimpan key yang salah lalu bingung kenapa QR tidak muncul.
+app.post('/admin/settings/autogopay', requireAdmin, async (req, res) => {
+  try {
+    const settings = await readFresh('settings.json');
+    const { apiKey, qrisMode } = req.body;
+    const typed = apiKey && !/^[•*]+/.test(String(apiKey)) ? String(apiKey) : '';
+    let key = settings.autogopay?.apiKey || '';
+    if (typed) {
+      const fmt = autogopay.validateApiKeyFormat(typed);
+      if (!fmt.ok) return res.json({ success: false, message: fmt.message });
+      // Pastikan key benar-benar diterima AutoGopay sebelum disimpan (tidak membuat transaksi).
+      const t = await autogopay.testConnection(fmt.key);
+      const authCheck = (t.checks || []).find(c => c.label === 'API key valid');
+      if (authCheck && !authCheck.ok) return res.json({ success: false, message: 'Tidak disimpan. ' + authCheck.detail });
+      key = fmt.key;
+    }
+    if (!key && qrisMode !== 'static') return res.json({ success: false, message: 'API key AutoGopay belum diisi. Isi dulu, klik Cek Koneksi, baru Simpan.' });
+    settings.autogopay = { apiKey: key };
+    settings.apiGateway = 'autogopay';
+    if (qrisMode) settings.qrisMode = qrisMode;
+    await writeDB('settings.json', settings);
+    const app = autogopay.checkAppUrl();
+    res.json({ success: true, callbackUrl: autogopay.callbackUrl(), appUrlOk: app.ok, appUrlMessage: app.message });
+  } catch (error) {
+    res.json({ success: false, message: error.message });
+  }
+});
+
 // ── Panelstore Settings (provider tambahan, auto restock/fulfillment) ──
 app.post('/admin/settings/panelstore', requireAdmin, async (req, res) => {
   try {
@@ -6159,6 +6283,16 @@ app.get('/admin/diagnose/data', requireAdmin, async (req, res) => {
       out.webhook = { total: wh.length, signatureInvalid: bad.length, verifiedViaApi: viaApi.length, ok: good.length - viaApi.length };
       if (bad.length) V('crit', `${bad.length} webhook pembayaran WijayaPay DITOLAK (signature tidak cocok) dalam 24 jam`, 'Biasanya karena Code Merchant / API Key di Admin → QRIS tidak sama persis dengan dashboard WijayaPay (atau sudah diganti di sana). Pembeli yang bayar tidak otomatis terkonfirmasi lewat jalur ini.', 'Samakan Code Merchant & API Key di Admin → QRIS dengan dashboard WijayaPay, lalu "Tes Koneksi". Sistem kini juga mengonfirmasi lewat API status sebagai cadangan.');
       else if (viaApi.length) V('warn', `${viaApi.length} pembayaran dikonfirmasi lewat API status (signature webhook tidak cocok)`, 'Pembayaran tetap diproses, tapi sebaiknya cocokkan kredensial WijayaPay.', 'Cek Code Merchant & API Key di Admin → QRIS.');
+    } catch (_) { /* opsional */ }
+    // Kesehatan webhook AutoGopay (24 jam terakhir)
+    try {
+      const evs = await readFresh('payment_events.json');
+      const since = Date.now() - 24 * 3600 * 1000;
+      const wh = (Array.isArray(evs) ? evs : []).filter(e => e && e.type === 'webhook.autogopay.received' && Date.parse(e.t || 0) >= since);
+      const bad = wh.filter(e => !e.sigOk), viaApi = wh.filter(e => e.verifiedVia === 'status_api');
+      out.webhookAutogopay = { total: wh.length, signatureInvalid: bad.length, verifiedViaApi: viaApi.length };
+      if (bad.length) V('crit', `${bad.length} webhook pembayaran AutoGopay DITOLAK (signature tidak cocok) dalam 24 jam`, 'Biasanya karena API key di Admin > QRIS tidak sama dengan yang aktif di dashboard AutoGopay (mungkin sudah diganti).', 'Salin ulang API key dari dashboard AutoGopay ke Admin > QRIS > AutoGopay, lalu Cek Koneksi dan Simpan.');
+      else if (viaApi.length) V('warn', `${viaApi.length} pembayaran AutoGopay dikonfirmasi lewat API status (signature webhook tidak cocok)`, 'Pembayaran tetap diproses, tapi sebaiknya cocokkan API key.', 'Cek API key di Admin > QRIS > AutoGopay.');
     } catch (_) { /* opsional */ }
     if (!out.verdict.length) V('ok', 'Tidak ada masalah terdeteksi', 'Provider aktif, saldo cukup, semua durasi punya jalur pengiriman, tidak ada pesanan tertunda.', '');
     res.json(out);
@@ -7377,7 +7511,7 @@ app.post('/admin/dripstore/restock-requests/:id/reject', requireAdmin, async (re
 
 app.post('/admin/qris/test', requireAdmin, async (req, res) => {
   try {
-    // gateway: 'wijayapay' atau 'genspay' — menentukan gateway mana yang dites
+    // gateway: 'wijayapay' | 'genspay' | 'autogopay' — menentukan gateway mana yang dites
     const { apiKey, gateway, baseUrl } = req.body;
     try {
       if (gateway === 'wijayapay') {
@@ -7387,6 +7521,12 @@ app.post('/admin/qris/test', requireAdmin, async (req, res) => {
         const key = (apiKey && !/^[•*]+/.test(String(apiKey))) ? String(apiKey).trim() : (saved.wijayapay?.apiKey || '');
         const t = await wijayapay.testConnection(cm, key);
         return res.json(t);
+      }
+      if (gateway === 'autogopay') {
+        // Test koneksi ringan (tidak membuat transaksi): format key + auth ke AutoGopay + cek APP_URL.
+        const saved = await readFresh('settings.json');
+        const key = (apiKey && !/^[•*]+/.test(String(apiKey))) ? String(apiKey).trim() : (saved.autogopay?.apiKey || '');
+        return res.json(await autogopay.testConnection(key));
       }
       if (gateway === 'genspay') {
         const testSettings = { apiGateway: 'genspay', genspay: { apiKey, baseUrl: baseUrl || 'https://genspay.my.id/api/v1' } };
@@ -7554,7 +7694,7 @@ async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs
     if (Date.now() - t0 > deadlineMs || sum.checked >= maxItems) { sum.deadlineHit = Date.now() - t0 > deadlineMs; break; }
     const ageH = (now - Date.parse(t.createdAt)) / 3600000;
     const gateway = t.paymentGateway || activeGateway(settings);
-    if (gateway !== 'genspay' && gateway !== 'wijayapay') {
+    if (gateway !== 'genspay' && gateway !== 'wijayapay' && gateway !== 'autogopay') {
       // Transaksi lama dari gateway yang sudah dihapus (PakKasir): tidak bisa dicek otomatis.
       if (ageH > 26) toExpire.push([t, 'Ditutup otomatis: transaksi lama gateway yang sudah dihapus (PakKasir), tidak ada konfirmasi >26 jam']); else sum.stillPending++;
       continue;
@@ -7579,7 +7719,7 @@ async function reconcilePendingOrders({ maxItems = 40, minAgeMin = 3, deadlineMs
       } else if (DEAD.includes(st)) {
         toExpire.push([t, `Ditutup otomatis: ${gateway} melaporkan status ${st}`]);
       } else if (ageH > 26) {
-        toExpire.push([t, 'Ditutup otomatis: >26 jam masih pending di WijayaPay']);
+        toExpire.push([t, 'Ditutup otomatis: >26 jam masih pending di ' + (gateway === 'autogopay' ? 'AutoGopay' : 'WijayaPay')]);
       } else sum.stillPending++;
     } catch (e) { sum.errors++; }
     await new Promise(r => setTimeout(r, 700));

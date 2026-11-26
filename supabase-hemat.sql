@@ -18,6 +18,7 @@ create index if not exists kv_tx_status  on public.keyvalue_store ((value->>'sta
 create index if not exists kv_tx_userid  on public.keyvalue_store ((value->>'userId'))    where key like 'tx:%';
 create index if not exists kv_tx_orderid on public.keyvalue_store ((value->>'orderId'))   where key like 'tx:%';
 create index if not exists kv_tx_code    on public.keyvalue_store ((value->>'code'))      where key like 'tx:%';
+create index if not exists kv_tx_provtxn  on public.keyvalue_store ((value->>'providerTxnId')) where key like 'tx:%';   -- webhook AutoGopay mencari transaksi lewat transaction_id
 create index if not exists kv_tx_created on public.keyvalue_store ((value->>'createdAt')) where key like 'tx:%';
 
 -- 3) statistik admin dihitung di database (hasilnya beberapa ratus byte, bukan ribuan transaksi)

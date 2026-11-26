@@ -1249,7 +1249,7 @@ html.dark .badge-featured { color:#fca5a5 !important; }
             <iconify-icon icon="mdi:qrcode-scan"></iconify-icon> Pengaturan QRIS
         </div>
 
-        <% var qrisGw = (settings.apiGateway === 'genspay') ? 'genspay' : 'wijayapay'; %>
+        <% var qrisGw = (settings.apiGateway === 'genspay' || settings.apiGateway === 'autogopay') ? settings.apiGateway : 'wijayapay'; %>
         <!-- Mode Selector -->
         <div class="flex gap-2 mb-4">
             <button type="button" id="modeStaticBtn" onclick="setQrisMode('static')"
@@ -1260,7 +1260,7 @@ html.dark .badge-featured { color:#fca5a5 !important; }
             <button type="button" id="modeApiBtn" onclick="setQrisMode('api')"
                 class="flex-1 py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5
                 <%= (settings.qrisMode||'static')==='api' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500' %>">
-                <iconify-icon icon="mdi:api"></iconify-icon> API (WijayaPay)
+                <iconify-icon icon="mdi:api"></iconify-icon> API (QRIS Dinamis)
             </button>
         </div>
 
@@ -1288,14 +1288,18 @@ html.dark .badge-featured { color:#fca5a5 !important; }
 
         <!-- QRIS API (WijayaPay / GensPay) -->
         <div id="sectionApi" class="<%= (settings.qrisMode||'static')==='api' ? '' : 'hidden' %> space-y-3">
-            <% var wpReady = !!(settings.wijayapay && settings.wijayapay.codeMerchant && settings.wijayapay.apiKey) && qrisGw === 'wijayapay' && (settings.qrisMode||'static') === 'api'; %>
+            <% var gwNames = { wijayapay: 'WijayaPay', genspay: 'GensPay', autogopay: 'AutoGopay' };
+               var gwCfg = qrisGw === 'wijayapay' ? !!(settings.wijayapay && settings.wijayapay.codeMerchant && settings.wijayapay.apiKey)
+                         : qrisGw === 'autogopay' ? !!(settings.autogopay && settings.autogopay.apiKey)
+                         : !!(settings.genspay && settings.genspay.apiKey);
+               var wpReady = gwCfg && (settings.qrisMode||'static') === 'api'; %>
             <% if (wpReady) { %>
             <div class="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/25 text-[11px] text-emerald-300 mb-2">
-                <iconify-icon icon="mdi:check-circle"></iconify-icon> Mode API aktif: pembayaran memakai QRIS dinamis WijayaPay (dikonfirmasi otomatis lewat webhook). Kalau halaman bayar masih menampilkan QRIS pribadi, lihat /admin/logs.
+                <iconify-icon icon="mdi:check-circle"></iconify-icon> Mode API aktif: pembayaran memakai QRIS dinamis <%= gwNames[qrisGw] %> (dikonfirmasi otomatis lewat webhook). Kalau halaman bayar masih menampilkan QRIS pribadi, lihat /admin/logs.
             </div>
             <% } else { %>
             <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-[11px] text-amber-300 mb-2">
-                <iconify-icon icon="mdi:alert"></iconify-icon> WijayaPay belum aktif sepenuhnya: isi Code Merchant &amp; API Key, klik Test Koneksi, lalu Simpan. Selama belum aktif, pembayaran memakai QRIS statis (manual).
+                <iconify-icon icon="mdi:alert"></iconify-icon> <%= gwNames[qrisGw] %> belum aktif sepenuhnya: isi kredensial, klik tombol Cek/Test Koneksi, lalu Simpan. Selama belum aktif, pembayaran memakai QRIS statis (manual).
             </div>
             <% } %>
 
@@ -1310,6 +1314,11 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                     class="flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5
                     <%= qrisGw==='wijayapay' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500' %>">
                     <iconify-icon icon="mdi:api"></iconify-icon> WijayaPay
+                </button>
+                <button type="button" id="gwAutogopayBtn" onclick="setApiGateway('autogopay')"
+                    class="flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5
+                    <%= qrisGw==='autogopay' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500' %>">
+                    <iconify-icon icon="mdi:api"></iconify-icon> AutoGopay
                 </button>
             </div>
 
@@ -1374,6 +1383,42 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                 <div id="testResultWijayapay" class="hidden text-[11px] p-2.5 rounded-lg"></div>
                 <button type="submit" class="btn-primary w-full justify-center py-2.5 text-sm">
                     <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Pengaturan WijayaPay
+                </button>
+            </form>
+
+            <!-- AutoGopay Form -->
+            <form id="autogopayForm" class="space-y-3 <%= qrisGw==='autogopay' ? '' : 'hidden' %>" data-gateway-form="autogopay">
+                <div class="p-3 rounded-xl bg-white/3 border border-white/10 text-[11px] text-zinc-400 space-y-1.5">
+                    <div class="text-zinc-300 font-semibold flex items-center gap-1"><iconify-icon icon="mdi:format-list-numbered"></iconify-icon> Langkah pasang AutoGopay (urut, 4 langkah)</div>
+                    <div><b class="text-zinc-300">1.</b> Login <a href="https://autogopay.site" target="_blank" rel="noopener" class="text-red-400 underline">autogopay.site</a> &gt; menu <b>Dokumentasi</b> &gt; <b>Autentikasi</b> &gt; baris <b>"API key"</b> &gt; <b>Tampilkan</b> &gt; <b>Salin</b>. Jangan menyalin kotak "Header".</div>
+                    <div><b class="text-zinc-300">2.</b> Di dashboard AutoGopay, <b>matikan Whitelist IP</b> (server Vercel IP-nya selalu berubah, kalau aktif hasilnya error 403).</div>
+                    <div><b class="text-zinc-300">3.</b> Tempel API key di bawah &gt; klik <b>Cek Koneksi</b> &gt; kalau semua centang hijau, klik <b>Simpan</b>.</div>
+                    <div><b class="text-zinc-300">4.</b> Salin <b>Webhook URL</b> di bawah ke kolom <b>URL Callback</b> di dashboard AutoGopay (tanpa ini pembayaran tidak terkonfirmasi otomatis).</div>
+                </div>
+                <div>
+                    <div class="setting-row-label">API Key AutoGopay <span class="text-zinc-600 font-normal"><%= settings.autogopay?.apiKey ? '(tersimpan — kosongkan kalau tidak diubah)' : '(diawali agp_)' %></span></div>
+                    <input type="password" name="apiKey" value="" class="hm-input font-mono text-xs" placeholder="<%= settings.autogopay?.apiKey ? '••••••••••••' : 'agp_xxxxxxxxxxxxxxxx' %>" autocomplete="new-password">
+                    <p id="agpKeyHint" class="text-[10px] mt-1 hidden"></p>
+                </div>
+                <div class="p-2.5 rounded-lg bg-amber-500/8 border border-amber-500/25 text-[10px] text-zinc-500 space-y-1">
+                    <div class="text-amber-300 font-semibold flex items-center gap-1">
+                        <iconify-icon icon="mdi:link-variant"></iconify-icon> Webhook URL — WAJIB diisi di dashboard AutoGopay (kolom "URL Callback")
+                    </div>
+                    <div class="text-zinc-400">Harus HTTPS dan persis seperti di bawah (tanpa redirect, tanpa spasi). Beda dengan WijayaPay, URL ini TIDAK dikirim otomatis per transaksi, jadi harus kamu isi sendiri satu kali.</div>
+                    <div class="flex gap-1.5 mt-1">
+                        <input type="text" id="autogopayWebhookUrl" readonly class="hm-input font-mono text-[11px] flex-1" value="">
+                        <button type="button" onclick="copyWebhookUrl('autogopayWebhookUrl')" class="px-3 py-2 rounded-lg text-xs font-bold text-red-300 border border-red-500/30 bg-red-500/10 hover:bg-red-500/20 transition-all whitespace-nowrap">
+                            <iconify-icon icon="mdi:content-copy"></iconify-icon>
+                        </button>
+                    </div>
+                </div>
+                <p class="text-[10px] text-zinc-600"><iconify-icon icon="mdi:book-open-outline" style="vertical-align:-2px;"></iconify-icon> Dokumentasi: <a href="https://autogopay.site/docs" target="_blank" rel="noopener" class="text-red-400 underline">autogopay.site/docs</a></p>
+                <button type="button" onclick="testAutogopay()" class="w-full py-2 rounded-xl text-xs font-bold text-zinc-400 border border-white/10 bg-white/3 hover:bg-white/8 transition-all flex items-center justify-center gap-1.5">
+                    <iconify-icon icon="mdi:wifi-check"></iconify-icon> Cek Koneksi AutoGopay
+                </button>
+                <div id="testResultAutogopay" class="hidden text-[11px] p-2.5 rounded-lg space-y-1"></div>
+                <button type="submit" class="btn-primary w-full justify-center py-2.5 text-sm">
+                    <iconify-icon icon="mdi:content-save"></iconify-icon> Simpan Pengaturan AutoGopay
                 </button>
             </form>
         </div>
@@ -2771,8 +2816,8 @@ function setQrisMode(mode) {
     document.getElementById('modeApiBtn').className = `flex-1 py-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-center gap-1.5 ${!isStatic ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
     // Auto-save mode — pakai gateway settings yang SEDANG AKTIF (WijayaPay atau GensPay),
     // supaya toggle static<->api tidak menimpa/reset konfigurasi gateway yang lagi dipakai.
-    const GW_NAME = { genspay: 'GensPay', wijayapay: 'WijayaPay' };
-    const endpoint = '/admin/settings/' + (CURRENT_API_GATEWAY === 'genspay' ? 'genspay' : 'wijayapay');
+    const GW_NAME = { genspay: 'GensPay', wijayapay: 'WijayaPay', autogopay: 'AutoGopay' };
+    const endpoint = '/admin/settings/' + (['genspay','autogopay'].includes(CURRENT_API_GATEWAY) ? CURRENT_API_GATEWAY : 'wijayapay');
     // Hanya kirim qrisMode: route settings mempertahankan kredensial yang sudah tersimpan.
     const payload = CURRENT_API_GATEWAY === 'genspay'
         ? { qrisMode: mode, apiKey: '<%= settings.genspay?.apiKey||"" %>', baseUrl: '<%= settings.genspay?.baseUrl||"https://genspay.my.id/api/v1" %>' }
@@ -2789,6 +2834,20 @@ document.getElementById('genspayForm').addEventListener('submit', async function
     const d = await api('/admin/settings/genspay', data);
     if (d.success) toast('Pengaturan GensPay disimpan & diaktifkan sebagai gateway!','success');
     else toast(d.message, 'error');
+});
+
+document.getElementById('autogopayForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(this));
+    data.qrisMode = 'api';
+    const btn = this.querySelector('button[type=submit]'); const old = btn.innerHTML; btn.disabled = true; btn.innerHTML = '<iconify-icon icon="mdi:loading" class="animate-spin"></iconify-icon> Memeriksa & menyimpan...';
+    const d = await api('/admin/settings/autogopay', data);
+    btn.disabled = false; btn.innerHTML = old;
+    if (d.success) {
+        toast('AutoGopay disimpan & diaktifkan sebagai gateway!','success'); this.querySelector('[name=apiKey]').value = '';
+        if (d.appUrlOk === false) toast('Perhatian: ' + d.appUrlMessage, 'error');
+        else toast('Jangan lupa isi URL Callback di dashboard AutoGopay: ' + (d.callbackUrl || ''), 'success');
+    } else toast(d.message, 'error');
 });
 
 document.getElementById('wijayapayForm').addEventListener('submit', async function(e) {
@@ -3246,6 +3305,8 @@ function setApiGateway(gateway) {
     CURRENT_API_GATEWAY = gateway;
     document.querySelector('[data-gateway-form="genspay"]').classList.toggle('hidden', gateway !== 'genspay');
     document.querySelector('[data-gateway-form="wijayapay"]').classList.toggle('hidden', gateway !== 'wijayapay');
+    document.querySelector('[data-gateway-form="autogopay"]').classList.toggle('hidden', gateway !== 'autogopay');
+    document.getElementById('gwAutogopayBtn').className = `flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5 ${gateway === 'autogopay' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
     document.getElementById('gwGenspayBtn').className = `flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5 ${gateway === 'genspay' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
     document.getElementById('gwWijayapayBtn').className = `flex-1 py-2 rounded-xl text-[11px] font-bold border transition-all flex items-center justify-center gap-1.5 ${gateway === 'wijayapay' ? 'bg-red-500/20 border-zinc-500/50 text-red-300' : 'bg-white/3 border-white/10 text-zinc-500'}`;
 }
@@ -3263,6 +3324,8 @@ function copyWebhookUrl(elId) {
     if (g) g.value = origin + '/webhook/genspay';
     const w = document.getElementById('wijayapayWebhookUrl');
     if (w) w.value = origin + '/webhook/wijayapay';
+    const a = document.getElementById('autogopayWebhookUrl');
+    if (a) a.value = origin + '/webhook/autogopay';
 })();
 
 document.getElementById('qrisStaticForm').addEventListener('submit', async function(e) {
@@ -3282,6 +3345,8 @@ document.getElementById('qrisStaticForm').addEventListener('submit', async funct
         // yang sudah dipilih admin tidak ikut ketiban.
         if (CURRENT_API_GATEWAY === 'genspay') {
             await api('/admin/settings/genspay', { qrisMode: 'static', apiKey: '<%= settings.genspay?.apiKey||"" %>', baseUrl: '<%= settings.genspay?.baseUrl||"https://genspay.my.id/api/v1" %>' });
+        } else if (CURRENT_API_GATEWAY === 'autogopay') {
+            await api('/admin/settings/autogopay', { qrisMode: 'static' });
         } else {
             await api('/admin/settings/wijayapay', { qrisMode: 'static' });
         }
@@ -3305,6 +3370,42 @@ async function testGenspay() {
         el.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400';
         el.textContent = d.message || 'Koneksi gagal';
     }
+}
+
+// Validasi format key langsung saat mengetik (sebelum klik apa pun)
+(function () {
+    const inp = document.querySelector('#autogopayForm [name=apiKey]'), hint = document.getElementById('agpKeyHint');
+    if (!inp || !hint) return;
+    inp.addEventListener('input', function () {
+        let v = this.value.trim().replace(/^["']+|["']+$/g, '').replace(/^bearer\s+/i, '').trim();
+        if (!v) { hint.classList.add('hidden'); return; }
+        hint.classList.remove('hidden');
+        let msg = '', ok = false;
+        if (/\s/.test(v)) msg = 'Ada spasi / baris baru di dalam key. Salin hanya nilai key-nya.';
+        else if (/^https?:\/\//i.test(v)) msg = 'Ini URL, bukan API key.';
+        else if (!/^agp_/i.test(v)) msg = 'API key AutoGopay biasanya diawali "agp_". Pastikan menyalin dari baris "API key".';
+        else if (v.length < 20) msg = 'Key terlalu pendek, mungkin belum tersalin utuh.';
+        else { ok = true; msg = 'Format key terlihat benar. Klik Cek Koneksi untuk memastikan.'; }
+        hint.className = 'text-[10px] mt-1 ' + (ok ? 'text-emerald-400' : 'text-amber-400');
+        hint.textContent = msg;
+    });
+})();
+
+async function testAutogopay() {
+    const form = document.getElementById('autogopayForm');
+    const el = document.getElementById('testResultAutogopay');
+    el.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300';
+    el.textContent = 'Menguji koneksi...';
+    el.classList.remove('hidden');
+    const d = await api('/admin/qris/test', { gateway: 'autogopay', apiKey: form.querySelector('[name=apiKey]').value });
+    const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const rows = (d.checks || []).map(c => {
+        const icon = c.ok ? (c.warn ? 'mdi:alert-circle' : 'mdi:check-circle') : 'mdi:close-circle';
+        const col = c.ok ? (c.warn ? 'text-amber-300' : 'text-emerald-300') : 'text-red-400';
+        return '<div class="flex gap-1.5 items-start"><iconify-icon icon="' + icon + '" class="' + col + '" style="margin-top:2px"></iconify-icon><div><b class="' + col + '">' + esc(c.label) + '</b><div class="text-zinc-400">' + esc(c.detail) + '</div></div></div>';
+    }).join('');
+    el.className = 'text-[11px] p-2.5 rounded-lg space-y-1.5 ' + (d.success ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20');
+    el.innerHTML = '<div class="font-bold ' + (d.success ? 'text-emerald-300' : 'text-red-400') + '">' + esc(d.message || (d.success ? 'Koneksi berhasil!' : 'Koneksi gagal')) + '</div>' + rows;
 }
 
 async function testWijayapay() {

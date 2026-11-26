@@ -226,7 +226,7 @@ tr.row{cursor:pointer}tr.row:hover{background:#12121a}.tl{background:#0f0f17;pad
 <div class="sub">Semua transaksi + kronologi + export. Waktu ditampilkan WIB.</div>
 <div class="cards" id="cards"></div>
 <div class="bar">
- <select id="gw"><option value="all">Semua gateway</option><option value="genspay">GensPay</option><option value="wijayapay">WijayaPay</option></select>
+ <select id="gw"><option value="all">Semua gateway</option><option value="genspay">GensPay</option><option value="wijayapay">WijayaPay</option><option value="autogopay">AutoGopay</option></select>
  <select id="st"><option value="all">Semua status</option><option value="pending">Pending</option><option value="done">Done</option><option value="failed">Failed</option><option value="expired">Expired</option></select>
  <input type="date" id="from"><input type="date" id="to"><input id="q" placeholder="cari order/WA/nama/produk">
  <button class="p" onclick="load()">Tampilkan</button>
