@@ -21,8 +21,15 @@ const HOST = 'v1-gateway.autogopay.site';
 
 function getConfig(settings) {
   const a = (settings && settings.autogopay) || {};
-  return { apiKey: cleanKey(a.apiKey || process.env.AUTOGOPAY_API_KEY || '') };
+  // provider: 'gopay' (POST /qris/generate) atau 'shopeepay' (POST /shopeepay/qris/create). Default gopay.
+  return { apiKey: cleanKey(a.apiKey || process.env.AUTOGOPAY_API_KEY || ''), provider: normProvider(a.provider) };
 }
+function normProvider(p) { return String(p || '').toLowerCase() === 'shopeepay' ? 'shopeepay' : 'gopay'; }
+function providerName(p) { return normProvider(p) === 'shopeepay' ? 'ShopeePay' : 'GoPay'; }
+// order_sn ShopeePay berupa angka panjang; transaction_id GoPay berupa UUID.
+function isShopeeId(id) { return /^\d{8,}$/.test(String(id || '')); }
+// "2026-03-27 20:49:00" (WIB) -> ISO dengan zona waktu eksplisit.
+function wibToIso(v) { const t = String(v || '').trim(); if (!t) return null; if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(t)) return t; return t.replace(' ', 'T') + '+07:00'; }
 function isConfigured(settings) { return !!getConfig(settings).apiKey; }
 
 // Buang spasi/newline/kutip dan awalan "Bearer " yang sering ikut tersalin dari kotak "Header" di dashboard.
@@ -98,7 +105,7 @@ function request(method, path, { body, apiKey, timeout = 15000 } = {}) {
 // Terjemahan error HTTP -> kalimat yang bisa langsung ditindaklanjuti owner.
 function explainHttp(r) {
   const apiMsg = r && r.json && (r.json.message || r.json.error || (r.json.data && r.json.data.message));
-  if (/not\s*connected|belum\s*terhubung|no\s*(active\s*)?(payment|gopay|account)|gopay.*(disconnect|not linked)/i.test(String(apiMsg || ''))) return 'AutoGopay menjawab "' + apiMsg + '" (HTTP ' + r.http + '): akun GoPay/pembayaran di dashboard AutoGopay BELUM TERHUBUNG atau sesinya putus. Buka dashboard autogopay.site, sambungkan ulang GoPay (login/OTP) sampai statusnya Connected/Aktif, lalu coba bayar lagi. Ini bukan masalah di toko.';
+  if (/not\s*connected|belum\s*terhubung|no\s*(active\s*)?(payment|gopay|account)|gopay.*(disconnect|not linked)/i.test(String(apiMsg || ''))) return 'AutoGopay menjawab "' + apiMsg + '" (HTTP ' + r.http + '): akun pembayaran yang dipakai BELUM TERHUBUNG di dashboard AutoGopay. Perhatikan: endpoint GoPay (/qris/generate) hanya memakai akun GoPay, sedangkan akun ShopeePay memakai endpoint terpisah. Kalau akunmu ShopeePay, pilih Provider = ShopeePay di Admin > QRIS > AutoGopay. Kalau memang GoPay, sambungkan ulang di dashboard autogopay.site sampai statusnya Connected. Ini bukan masalah di toko.';
   if (r.http === 401) return 'API key ditolak (HTTP 401): key salah / sudah diganti di dashboard AutoGopay. Salin ulang dari Dokumentasi > Autentikasi.';
   if (r.http === 403) return 'Ditolak (HTTP 403): fitur Whitelist IP di dashboard AutoGopay masih aktif (IP Vercel selalu berubah) atau yang tersalin kotak "Header". Matikan Whitelist IP, dan pastikan yang dipakai nilai API key (agp_...).';
   if (r.http === 429) return 'Terlalu banyak request ke AutoGopay (HTTP 429). Tunggu 1 menit lalu coba lagi.';
@@ -112,7 +119,8 @@ function explainHttp(r) {
  *  - lainnya    -> key DITERIMA (transaksi palsu wajar "tidak ditemukan")
  * Hasil berupa checklist { checks:[{ok,label,detail}], success }.
  */
-async function testConnection(apiKeyInput) {
+async function testConnection(apiKeyInput, providerInput) {
+  const provider = normProvider(providerInput);
   const checks = [];
   const fmt = validateApiKeyFormat(apiKeyInput);
   checks.push({ ok: fmt.ok, label: 'Format API key', detail: fmt.message });
@@ -128,12 +136,30 @@ async function testConnection(apiKeyInput) {
   checks.push({ ok: reachable, label: 'Server AutoGopay terjangkau', detail: reachable ? 'v1-gateway.autogopay.site merespons.' : authMsg });
   if (reachable) checks.push({ ok: authOk, label: 'API key valid', detail: authMsg });
 
+  // Cek akun provider benar-benar tersambung (tanpa membuat transaksi): inilah yang menyebabkan "payment account not connected".
+  if (authOk) {
+    try {
+      if (provider === 'shopeepay') {
+        const r = await request('GET', '/shopeepay/status', { apiKey: fmt.key, timeout: 10000 });
+        const d = (r.json && r.json.data) || {};
+        const ok = r.http === 200 && d.connected === true && d.token_valid !== false;
+        checks.push({ ok, label: 'Akun ShopeePay tersambung', detail: ok ? 'ShopeePay Merchant terhubung' + (d.store_id ? ' (store_id ' + d.store_id + ')' : '') + ', token valid.' : (r.http === 200 ? (d.connected ? 'ShopeePay terhubung tapi token sudah tidak valid. Sambungkan ulang ShopeePay di dashboard AutoGopay.' : 'ShopeePay BELUM terhubung. Sambungkan akun ShopeePay Merchant di dashboard AutoGopay (menu ShopeePay).') : explainHttp(r)) });
+      } else {
+        const r = await request('POST', '/transactions', { apiKey: fmt.key, timeout: 10000 });
+        const msg = r.json && r.json.message;
+        const ok = r.http >= 200 && r.http < 300 && !(r.json && r.json.success === false);
+        checks.push({ ok, label: 'Akun GoPay tersambung', detail: ok ? 'Akun GoPay terhubung.' : (/not\s*connected|belum/i.test(String(msg || '')) ? 'GoPay BELUM terhubung di dashboard AutoGopay ("' + msg + '"). Kalau akunmu ShopeePay, ganti Provider ke ShopeePay.' : explainHttp(r)) });
+      }
+    } catch (e) { checks.push({ ok: false, label: 'Akun ' + providerName(provider) + ' tersambung', detail: e.message }); }
+  }
+
   const app = checkAppUrl();
   checks.push({ ok: app.ok, warn: !!app.warn, label: 'APP_URL (domain toko)', detail: app.message });
   const cb = callbackUrl();
   checks.push({ ok: !!cb && app.ok, warn: true, label: 'URL Callback yang harus diisi di dashboard AutoGopay', detail: cb ? cb + '  (isi PERSIS ini, wajib HTTPS, tanpa redirect. Tes ini tidak bisa memastikan kamu sudah mengisinya.)' : 'Belum bisa dihitung karena APP_URL belum benar.' });
 
-  const success = reachable && authOk && app.ok;
+  const provOk = checks.filter(c => /^Akun (GoPay|ShopeePay) tersambung$/.test(c.label)).every(c => c.ok);
+  const success = reachable && authOk && provOk && app.ok;
   return {
     success, checks, callbackUrl: cb,
     message: success
@@ -150,19 +176,22 @@ async function createTransaction(settings, orderId, amount) {
   const cfg = getConfig(settings);
   if (!cfg.apiKey) throw new Error('API key AutoGopay belum diisi (Admin > QRIS > AutoGopay).');
   const nominal = Math.round(Number(amount));
-  if (!Number.isFinite(nominal) || nominal <= 0) throw new Error('Nominal tidak valid untuk AutoGopay: ' + amount);
-  const r = await request('POST', '/qris/generate', { apiKey: cfg.apiKey, body: { amount: nominal } });
+  if (!Number.isFinite(nominal) || nominal < 1 || nominal > 10000000) throw new Error('Nominal tidak valid untuk AutoGopay (harus 1 - 10.000.000): ' + amount);
+  const shopee = cfg.provider === 'shopeepay';
+  const r = await request('POST', shopee ? '/shopeepay/qris/create' : '/qris/generate', { apiKey: cfg.apiKey, body: { amount: nominal } });
   const b = r.json, d = b && b.data;
-  if (r.http < 200 || r.http >= 300 || !b || b.success === false || !d || !(d.qr_string || d.qris_string) || !d.transaction_id) {
+  const idField = shopee ? (d && d.order_sn) : (d && d.transaction_id);
+  if (r.http < 200 || r.http >= 300 || !b || b.success === false || !d || !(d.qr_string || d.qris_string) || !idField) {
     throw new Error(r.http >= 400 || !b ? explainHttp(r) : ((b && b.message) || 'AutoGopay tidak mengembalikan QR (respons: ' + String(r.text).slice(0, 150) + ')'));
   }
   return {
     qr_string: d.qr_string || d.qris_string,
-    // Nominal yang WAJIB dibayar pembeli menurut AutoGopay (bisa memuat kode unik); dipakai untuk validasi webhook.
+    // Nominal yang WAJIB dibayar pembeli menurut AutoGopay; dipakai untuk validasi webhook.
     total_payment: Number(d.amount) || nominal,
-    expired_at: d.expired_at || d.expired || new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-    txn_id: String(d.transaction_id),
-    gateway_order_id: d.order_id ? String(d.order_id) : null
+    expired_at: wibToIso(d.expiry_time || d.expired_at || d.expired) || new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    txn_id: String(idField),
+    gateway_order_id: d.order_id ? String(d.order_id) : null,
+    provider: cfg.provider
   };
 }
 
@@ -183,7 +212,16 @@ function normalizeStatus(s) {
 async function checkStatus(settings, transactionId) {
   const cfg = getConfig(settings);
   if (!cfg.apiKey) throw new Error('API key AutoGopay belum diisi');
-  if (!transactionId) throw new Error('transaction_id AutoGopay tidak ada di transaksi ini');
+  if (!transactionId) throw new Error('ID transaksi AutoGopay tidak ada di transaksi ini');
+  // Transaksi ShopeePay (order_sn angka) dicek lewat endpoint ShopeePay, GoPay lewat /qris/status.
+  if (isShopeeId(transactionId)) {
+    const r = await request('GET', '/shopeepay/qris/status?order_sn=' + encodeURIComponent(String(transactionId)) + '&router_id=1', { apiKey: cfg.apiKey, timeout: 8000 });
+    if (r.http === 401 || r.http === 403) throw new Error(explainHttp(r));
+    if (!r.json) throw new Error('AutoGopay /shopeepay/qris/status: response tidak valid (HTTP ' + r.http + ')');
+    const d = r.json.data || {};
+    if (d.paid === true || Number(d.order_status) === 1) return { status: 'settlement', amount: Number(d.amount) || null };
+    return { status: normalizeStatus(d.status === 'success' ? 'pending' : d.status), amount: Number(d.amount) || null };
+  }
   const r = await request('POST', '/qris/status', { apiKey: cfg.apiKey, body: { transaction_id: String(transactionId) }, timeout: 8000 });
   if (r.http === 401 || r.http === 403) throw new Error(explainHttp(r));
   if (!r.json) throw new Error('AutoGopay /qris/status: response tidak valid (HTTP ' + r.http + ')');
@@ -203,4 +241,4 @@ function verifyWebhookSignature(settings, rawBody, signatureHeader) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-module.exports = { isConfigured, getConfig, cleanKey, validateApiKeyFormat, normalizeAppUrl, getAppUrl, checkAppUrl, callbackUrl, testConnection, createTransaction, checkStatus, normalizeStatus, verifyWebhookSignature };
+module.exports = { normProvider, providerName, isShopeeId, isConfigured, getConfig, cleanKey, validateApiKeyFormat, normalizeAppUrl, getAppUrl, checkAppUrl, callbackUrl, testConnection, createTransaction, checkStatus, normalizeStatus, verifyWebhookSignature };

@@ -1396,6 +1396,14 @@ html.dark .badge-featured { color:#fca5a5 !important; }
                     <div><b class="text-zinc-300">4.</b> Salin <b>Webhook URL</b> di bawah ke kolom <b>URL Callback</b> di dashboard AutoGopay (tanpa ini pembayaran tidak terkonfirmasi otomatis).</div>
                 </div>
                 <div>
+                    <div class="setting-row-label">Provider akun pembayaran <span class="text-zinc-600 font-normal">(pilih sesuai akun yang tersambung di dashboard AutoGopay)</span></div>
+                    <select name="provider" class="hm-input text-xs">
+                        <option value="gopay" <%= (settings.autogopay?.provider||'gopay')==='gopay' ? 'selected' : '' %>>GoPay (QRIS GoPay merchant)</option>
+                        <option value="shopeepay" <%= settings.autogopay?.provider==='shopeepay' ? 'selected' : '' %>>ShopeePay (QRIS ShopeePay Merchant)</option>
+                    </select>
+                    <p class="text-[10px] mt-1 text-zinc-500">Salah pilih = error "payment account not connected". Kalau akun yang kamu sambungkan di dashboard ShopeePay, pilih ShopeePay.</p>
+                </div>
+                <div>
                     <div class="setting-row-label">API Key AutoGopay <span class="text-zinc-600 font-normal"><%= settings.autogopay?.apiKey ? '(tersimpan — kosongkan kalau tidak diubah)' : '(diawali agp_)' %></span></div>
                     <input type="password" name="apiKey" value="" class="hm-input font-mono text-xs" placeholder="<%= settings.autogopay?.apiKey ? '••••••••••••' : 'agp_xxxxxxxxxxxxxxxx' %>" autocomplete="new-password">
                     <p id="agpKeyHint" class="text-[10px] mt-1 hidden"></p>
@@ -3397,7 +3405,7 @@ async function testAutogopay() {
     el.className = 'text-[11px] p-2.5 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300';
     el.textContent = 'Menguji koneksi...';
     el.classList.remove('hidden');
-    const d = await api('/admin/qris/test', { gateway: 'autogopay', apiKey: form.querySelector('[name=apiKey]').value });
+    const d = await api('/admin/qris/test', { gateway: 'autogopay', apiKey: form.querySelector('[name=apiKey]').value, provider: form.querySelector('[name=provider]').value });
     const esc = (t) => String(t == null ? '' : t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     const rows = (d.checks || []).map(c => {
         const icon = c.ok ? (c.warn ? 'mdi:alert-circle' : 'mdi:check-circle') : 'mdi:close-circle';

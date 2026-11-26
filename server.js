@@ -1038,7 +1038,7 @@ const initDB = async () => {
     fonnteToken: '',
     genspay: { apiKey: '', baseUrl: 'https://genspay.my.id/api/v1' },
     wijayapay: { codeMerchant: '', apiKey: '' },
-    autogopay: { apiKey: '' },
+    autogopay: { apiKey: '', provider: 'gopay' },
     panelstore: { apiKey: '', url: 'https://www.panelstore.shop/api/v1/index.php' },
     limzy: { apiKey: '', baseUrl: 'https://limzyyxit.my.id/api' },
     dripstore2: { apiToken: '', baseUrl: 'https://dripclientofficial.shop/api/v1' },
@@ -1328,6 +1328,7 @@ const normalizeOrderCode = (v) => String(v == null ? '' : v).trim().toUpperCase(
 // Batas waktu pending pembayaran (permintaan client: 5 menit, bukan 30). Dipakai untuk:
 // countdown halaman /pay, blokir pesanan pending ganda, dan jendela anti-spam QRIS.
 const PENDING_TTL_MS = 5 * 60 * 1000;
+const AUTOGOPAY_QR_WINDOW_MS = 14 * 60 * 1000; // umur QR AutoGopay ~15 menit
 // Ambil Kode Pesanan (FX-XXXX-XXXX) dari input pengguna. Toleran terhadap teks tempelan
 // ("Kode Pesanan: FX-ABCD-EFGH"), spasi, huruf kecil, dan tanda minus unicode.
 const extractOrderCode = (v) => {
@@ -1427,8 +1428,18 @@ const createQRISPaymentWijayapay = async (orderId, amount, settings) => {
 
 // ── AutoGopay (v1-gateway.autogopay.site) ──
 // AutoGopay memberi transaction_id sendiri (disimpan di transaksi sebagai providerTxnId); status dicek lewat POST /qris/status + webhook /webhook/autogopay.
+// Batas pengaman GLOBAL per instance: AutoGopay/GoPay menganggap generate beruntun sebagai spam (akun merchant bisa diblokir).
+const _agpGenTimes = [];
+const AGP_MAX_PER_MIN = 6, AGP_MAX_PER_HOUR = 60;
 const createQRISPaymentAutogopay = async (orderId, amount, settings) => {
   const t0 = Date.now();
+  const nowMs = Date.now();
+  while (_agpGenTimes.length && nowMs - _agpGenTimes[0] > 3600000) _agpGenTimes.shift();
+  if (_agpGenTimes.filter(x => nowMs - x < 60000).length >= AGP_MAX_PER_MIN || _agpGenTimes.length >= AGP_MAX_PER_HOUR) {
+    paymentAudit.record('autogopay.create', { orderId, amount, ok: false, error: 'rate_cap' });
+    throw new Error('Pembayaran QRIS sedang ramai. Coba lagi dalam 1 menit.');
+  }
+  _agpGenTimes.push(nowMs);
   try {
     const r = await autogopay.createTransaction(settings, orderId, amount);
     paymentAudit.record('autogopay.create', { orderId, amount, ok: true, durationMs: Date.now() - t0, totalPayment: r.total_payment, txnId: r.txn_id });
@@ -4281,9 +4292,25 @@ app.post('/create-order', async (req, res) => {
     // Sebelumnya cek "pesanan pending duplikat" baru dilakukan SETELAH createQRISPayment() dipanggil, jadi
     {
       // (12 Nov 2026) hanya pending milik user/IP ini dalam jendela 5 menit yang diambil (dulu: seluruh blob transaksi 4,5 MB)
-      const WINDOW = PENDING_TTL_MS;
+      // AutoGopay: akun merchant bisa DIBLOKIR kalau terlalu sering generate QRIS. Jendela diperlebar sampai umur QR (15 mnt)
+      // dan QR yang masih hidup dipakai ulang, bukan dibuat baru.
+      const _agp = activeGateway(settings) === 'autogopay' && (settings.qrisMode || 'static') === 'api';
+      const WINDOW = _agp ? AUTOGOPAY_QR_WINDOW_MS : PENDING_TTL_MS;
       const live = await db.tx.pendingForUser(req.session.userId, WINDOW, clientIp); _mark('pre_checks');
       const dup = live.find(t => t.userId === req.session.userId && t.productId === productId);
+      if (_agp && dup) {
+        const expMs = Date.parse(dup.expiredAt || '') || (Date.parse(dup.createdAt || '') + AUTOGOPAY_QR_WINDOW_MS);
+        const alive = dup.paymentGateway === 'autogopay' && dup.qrString && !dup.isStatic && expMs > Date.now() + 30000;
+        const same = Number(dup.price) === Number(price) && (Number(dup.qty) || 1) === qty && (dup.selectedDays ?? null) === (selectedDays ?? null) && (dup.selectedUnit || null) === (selectedUnit || null);
+        if (alive && same) {
+          paymentAudit.record('order.reused_qr', { orderId: dup.orderId, userId: req.session.userId, ip: clientIp, gateway: 'autogopay' });
+          return res.json({ success: true, reused: true, refId: dup.id, orderId: dup.orderId, qrString: dup.qrString, orderCode: dup.code, isStatic: false,
+            totalPayment: dup.totalPayment || dup.price, expiredAt: dup.expiredAt || null, voucherDiscount: dup.voucherDiscount || undefined, qrisStaticImage: null });
+        }
+        const mins = Math.max(1, Math.ceil((expMs - Date.now()) / 60000));
+        paymentAudit.record('order.blocked_duplicate', { orderId: dup.orderId, userId: req.session.userId, ip: clientIp, reason: 'autogopay_pending_qr' });
+        return res.json({ success: false, message: `Kamu masih punya QRIS yang belum dibayar untuk produk ini. Selesaikan pembayarannya, atau tunggu sekitar ${mins} menit sampai kedaluwarsa sebelum membuat pesanan baru.` });
+      }
       const dyn = live.filter(t => !t.isStatic);
       const pendingByUser = dyn.filter(t => t.userId === req.session.userId).length;
       const pendingByIp = clientIp ? dyn.filter(t => t.ip === clientIp).length : 0;
@@ -5062,7 +5089,10 @@ app.post('/webhook/autogopay', async (req, res) => {
     const settings = await readFresh('settings.json');
     const payload = req.body || {};
     const tx = payload.transaction || payload.data || {};
-    const gwTxnId = String(tx.transaction_id || payload.transaction_id || '').trim();
+    // GoPay: transaction_id = UUID kita simpan sebagai providerTxnId. ShopeePay: yang kita simpan order_sn, jadi coba beberapa field.
+    const _idCands = [tx.transaction_id, payload.transaction_id, tx.order_sn, tx.order_id].map(v => String(v || '').trim()).filter(Boolean);
+    const gwTxnId = _idCands[0] || '';
+    const _findByGw = async () => { for (const id of _idCands) { const t = await db.tx.find('providerTxnId', id); if (t) return t; } return null; };
     const gwStatus = autogopay.normalizeStatus(tx.status || tx.transaction_status || payload.status);
     const _sigHdr = String(req.headers['x-signature'] || '');
     if (!autogopay.isConfigured(settings)) {
@@ -5076,9 +5106,9 @@ app.post('/webhook/autogopay', async (req, res) => {
     // kita tanya langsung ke AutoGopay (pakai API key kita). Hanya jika AutoGopay sendiri menjawab settlement, diproses.
     if (!sigOk && gwTxnId && gwStatus === 'settlement' && _webhookApiCheckOk(gwTxnId)) {
       try {
-        const t0 = await db.tx.find('providerTxnId', gwTxnId);
+        const t0 = await _findByGw();
         if (t0 && t0.status === 'pending' && t0.paymentGateway === 'autogopay') {
-          const st = await autogopay.checkStatus(settings, gwTxnId);
+          const st = await autogopay.checkStatus(settings, t0.providerTxnId);
           if (st.status === 'settlement') { sigOk = true; verifiedVia = 'status_api'; }
         }
       } catch (_) { /* tetap ditolak di bawah */ }
@@ -5089,7 +5119,7 @@ app.post('/webhook/autogopay', async (req, res) => {
     if (gwStatus !== 'settlement') { logWebhook('autogopay', { result: 'not_paid', orderId: gwTxnId, statusFromWebhook: gwStatus }); return res.status(200).json({ success: true }); }
     if (!gwTxnId) { logWebhook('autogopay', { result: 'no_transaction_id' }); return res.status(200).json({ success: true }); }
 
-    const transaction = await db.tx.find('providerTxnId', gwTxnId);
+    const transaction = await _findByGw();
     if (!transaction) {
       logWebhook('autogopay', { result: 'transaction_not_found', orderId: gwTxnId });
       return res.status(503).json({ success: false, message: 'Transaction not found yet, please retry' });
@@ -5976,19 +6006,20 @@ app.post('/admin/settings/autogopay', requireAdmin, async (req, res) => {
   try {
     const settings = await readFresh('settings.json');
     const { apiKey, qrisMode } = req.body;
+    const provider = req.body.provider !== undefined ? autogopay.normProvider(req.body.provider) : autogopay.normProvider(settings.autogopay?.provider);
     const typed = apiKey && !/^[•*]+/.test(String(apiKey)) ? String(apiKey) : '';
     let key = settings.autogopay?.apiKey || '';
     if (typed) {
       const fmt = autogopay.validateApiKeyFormat(typed);
       if (!fmt.ok) return res.json({ success: false, message: fmt.message });
       // Pastikan key benar-benar diterima AutoGopay sebelum disimpan (tidak membuat transaksi).
-      const t = await autogopay.testConnection(fmt.key);
+      const t = await autogopay.testConnection(fmt.key, provider);
       const authCheck = (t.checks || []).find(c => c.label === 'API key valid');
       if (authCheck && !authCheck.ok) return res.json({ success: false, message: 'Tidak disimpan. ' + authCheck.detail });
       key = fmt.key;
     }
     if (!key && qrisMode !== 'static') return res.json({ success: false, message: 'API key AutoGopay belum diisi. Isi dulu, klik Cek Koneksi, baru Simpan.' });
-    settings.autogopay = { apiKey: key };
+    settings.autogopay = { apiKey: key, provider };
     settings.apiGateway = 'autogopay';
     if (qrisMode) settings.qrisMode = qrisMode;
     await writeDB('settings.json', settings);
@@ -7526,7 +7557,7 @@ app.post('/admin/qris/test', requireAdmin, async (req, res) => {
         // Test koneksi ringan (tidak membuat transaksi): format key + auth ke AutoGopay + cek APP_URL.
         const saved = await readFresh('settings.json');
         const key = (apiKey && !/^[•*]+/.test(String(apiKey))) ? String(apiKey).trim() : (saved.autogopay?.apiKey || '');
-        return res.json(await autogopay.testConnection(key));
+        return res.json(await autogopay.testConnection(key, req.body.provider !== undefined ? req.body.provider : saved.autogopay?.provider));
       }
       if (gateway === 'genspay') {
         const testSettings = { apiGateway: 'genspay', genspay: { apiKey, baseUrl: baseUrl || 'https://genspay.my.id/api/v1' } };
