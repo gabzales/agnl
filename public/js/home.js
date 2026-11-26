@@ -61,7 +61,7 @@
     var p = (window.AG_PRODUCTS || {})[id];
     if (!p) { if (window.showToast) showToast('Produk tidak ditemukan', 'error'); return; }
     if (p.m) { if (window.showToast) showToast('Produk sedang maintenance, coba lagi nanti.', 'info'); return; }
-    cur = Object.assign({ id: id }, p); curOpt = null; applied = null;
+    cur = Object.assign({ id: id }, p); curOpt = null; applied = null; qty = 1;
     $('voucherCodeInput').value = ''; $('voucherFeedback').textContent = '';
     $('modalProductName').textContent = p.name || p.n;
     $('modalProductName').textContent = p.n;
@@ -88,14 +88,32 @@
   window.agCloseBuy = function () { $('buyModal').classList.remove('show'); document.body.classList.remove('no-scroll'); };
   $('durationCardList').addEventListener('click', function (e) {
     var b = e.target.closest('.ag-dur'); if (!b || b.disabled) return;
-    curOpt = cur.o[Number(b.dataset.i)]; applied = null; $('voucherFeedback').textContent = '';
+    curOpt = cur.o[Number(b.dataset.i)]; applied = null; qty = 1; $('voucherFeedback').textContent = '';
     agGoStep(2);
   });
+  var qty = 1;
+  function maxQty() {
+    var m = Math.min(Number(window.AG_MAXQTY) || 10, 50);
+    if (curOpt && !curOpt.k && curOpt.s > 0 && !window.AG_PROVIDER_FALLBACK) m = Math.min(m, Math.max(curOpt.s, 1));
+    return m;
+  }
+  function qtyUi() {
+    var m = maxQty(); if (qty > m) qty = m; if (qty < 1) qty = 1;
+    $('qtyInput').value = qty; $('summaryQty').textContent = 'x' + qty;
+    $('qtyMinus').disabled = qty <= 1; $('qtyPlus').disabled = qty >= m;
+  }
+  window.agQty = function (d) { qty += d; applied = null; $('voucherFeedback').textContent = ''; qtyUi(); totals(); };
+  window.agQtySet = function (v) {
+    v = String(v).replace(/\D/g, ''); if (v === '') return;
+    qty = parseInt(v, 10) || 1; applied = null; $('voucherFeedback').textContent = ''; qtyUi(); totals();
+  };
   function totals() {
     if (!curOpt) return;
-    var disc = applied ? applied.discount : 0, total = Math.max(0, curOpt.p - disc);
-    $('summarySubtotalRow').hidden = !applied; $('summaryDiscountRow').hidden = !applied;
-    if (applied) { $('summarySubtotal').textContent = rp(curOpt.p); $('summaryDiscountLabel').textContent = 'Voucher ' + applied.code; $('summaryDiscount').textContent = '- ' + rp(disc); }
+    var sub = curOpt.p * qty;
+    var disc = applied ? applied.discount : 0, total = Math.max(0, sub - disc);
+    $('summarySubtotalRow').hidden = !applied && qty <= 1; $('summaryDiscountRow').hidden = !applied;
+    if (qty > 1 || applied) { $('summarySubtotalRow').hidden = false; $('summarySubtotal').textContent = rp(sub) + (qty > 1 ? ' (' + qty + ' x ' + rp(curOpt.p) + ')' : ''); }
+    if (applied) {  $('summaryDiscountLabel').textContent = 'Voucher ' + applied.code; $('summaryDiscount').textContent = '- ' + rp(disc); }
     $('summaryTotal').textContent = rp(total);
   }
   window.agGoStep = function (n) {
@@ -103,7 +121,7 @@
     ['stepPanel1', 'stepPanel2', 'stepPanel3'].forEach(function (id, i) { $(id).classList.toggle('active', i + 1 === n); });
     for (var i = 1; i <= 2; i++) { var d = $('stepDot' + i); d.classList.remove('active', 'done'); if (i < n) d.classList.add('done'); if (i === n) d.classList.add('active'); }
     $('sheetKicker').textContent = n === 1 ? 'PILIH DURASI' : (n === 2 ? 'KONFIRMASI PESANAN' : 'MEMPROSES PEMBAYARAN');
-    if (n === 2) { $('summaryProductName').textContent = cur.n + ' (' + durLabel(curOpt) + ')'; totals(); }
+    if (n === 2) { $('summaryProductName').textContent = cur.n + ' (' + durLabel(curOpt) + ')'; qtyUi(); totals(); }
   };
   window.agResetVoucher = function () { applied = null; $('voucherFeedback').textContent = ''; totals(); };
   window.agApplyVoucher = async function () {
@@ -111,7 +129,7 @@
     if (!code) { fb.style.color = 'var(--red)'; fb.textContent = 'Masukkan kode voucher dulu'; return; }
     var btn = $('btnApplyVoucher'); btn.disabled = true; var old = btn.textContent; btn.textContent = '...';
     try {
-      var d = await (await fetch('/api/voucher/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, price: curOpt.p }) })).json();
+      var d = await (await fetch('/api/voucher/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code, price: curOpt.p * qty }) })).json();
       if (d.valid) { applied = { code: d.code, discount: Number(d.discount) || 0 }; fb.style.color = 'var(--green)'; fb.textContent = 'Voucher "' + d.code + '" berhasil diterapkan! Hemat ' + rp(applied.discount); }
       else { applied = null; fb.style.color = 'var(--red)'; fb.textContent = d.error || 'Voucher tidak valid'; }
     } catch (e) { applied = null; fb.style.color = 'var(--red)'; fb.textContent = 'Gagal memeriksa voucher, coba lagi'; }
@@ -128,7 +146,7 @@
     function reset() { $('checkoutBtn').disabled = false; $('walletBtn').disabled = false; btn.innerHTML = html; }
     try {
       var res = await fetch(useWallet ? '/wallet/buy' : '/create-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
-        productId: cur.id, duration: curOpt.d != null ? curOpt.d : curOpt.l, durationUnit: curOpt.u || 'd', customerName: name, wa: wa, voucherCode: applied ? applied.code : undefined }) });
+        productId: cur.id, duration: curOpt.d != null ? curOpt.d : curOpt.l, durationUnit: curOpt.u || 'd', customerName: name, wa: wa, qty: qty, voucherCode: applied ? applied.code : undefined }) });
       var d = await res.json();
       if (d.success) {
         agGoStep(3);
@@ -142,6 +160,14 @@
   };
   // Tautan lama /buy/:id -> /?buy=:id membuka sheet langsung
   (function () { var m = /[?&]buy=([^&]+)/.exec(location.search); if (m && window.AG_PRODUCTS) { var id = decodeURIComponent(m[1]); if (window.AG_PRODUCTS[id]) setTimeout(function () { agOpenBuy(id); }, 50); } })();
+
+  // ── Popup Telegram: sekali per 24 jam ──
+  var tg = $('tgPopup');
+  window.tgPopupClose = function () { if (tg) tg.style.display = 'none'; try { localStorage.setItem('agnl_tg_popup', JSON.stringify({ t: Date.now() })); } catch (e) {} };
+  if (tg && window.AG && window.AG.hasTG) {
+    var st2; try { st2 = JSON.parse(localStorage.getItem('agnl_tg_popup') || 'null'); } catch (e) {}
+    if (!(st2 && Date.now() - st2.t < 86400000)) setTimeout(function () { tg.style.display = 'flex'; }, 2500);
+  }
 
   // ── Popup CS: sekali per 24 jam ──
   var cs = $('csPopup');

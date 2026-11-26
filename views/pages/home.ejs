@@ -2,6 +2,8 @@
   var pageTitle = settings?.siteName || 'AGHA NL';
   var _bn = (banners || []).map(function (b) { return b.imageUrl || b.image || b.url; }).filter(Boolean);
   var _cs = csWaOf(settings);
+  var _tgRaw = String((settings && settings.contact && settings.contact.telegram) || '').trim();
+  var _tg = _tgRaw ? (/^https?:\/\//i.test(_tgRaw) ? _tgRaw : 'https://t.me/' + _tgRaw.replace(/^@/, '').replace(/^(https?:\/\/)?t\.me\//i, '')) : '';
   var _csMsg = 'Halo CS ' + (settings?.siteName || 'AGHA NL') + ', saya butuh bantuan.';
 %>
 <main class="ag-wrap">
@@ -164,7 +166,7 @@
   });
 %>
 <%- include('../partials/buy-sheet') %>
-<script>window.AG_PRODUCTS = <%- safeJson(AGP) %>;</script>
+<script>window.AG_PRODUCTS = <%- safeJson(AGP) %>; window.AG_MAXQTY = <%= Math.min(Math.max(parseInt(settings && settings.maxQty, 10) || 10, 1), 50) %>;</script>
 
 <!-- ══ MODAL LOGIN / DAFTAR ══ -->
 <div id="authModalOverlay" class="ag-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
@@ -210,7 +212,21 @@
   </div>
 </div>
 
-<% if (_cs) { %>
+<% if (_tg) { %>
+<!-- POPUP GABUNG CHANNEL TELEGRAM (sekali per 24 jam) -->
+<div id="tgPopup" class="ag-overlay ag-blur" style="display:none;z-index:9000;" onclick="if(event.target===this)tgPopupClose()">
+  <div class="ag-modal ag-cs ag-tg" role="dialog" aria-modal="true" aria-labelledby="tgTitle">
+    <button type="button" class="ag-modal-close" onclick="tgPopupClose()" aria-label="Tutup"><iconify-icon icon="mdi:close"></iconify-icon></button>
+    <div class="ico"><iconify-icon icon="mdi:telegram"></iconify-icon></div>
+    <h3 id="tgTitle">Gabung Channel Telegram</h3>
+    <p>Dapatkan info update, promo, dan restock terbaru langsung di channel Telegram <%= settings?.siteName || 'kami' %>.</p>
+    <a class="go" href="<%= _tg %>" target="_blank" rel="noopener" onclick="tgPopupClose()"><iconify-icon icon="mdi:telegram"></iconify-icon> Gabung Sekarang</a>
+    <button type="button" class="later" onclick="tgPopupClose()">Nanti saja</button>
+  </div>
+</div>
+<% } %>
+
+<% if (_cs && !_tg) { %>
 <!-- POPUP HUBUNGI CS (sekali per 24 jam) -->
 <div id="csPopup" class="ag-overlay" style="display:none;z-index:9000;">
   <div class="ag-modal ag-cs">
@@ -225,6 +241,6 @@
 <% } %>
 
 <% if (turnstileSiteKey) { %><script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onTurnstileLoad" async defer></script><% } %>
-<script>window.AG = { turnstileKey: <%- JSON.stringify(turnstileSiteKey || '') %>, hasCS: <%= _cs ? 'true' : 'false' %>, tsReady: false };
+<script>window.AG = { turnstileKey: <%- JSON.stringify(turnstileSiteKey || '') %>, hasCS: <%= (_cs && !_tg) ? 'true' : 'false' %>, hasTG: <%= _tg ? 'true' : 'false' %>, tsReady: false };
 function onTurnstileLoad(){ window.AG.tsReady = true; if (window.renderTurnstileWidgets) window.renderTurnstileWidgets(); }</script>
 <script src="/js/home.js?v=<%= assetV %>" defer></script>

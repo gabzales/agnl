@@ -4,6 +4,7 @@
 %>
 <header class="ag-header">
   <div class="ag-header-in">
+    <button type="button" class="ag-icon-btn ag-burger" onclick="openMenu()" aria-label="Buka menu"><iconify-icon icon="mdi:menu"></iconify-icon></button>
     <a href="/" class="ag-brand" aria-label="<%= settings?.siteName || 'AGHA NL' %>">
       <img class="ag-logo" src="<%= imgW(settings?.logoUrl || '/uploads/logo-main.png', 96) %>" alt="" width="34" height="34">
       <%- include('logo-text', { siteName: settings?.siteName, logoTextUrl: settings?.logoTextUrl, fontSize: '15px' }) %>
@@ -17,10 +18,10 @@
     </nav>
 
     <div class="ag-actions">
+      <button type="button" class="ag-icon-btn" onclick="openSearch()" aria-label="Cari"><iconify-icon icon="mdi:magnify"></iconify-icon></button>
       <a href="/dashboard" id="agAccountLink" class="ag-icon-btn ag-user-only" aria-label="Akun"><iconify-icon icon="mdi:account"></iconify-icon></a>
       <a href="/login" onclick="return agAuth('login')" class="ag-btn-sm ag-guest-only">Masuk</a>
       <a href="/register" onclick="return agAuth('register')" class="ag-btn-sm solid ag-guest-only">Daftar</a>
-      <button type="button" class="ag-icon-btn" onclick="openMenu()" aria-label="Buka menu"><iconify-icon icon="mdi:menu"></iconify-icon></button>
     </div>
   </div>
 </header>

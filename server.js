@@ -3621,6 +3621,7 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     if (!releaseWalletLock) return res.json({ success: false, message: 'Transaksi saldo sedang diproses di perangkat lain. Tunggu sebentar.' });
     if (req.session.isAdmin) return res.json({ success: false, message: 'Admin tidak bisa membeli produk' });
     const { productId, duration, durationUnit, customerName, wa, voucherCode } = req.body;
+    const _qtyRaw = req.body.qty;   // jumlah key (tombol - / +)
 
     const users = await readFresh('users.json');
     const user = users.find(u => u.id === req.session.userId);
@@ -3673,6 +3674,11 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
       price = Math.round(price * (1 - disc / 100));
     }
 
+    // Jumlah key: harga satuan x qty
+    const qty = parseQty(_qtyRaw, settings);
+    const unitPrice = price;
+    price = price * qty;
+
     let voucherDiscount = 0, appliedVoucher = null, originalPrice = price;
     if (voucherCode && voucherCode.trim()) {
       const vResult = await validateVoucher(voucherCode, price, req.session.userId);
@@ -3693,56 +3699,55 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     let keySource = 'local_stock';
     let providerTransactionId = null;
     let providerVariantId = null;
-    let localInventoryCommitted = false;
+    let providerKeyCount = 0;   // key dari provider (stok lokal sudah menaikkan sold sendiri)
+    const gotKeys = [];
+    let acquireErr = null;
 
-    // Selalu coba stok lokal exact terlebih dahulu. Mode DripStore tidak boleh
-    // membuat key lokal yang sudah tersedia menjadi tidak terbaca.
-    if (selectedDays != null) {
-      const local = await consumeLocalProductKey(product.id, selectedDays, selectedUnit);
-      if (local.key) {
-        key = local.key;
-        localInventoryCommitted = !!local.committed;
+    // Ambil key satu per satu. Selalu coba stok lokal exact dulu; LIVE = provider, HYBRID = provider hanya fallback
+    // setelah stok lokal exact kosong. Resolver provider membaca katalog TERKINI, jadi mapping stale tidak bisa
+    // membuat pembelian jatuh ke variant salah.
+    for (let n = 0; n < qty; n++) {
+      let k = null, committed = false;
+      const local = await consumeLocalProductKey(product.id, selectedDays != null ? selectedDays : null, selectedUnit);
+      if (local.key) { k = local.key; committed = !!local.committed; }
+      if (!k && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid') && selectedDays != null) {
+        try {
+          const live = await fulfillProductFromDripstore({
+            id: 'wallet-' + Date.now() + '-' + n + '-' + req.session.userId,
+            productId: product.id, selectedDays, selectedUnit
+          }, settings);
+          k = live?.key || null;
+          if (k) {
+            keySource = live?.source || keySource;
+            providerTransactionId = live?.providerTransactionId || null;
+            providerVariantId = live?.variantId || null;
+          }
+        } catch (e) { acquireErr = e; break; }
       }
-    } else if (selectedDays == null) {
-      const local = await consumeLocalProductKey(product.id, null, selectedUnit);
-      if (local.key) {
-        key = local.key;
-        localInventoryCommitted = !!local.committed;
-      }
+      if (!k) break;
+      gotKeys.push(k);
+      if (!committed) providerKeyCount++;
     }
 
-    // LIVE: selalu provider. HYBRID: provider hanya fallback setelah stok lokal
-    // exact benar-benar kosong. Resolver provider membaca katalog TERKINI, jadi
-    // mapping ID lama/stale tidak bisa membuat pembelian jatuh ke variant salah.
-    if (!key && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid') && selectedDays != null) {
-      try {
-        const live = await fulfillProductFromDripstore({
-          id: 'wallet-' + Date.now() + '-' + req.session.userId,
-          productId: product.id, selectedDays, selectedUnit
-        }, settings);
-        key = live?.key || null;
-        keySource = live?.source || keySource;
-        providerTransactionId = live?.providerTransactionId || null;
-        providerVariantId = live?.variantId || null;
-      } catch (e) {
-        return res.json({ success: false, message: (fulfillmentMode === 'hybrid' ? 'Stok lokal habis dan provider tidak dapat memenuhi pesanan: ' : 'Gagal mengambil key dari DripStore: ') + e.message });
+    if (!gotKeys.length) {
+      if (acquireErr) {
+        return res.json({ success: false, message: (fulfillmentMode === 'hybrid' ? 'Stok lokal habis dan provider tidak dapat memenuhi pesanan: ' : 'Gagal mengambil key dari DripStore: ') + acquireErr.message });
       }
-    }
-
-    if (!key) {
       return res.json({ success: false, message: selectedDays != null
         ? `Stok ${formatDurationLabel(selectedDays, selectedUnit)} sedang habis. Silakan pilih durasi lain atau tunggu admin.`
         : 'Stok habis' });
     }
+    // Terkirim sebagian (stok kurang di tengah): saldo hanya dipotong untuk key yang benar-benar didapat
+    const gotQty = gotKeys.length;
+    const chargePrice = gotQty === qty ? price : Math.round(price * gotQty / qty);
+    key = gotKeys.join('\n');
 
     // Key sudah aman didapat. Baru potong wallet. Untuk local key, stok dan sold
     // sudah dipersist dalam consumeLocalProductKey() di bawah lock.
-    user.balance = balance - price;
+    user.balance = balance - chargePrice;
     await writeDB('users.json', users);
 
-    if (!localInventoryCommitted) {
-      await incrementProductSold(product.id);
-    }
+    for (let i = 0; i < providerKeyCount; i++) await incrementProductSold(product.id);
 
     const refId = uuidv4();
     const orderCode = generateOrderCode();
@@ -3753,7 +3758,9 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
       originalPrice: voucherDiscount > 0 ? originalPrice : undefined,
       voucherCode: appliedVoucher ? appliedVoucher.code : undefined,
       voucherDiscount: voucherDiscount > 0 ? voucherDiscount : undefined,
-      price, totalPayment: price, paymentMethod: 'wallet',
+      qty: gotQty > 1 ? gotQty : undefined, unitPrice: gotQty > 1 ? unitPrice : undefined,
+      keys: gotQty > 1 ? gotKeys : undefined,
+      price: chargePrice, totalPayment: chargePrice, paymentMethod: 'wallet',
       customerName: customerName || user.username, wa: wa || user.wa,
       status: 'done', key, keySource,
       providerVariantId: providerVariantId || undefined,
@@ -3775,10 +3782,10 @@ app.post('/wallet/buy', requireAuth, async (req, res) => {
     const notifs = await readFresh('notifications.json').catch(() => []);
     notifs.unshift({ id: uuidv4(), type: 'purchase', buyerName: customerName || user.username,
       buyerPhoto: user.photo || null, productName: product.name,
-      price, time: new Date().toISOString(), timeStr: formatDate() });
+      price: chargePrice, time: new Date().toISOString(), timeStr: formatDate() });
     await writeDB('notifications.json', notifs.slice(0, 50));
 
-    res.json({ success: true, key, code: orderCode, balance: user.balance, voucherDiscount: voucherDiscount || undefined });
+    res.json({ success: true, key, code: orderCode, balance: user.balance, voucherDiscount: voucherDiscount || undefined, qty: gotQty, requestedQty: qty, partial: gotQty < qty || undefined });
   } catch (e) {
     console.error('[wallet/buy] error:', e.message);
     res.json({ success: false, message: 'Terjadi kesalahan: ' + e.message });
@@ -4077,6 +4084,7 @@ app.get('/api/products/:id/stock', async (req, res) => {
 app.post('/create-order', async (req, res) => {
   try {
     const { productId, duration, durationUnit, customerName, wa, voucherCode } = req.body;
+    const _qtyRaw = req.body.qty;   // jumlah key (tombol - / +), divalidasi setelah settings terbaca
 
     // ── KECEPATAN (9 Okt 2026): tiap readFresh = 1 round-trip ke Supabase (dulu berurutan:
     // users -> products -> transactions ...). Pembacaan yang tidak saling bergantung sekarang
@@ -4182,6 +4190,11 @@ app.post('/create-order', async (req, res) => {
       }
     }
 
+    // Jumlah key: harga satuan x qty (voucher & pembayaran memakai total)
+    const qty = parseQty(_qtyRaw, settings);
+    const unitPrice = price;
+    price = price * qty;
+
     // Terapkan voucher (setelah diskon reseller)
     let voucherDiscount = 0, appliedVoucher = null, originalPrice = price;
     if (voucherCode && voucherCode.trim()) {
@@ -4209,14 +4222,14 @@ app.post('/create-order', async (req, res) => {
       }
       if (settings.dripstore?.apiToken && settings.dripstore?.balanceGuardEnabled !== false) {
         try {
-          let av = await checkDripstoreOptionAvailability(settings, product.name, selectedOpt, 1);
+          let av = await checkDripstoreOptionAvailability(settings, product.name, selectedOpt, qty);
           if (!av.ok && av.variantMissing && !bhOk && Date.now() - _healLast > 60 * 1000) {
             // Durasi ini belum ter-mapping: perbaiki otomatis sekarang (tanpa ubah harga) lalu cek ulang sekali
             const hr = await autoHealMappings('checkout', { noPrice: true });
             if (hr && hr.changed) {
               const fresh = (await readFresh('products.json')).find(x => x.id === product.id);
               const so = fresh && (fresh.pricingOptions || []).find(o => Number(o.days) === Number(selectedDays) && (o.unit || 'd') === selectedUnit);
-              if (so) { Object.assign(selectedOpt, { dripstoreVariantId: so.dripstoreVariantId, ds2VariantId: so.ds2VariantId }); av = await checkDripstoreOptionAvailability(settings, fresh.name, so, 1); bhOk = _EXTRA_PROVIDERS.some(p => p.mod.usable(so)); }
+              if (so) { Object.assign(selectedOpt, { dripstoreVariantId: so.dripstoreVariantId, ds2VariantId: so.ds2VariantId }); av = await checkDripstoreOptionAvailability(settings, fresh.name, so, qty); bhOk = _EXTRA_PROVIDERS.some(p => p.mod.usable(so)); }
             }
           }
           if (!av.ok && bhOk) {
@@ -4235,6 +4248,11 @@ app.post('/create-order', async (req, res) => {
           else return res.json({ success: false, message: 'Tidak bisa memverifikasi stok provider sebelum checkout: ' + e.message });
         }
       }
+    }
+
+    // Qty > 1 tanpa provider cadangan: stok lokal harus cukup (supaya tidak terkirim sebagian)
+    if (qty > 1 && selectedOpt && localDurationStock < qty && !settings.dripstore?.apiToken && !bhOk) {
+      return res.json({ success: false, message: localDurationStock > 0 ? `Stok tersisa ${localDurationStock} key. Kurangi jumlah pesanan.` : 'Stok habis untuk durasi ini.' });
     }
 
     const clientIp = String(req.ip || req.headers['x-forwarded-for'] || '').split(',')[0].trim();
@@ -4293,6 +4311,7 @@ app.post('/create-order', async (req, res) => {
       id: refId, orderId, code: orderCode,
       userId: req.session.userId, productId: product.id, productName: product.name,
       duration, selectedDays, selectedUnit,
+      qty: qty > 1 ? qty : undefined, unitPrice: qty > 1 ? unitPrice : undefined,
       originalPrice: voucherDiscount > 0 ? originalPrice : undefined,
       voucherCode: appliedVoucher ? appliedVoucher.code : undefined,
       voucherDiscount: voucherDiscount > 0 ? voucherDiscount : undefined,
@@ -4457,6 +4476,15 @@ async function claimProductFulfillment(refId) {
   }
 }
 
+// Jumlah key per pesanan (tombol - / + di sheet beli). Default 1, maksimal MAX_QTY (bisa diubah lewat settings.maxQty).
+const MAX_QTY_DEFAULT = 10;
+function parseQty(v, settings) {
+  const cap = Math.min(Math.max(parseInt(settings && settings.maxQty, 10) || MAX_QTY_DEFAULT, 1), 50);
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, cap);
+}
+
 async function finalizeOrder(refId, settings) {
   const transaction = await db.tx.get(refId);
   if (!transaction) return { status: 'not_found' };
@@ -4521,64 +4549,87 @@ async function finalizeOrder(refId, settings) {
 
   let products = await readFresh('products.json');
   let product = products.find(p => p.id === transaction.productId);
-  let localInventoryCommitted = false;
+  // ── JUMLAH KEY (qty): ambil key satu per satu lewat alur yang sama (stok lokal -> provider) ──
+  const _wantQty = Math.max(1, parseInt(transaction.qty, 10) || 1);
+  const _accKeys = Array.isArray(transaction.partialKeys) ? transaction.partialKeys.filter(Boolean) : [];
+  for (let _n = _accKeys.length; _n < _wantQty; _n++) {
+    key = null; outOfStock = false;
+    let localInventoryCommitted = false;
 
-  // LOCAL/HYBRID: stok lokal hanya boleh memenuhi durasi+unit yang dibeli.
-  // consumeLocalProductKey() mengambil snapshot terbaru dan melakukan write
-  if (!key && !outOfStock && shouldTryLocalFirst && product) {
-    const localResult = await consumeLocalProductKey(product.id, transaction.selectedDays, transaction.selectedUnit || 'd');
-    products = localResult.products || products;
-    product = products.find(p => p.id === transaction.productId) || product;
-    if (localResult.key) {
-      key = localResult.key;
-      localInventoryCommitted = !!localResult.committed;
-    }
-  }
-
-  let pendingRetry = false;
-  if (!key && !outOfStock && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid')) {
-    const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
-    if (liveProvider && !liveProvider.error) {
-      key = liveProvider.key; keySource = liveProvider.source;
-      providerTransactionId = liveProvider.providerTransactionId; providerVariantId = liveProvider.variantId;
-    } else if (liveProvider?.error) {
-      const err = liveProvider.error;
-      // Transient (timeout/network/5xx/rate-limit): PROVIDER-nya yang lelet/limit,
-      // bukan stoknya yang kosong. Jangan vonis "stok habis" -- itu memicu WA "proses
-      // manual" padahal beberapa detik lagi provider biasanya sudah pulih.
-      const isTransient = !!(err?.transient || err?.rateLimited);
-      if (isTransient) {
-        pendingRetry = true;
-        _dsStats.pendingRetryCount++;
-        console.warn('[DripStore hybrid fulfillment] transient, akan dicoba lagi:', transaction.code, err.message);
-      } else {
-        console.error('[DripStore hybrid fulfillment]', transaction.code, err.message);
-        outOfStock = true;
-        fulfillErrorMsg = String(err.message || 'error provider').slice(0, 220);
+    // LOCAL/HYBRID: stok lokal hanya boleh memenuhi durasi+unit yang dibeli.
+    // consumeLocalProductKey() mengambil snapshot terbaru dan melakukan write
+    if (!key && !outOfStock && shouldTryLocalFirst && product) {
+      const localResult = await consumeLocalProductKey(product.id, transaction.selectedDays, transaction.selectedUnit || 'd');
+      products = localResult.products || products;
+      product = products.find(p => p.id === transaction.productId) || product;
+      if (localResult.key) {
+        key = localResult.key;
+        localInventoryCommitted = !!localResult.committed;
       }
     }
-  }
 
-  if (pendingRetry) {
-    // Uang sudah dikonfirmasi masuk, TAPI belum difulfill. JANGAN tandai 'done' (nanti
-    // dianggap outOfStock permanen). Lepas klaim supaya panggilan check-payment
-    // berikutnya (polling client, biasanya tiap beberapa detik) boleh mencoba lagi.
-    if (!transaction.type || transaction.type === 'product') await releaseProductFulfillmentClaim(refId);
-    return { status: 'pending_retry', type: 'product', code: transaction.code };
-  }
-
-  if (key) {
-    // Key lokal sudah menaikkan sold di consumeLocalProductKey(). Untuk provider,
-    // increment sold juga masuk lock produk agar dua instance tidak lost-update.
-    if (!localInventoryCommitted) {
-      await incrementProductSold(transaction.productId);
+    let pendingRetry = false;
+    if (!key && !outOfStock && (fulfillmentMode === 'live' || fulfillmentMode === 'hybrid')) {
+      const liveProvider = await fulfillProductFromDripstore(transaction, settings).catch(e => ({ error: e }));
+      if (liveProvider && !liveProvider.error) {
+        key = liveProvider.key; keySource = liveProvider.source;
+        providerTransactionId = liveProvider.providerTransactionId; providerVariantId = liveProvider.variantId;
+      } else if (liveProvider?.error) {
+        const err = liveProvider.error;
+        // Transient (timeout/network/5xx/rate-limit): PROVIDER-nya yang lelet/limit,
+        // bukan stoknya yang kosong. Jangan vonis "stok habis" -- itu memicu WA "proses
+        // manual" padahal beberapa detik lagi provider biasanya sudah pulih.
+        const isTransient = !!(err?.transient || err?.rateLimited);
+        if (isTransient) {
+          pendingRetry = true;
+          _dsStats.pendingRetryCount++;
+          console.warn('[DripStore hybrid fulfillment] transient, akan dicoba lagi:', transaction.code, err.message);
+        } else {
+          console.error('[DripStore hybrid fulfillment]', transaction.code, err.message);
+          outOfStock = true;
+          fulfillErrorMsg = String(err.message || 'error provider').slice(0, 220);
+        }
+      }
     }
-  } else {
-    outOfStock = true;
+
+    if (pendingRetry) {
+      // Uang sudah dikonfirmasi masuk, TAPI belum difulfill. JANGAN tandai 'done' (nanti
+      // dianggap outOfStock permanen). Lepas klaim supaya panggilan check-payment
+      // berikutnya (polling client, biasanya tiap beberapa detik) boleh mencoba lagi.
+      // Qty > 1: key yang SUDAH didapat disimpan (partialKeys) supaya percobaan berikutnya hanya membeli sisanya (anti beli dobel).
+      if (_accKeys.length) { transaction.partialKeys = _accKeys.slice(); await db.tx.save(transaction); }
+      if (!transaction.type || transaction.type === 'product') await releaseProductFulfillmentClaim(refId);
+      return { status: 'pending_retry', type: 'product', code: transaction.code };
+    }
+
+    if (key) {
+      // Key lokal sudah menaikkan sold di consumeLocalProductKey(). Untuk provider,
+      // increment sold juga masuk lock produk agar dua instance tidak lost-update.
+      if (!localInventoryCommitted) {
+        await incrementProductSold(transaction.productId);
+      }
+    } else {
+      outOfStock = true;
+    }
+    if (key) _accKeys.push(key); else break;   // gagal di tengah: kirim yang sudah didapat saja
+
   }
+  if (_accKeys.length) {
+    key = _accKeys.join('\n'); outOfStock = false;
+  } else { key = null; outOfStock = true; }
+  const _shortfall = _wantQty - _accKeys.length;
 
   transaction.status = 'done';
   transaction.key = key;
+  if (_wantQty > 1) {
+    transaction.keys = _accKeys.slice();
+    delete transaction.partialKeys;
+    if (_accKeys.length && _shortfall > 0) {
+      transaction.shortfall = _shortfall;
+      fulfillErrorMsg = fulfillErrorMsg || 'provider tidak bisa memenuhi sisa key';
+      transaction.fulfillError = `Terkirim ${_accKeys.length} dari ${_wantQty} key: ${fulfillErrorMsg}`.slice(0, 260);
+    }
+  }
   transaction.keySource = keySource;
   transaction.providerVariantId = providerVariantId || undefined;
   transaction.providerTransactionId = providerTransactionId || undefined;
@@ -4590,6 +4641,10 @@ async function finalizeOrder(refId, settings) {
   // dipakai saat pembeli sedang membayar. Setelah tidak pending, buang -- tiap konfirmasi
   // jadi mengunduh/mengunggah file yang jauh lebih kecil (sebelumnya ~900KB x3 per konfirmasi).
   await db.tx.save(transaction);
+
+  if (!outOfStock && transaction.shortfall) {
+    sendWhatsAppNotif(settings.contact?.whatsapp, `⚠️ PESANAN TERKIRIM SEBAGIAN\n\nOrder: ${transaction.code}\nProduk: ${transaction.productName}\nCustomer: ${transaction.customerName} (${transaction.wa || '-'})\nTerkirim ${_accKeys.length} dari ${_wantQty} key. Kurang ${transaction.shortfall} key.\nPenyebab: ${fulfillErrorMsg || '-'}\n\nKirim sisa key manual atau kembalikan selisih ke pembeli.`, settings).catch(() => {});
+  }
 
   if (outOfStock) {
     const waMsg = `⚠️ STOK HABIS - Pesanan butuh diproses manual!\n\n` +
@@ -4621,7 +4676,7 @@ async function finalizeOrder(refId, settings) {
 const _retryingOrders = new Set();
 async function retryUndeliveredOrder(refId, settings) {
   const t0 = await db.tx.get(refId);
-  if (!t0 || t0.status !== 'done' || t0.key || !t0.outOfStock || (t0.type && t0.type !== 'product')) return { status: 'not_retryable' };
+  if (!t0 || t0.status !== 'done' || t0.key || !t0.outOfStock || (t0.type && t0.type !== 'product') || Number(t0.qty) > 1) return { status: 'not_retryable' };   // qty > 1: kirim manual dari /admin/diagnose
   if (_retryingOrders.has(refId)) return { status: 'busy' };
   _retryingOrders.add(refId);
   try {
@@ -4661,7 +4716,7 @@ async function retryUndeliveredOrder(refId, settings) {
 async function listUndeliveredOrders(days = 14, cached = false) {
   const since = Date.now() - days * 86400000;
   const txs = await db.tx.undelivered(days * 86400000); // query terfilter di database (bukan seluruh blob)
-  return txs.filter(t => t && t.status === 'done' && t.outOfStock && !t.key && !t.manualResolved && (!t.type || t.type === 'product') && (new Date(t.paidAt || t.createdAt || 0).getTime() || 0) >= since)
+  return txs.filter(t => t && t.status === 'done' && t.outOfStock && !t.key && !t.manualResolved && !(Number(t.qty) > 1) && (!t.type || t.type === 'product') && (new Date(t.paidAt || t.createdAt || 0).getTime() || 0) >= since)
     .sort((a, b) => new Date(b.paidAt || 0) - new Date(a.paidAt || 0));
 }
 async function retryUndeliveredBatch(settings, limit = 8) {

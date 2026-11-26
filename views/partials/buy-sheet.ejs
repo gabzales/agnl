@@ -25,7 +25,15 @@
     <!-- STEP 2: konfirmasi -->
     <div class="ag-panel" id="stepPanel2">
       <div class="ag-summary">
-        <div class="ag-summary-row"><span id="summaryProductName">-</span><span>x1</span></div>
+        <div class="ag-summary-row"><span id="summaryProductName">-</span><span id="summaryQty">x1</span></div>
+        <div class="ag-qty-row">
+          <span class="ag-qty-lbl">Jumlah key</span>
+          <div class="ag-qty">
+            <button type="button" id="qtyMinus" onclick="agQty(-1)" aria-label="Kurangi"><iconify-icon icon="mdi:minus"></iconify-icon></button>
+            <input type="text" id="qtyInput" inputmode="numeric" value="1" maxlength="2" aria-label="Jumlah key" oninput="agQtySet(this.value)">
+            <button type="button" id="qtyPlus" onclick="agQty(1)" aria-label="Tambah"><iconify-icon icon="mdi:plus"></iconify-icon></button>
+          </div>
+        </div>
         <div class="ag-summary-row" id="summarySubtotalRow" hidden><span>Subtotal</span><span id="summarySubtotal">Rp 0</span></div>
         <div class="ag-summary-row" id="summaryDiscountRow" hidden><span id="summaryDiscountLabel">Voucher</span><span id="summaryDiscount" class="ag-discount">- Rp 0</span></div>
         <div class="ag-summary-row total"><span>Total</span><span class="ag-total" id="summaryTotal">Rp 0</span></div>

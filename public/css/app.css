@@ -96,6 +96,7 @@ iconify-icon svg { display: block; width: 1em; height: 1em; }
 
 @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(20px) } to { opacity: 1; transform: translateY(0) } }
+@keyframes slideLeft { from { opacity: 0; transform: translateX(-100%) } to { opacity: 1; transform: translateX(0) } }
 @keyframes slideRight { from { opacity: 0; transform: translateX(100%) } to { opacity: 1; transform: translateX(0) } }
 @keyframes slideBottom { from { transform: translateY(100%) } to { transform: translateY(0) } }
 @keyframes spin { to { transform: rotate(360deg) } }
@@ -145,7 +146,10 @@ iconify-icon svg { display: block; width: 1em; height: 1em; }
 .marquee-track { animation: marquee 22s linear infinite; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .72); z-index: 9000; display: flex; align-items: flex-end; }
 .modal-sheet { width: 100%; background: var(--bg-card); border-top: 1px solid var(--border); border-radius: 24px 24px 0 0; max-height: 92dvh; overflow-y: auto; animation: slideBottom .22s ease both; }
-.side-drawer { position: absolute; right: 0; top: 0; bottom: 0; width: min(320px, 86vw); background: var(--bg-card); border-left: 1px solid var(--border); overflow-y: auto; animation: slideRight .22s ease both; }
+.side-drawer { position: absolute; left: 0; top: 0; bottom: 0; width: min(320px, 86vw); background: var(--bg-card); border-right: 1px solid var(--border); overflow-y: auto; animation: slideLeft .24s ease both; box-shadow: 8px 0 40px rgba(0,0,0,.35); }
+.ag-backdrop { background: rgba(0,0,0,.55); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: fadeIn .2s ease; }
+.ag-burger { flex-shrink: 0; }
+.ag-header-in .ag-brand { margin-right: auto; }
 #paymentModal { position: fixed !important; z-index: 99999 !important; }
 #toast-container { position: fixed; bottom: 20px; left: 12px; right: 12px; z-index: 9500; display: flex; flex-direction: column-reverse; gap: 6px; pointer-events: none; }
 #toast-container > * { pointer-events: auto; }
@@ -352,6 +356,9 @@ html[data-theme="light"] .ag-tag.dl { background: #17171d; }
 .ag-google { margin-top: 10px; width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 11px; border-radius: 14px; border: 1px solid var(--border-md); background: var(--bg-hover); font-size: 12.5px; font-weight: 800; color: var(--text-1); }
 .ag-err { margin-bottom: 10px; padding: 9px 12px; border-radius: 12px; font-size: 12px; color: #fca5a5; background: var(--red-dim); border: 1px solid rgba(239, 68, 68, .3); }
 .ag-err.hidden { display: none; }
+.ag-overlay.ag-blur { background: rgba(0,0,0,.5); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+.ag-tg .ico { background: rgba(42,171,238,.16); color: #2aabee; }
+.ag-tg .go { background: #2aabee; }
 .ag-cs { text-align: center; }
 .ag-cs .ico { width: 64px; height: 64px; margin: 4px auto 12px; border-radius: 50%; background: rgba(37, 211, 102, .14); display: flex; align-items: center; justify-content: center; font-size: 34px; color: #25d366; }
 .ag-cs p { font-size: 13px; line-height: 1.55; color: var(--text-2); margin: 6px 0 16px; }
@@ -423,6 +430,13 @@ html[data-theme="light"] .ag-dur { background: var(--bg-hover); }
 .ag-tinput { width: 100%; padding: 13px 14px; border-radius: 12px; font-size: 14px; font-family: inherit; color: var(--text-1); background: var(--bg-main); border: 1px solid var(--accent-30); outline: none; }
 .ag-tinput::placeholder { color: var(--text-3); }
 .ag-tinput:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-18); }
+.ag-qty-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 10px 0 2px; padding: 8px 0; border-top: 1px dashed var(--border-md); }
+.ag-qty-lbl { font-size: 13px; font-weight: 700; color: var(--text-1); }
+.ag-qty { display: inline-flex; align-items: center; border: 1px solid var(--border-md); border-radius: 12px; overflow: hidden; background: var(--bg-card); }
+.ag-qty button { width: 38px; height: 36px; border: 0; background: var(--accent-10); color: var(--accent-bright); font-size: 18px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.ag-qty button:disabled { opacity: .35; cursor: not-allowed; }
+.ag-qty input { width: 44px; height: 36px; border: 0; background: transparent; text-align: center; font-size: 15px; font-weight: 800; color: var(--text-1); outline: none; }
+.ag-key-value, .ag-keys { white-space: pre-line; }
 .ag-voucher { display: flex; gap: 8px; }
 .ag-voucher .ag-tinput { flex: 1; text-transform: uppercase; }
 .ag-voucher-btn { flex: 0 0 auto; padding: 0 16px; border-radius: 12px; font-size: 13px; font-weight: 800; color: #fff; background: var(--accent-deep); border: none; cursor: pointer; font-family: inherit; }

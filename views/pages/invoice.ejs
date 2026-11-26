@@ -87,7 +87,7 @@ const noIndex = true; // halaman privat user, jangan di-index Google
                                 <div class="pt-3 border-t border-zinc-100">
                                     <span class="text-xs text-zinc-400 block mb-2">Key/Lisensi:</span>
                                     <div class="p-3 rounded-lg bg-black/30 border border-emerald-500/30">
-                                        <code id="keyDisplay" class="text-sm text-emerald-400 font-mono break-all font-black">
+                                        <code id="keyDisplay" style="white-space:pre-line;display:block" class="text-sm text-emerald-400 font-mono break-all font-black">
                                             <%= transaction.key %><% if (transaction.selectedDays) { %> — <%= transaction.selectedDays %> <%= transaction.selectedUnit === 'h' ? 'Jam' : 'Hari' %><% } %>
                                         </code>
                                     </div>

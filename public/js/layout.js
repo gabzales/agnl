@@ -74,7 +74,7 @@
   window.closeTrack = function () { $('track-panel').classList.add('hidden'); lock(false); };
   window.openMenu = function () {
     $('menu-drawer').style.display = 'block';
-    var d = $('menu-drawer-content'); d.style.animation = 'none'; void d.offsetWidth; d.style.animation = 'slideRight .22s ease both';
+    var d = $('menu-drawer-content'); d.style.animation = 'none'; void d.offsetWidth; d.style.animation = 'slideLeft .24s ease both';
     lock(true);
   };
   window.closeMenu = function () { $('menu-drawer').style.display = 'none'; lock(false); };
